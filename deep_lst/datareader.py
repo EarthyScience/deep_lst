@@ -6,13 +6,14 @@ import numpy as np
 
 class ERA5reader:
     def __init__(self, 
-                 channel: str ,
+                 group: str,
+                 channel: str,
                  start_date: pd.Timestamp,
                  end_date: pd.Timestamp,
                  experiment_path: str,
                  eo_path: str):
 
-        self.store = xr.open_zarr(eo_path, group="era5")
+        self.store = xr.open_zarr(eo_path, group=group)
         self.source = pd.read_parquet(experiment_path)
         self.start_date = start_date
         self.end_date = end_date
@@ -22,7 +23,7 @@ class ERA5reader:
         print(f"Channel dimensions: {self.channel.dims}")
         print(f"Channel shape: {self.channel.shape}")
 
-    def _select_channel(self, channel: str = "skt"):
+    def _select_channel(self, channel: str): 
         channel_arr = self.store[channel]
         return channel_arr
 

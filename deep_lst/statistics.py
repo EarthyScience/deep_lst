@@ -5,32 +5,6 @@ import pandas as pd
 import numpy as np
 
 import torch
-from torch.utils.data import DataLoader
-from code.datasets import StatsDataset
-from code.datareader import ERA5reader
-
-reader = ERA5reader(channel="skt",
-                    start_date=pd.Timestamp('2019-01-01 00:00'),
-                    end_date=pd.Timestamp("2019-01-03 23:00"))
-
-dataset = StatsDataset(zarr_array=reader.channel,
-                       indices=reader.get_indices(),
-                       source=reader.source)
-
-loader = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=4)
-
-
-start = time.time()
-skt = reader.channel.isel(time=reader.time_idx) #, latitude = df['lat_idx'], longitude=df['lon_idx'])
-
-mean_global = skt.mean(dim=('time', 'latitude', 'longitude'), skipna=True).compute()
-std_global  = skt.std(dim=('time', 'latitude', 'longitude'), skipna=True).compute()
-
-print(f"Computation took {(time.time() - start)/60:.2f} minutes")
-print("Global mean", mean_global)
-print("Global std", std_global)
-
-
 
 def welford_incremental(prev_mean, prev_M2, prev_count, x_batch):
     """
@@ -60,10 +34,44 @@ def welford_incremental(prev_mean, prev_M2, prev_count, x_batch):
 
 
 def finalize_welford(mean, M2, count):
-    """Return mean, variance, and sample variance from aggregate."""
+    """Return mean and standard deviation from aggregate."""
     if count < 2:
-        return mean, torch.zeros_like(M2), torch.zeros_like(M2)
-    var = M2 / count           # biased population variance
-    sample_var = M2 / (count - 1)  # unbiased
-    return mean, var, sample_var
+        return mean, torch.zeros_like(M2)
+    sample_var = (M2 / (count - 1)).sqrt()  # unbiased sample variance
+    return mean.numpy(), sample_var.numpy()
 
+def iterate_statistics(data_loader, device='cpu'):
+    """
+    Iterate over data loader to compute mean and std using Welford's algorithm.
+    
+    Args:
+        data_loader: PyTorch DataLoader yielding batches of data
+        device: device to perform computations on ('cpu' or 'cuda')
+    Returns:
+        mean, std: computed mean and standard deviation arrays
+    """
+
+    prev_mean, prev_M2, prev_count = 0, 0, 0
+    min_total = float('inf')
+    max_total = float('-inf')
+
+    counter = 0
+    for b in data_loader:
+
+        b = b[~torch.isnan(b)]
+        print(f"Processed batch of size {b.shape}, after removing NaNs: {b.shape}")
+
+        prev_mean, prev_M2, prev_count = welford_incremental(prev_mean, prev_M2, prev_count, b)
+        min_total = min(min_total, b.min().item())
+        max_total = max(max_total, b.max().item())
+
+        counter += 1
+        if counter % 500 == 0:
+            print(f"Processing batch {counter}")
+
+    mean, std = finalize_welford(prev_mean, prev_M2, prev_count)
+    print("Overall min:", min_total)
+    print("Overall max:", max_total)
+    print("Overall mean:", mean)
+    print("Overall std:", std)
+    return mean, std, min_total, max_total
