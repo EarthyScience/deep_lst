@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 
-class StatsDataset(Dataset):
+class weDataset(Dataset):
     def __init__(self, zarr_array, indices, source):
         """
         zarr_array: xarray.DataArray or zarr.Array

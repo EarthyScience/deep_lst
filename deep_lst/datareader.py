@@ -4,7 +4,7 @@ import time
 import pandas as pd
 import numpy as np
 
-class ERA5reader:
+class wedataReader:
     def __init__(self, 
                  group: str,
                  channel: str,
@@ -14,12 +14,13 @@ class ERA5reader:
                  eo_path: str):
 
         self.store = xr.open_zarr(eo_path, group=group)
-        self.source = pd.read_parquet(experiment_path)
+        experiment = pd.read_parquet(experiment_path)
+        self.source = experiment[['row_idx', 'col_idx', 'lat_idx', 'lon_idx']].astype('int64')
         self.start_date = start_date
         self.end_date = end_date
         self.channel = self._select_channel(channel)
 
-        print(f"ERA5reader initialized for channel {channel} from {start_date} to {end_date}.")
+        print(f"wedataReader initialized for channel {channel} from {start_date} to {end_date}.")
         print(f"Channel dimensions: {self.channel.dims}")
         print(f"Channel shape: {self.channel.shape}")
 
@@ -33,14 +34,12 @@ class ERA5reader:
         self.time_idx = TIME_INDEX.slice_indexer(start=self.start_date, end=self.end_date)
         num_times = self.time_idx.stop - self.time_idx.start
 
-        df_sel = self.source[['row_idx', 'col_idx']].copy()
-
         # Repeat each row/col combination for each time step
         # Tile the time indices for all points
         combined_indices = pd.DataFrame({
             'time_idx': np.tile(np.arange(self.time_idx.start, self.time_idx.stop), len(self.source)),
-            'row_idx': np.repeat(df_sel['row_idx'].values, num_times),
-            'col_idx': np.repeat(df_sel['col_idx'].values, num_times)
+            'row_idx': np.repeat(self.source['row_idx'].values, num_times),
+            'col_idx': np.repeat(self.source['col_idx'].values, num_times)
         })
 
         return combined_indices

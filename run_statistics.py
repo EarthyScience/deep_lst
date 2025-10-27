@@ -14,8 +14,8 @@ import torch
 import time
 import multiprocessing
 
-from deep_lst.datasets import StatsDataset
-from deep_lst.datareader import ERA5reader
+from deep_lst.datasets import weDataset
+from deep_lst.datareader import wedataReader
 from deep_lst.statistics import iterate_statistics
 from torch.utils.data import DataLoader
 
@@ -25,14 +25,14 @@ print(f"Detected {num_cpus} CPUs available")
 eo_path = "/Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/test2.zarr"
 experiment_path = "/Net/Groups/BGI/people/mwessel/deep_lst/experiments/filtered_seviri.parquet"
 
-reader = ERA5reader(group = "seviri",
+reader = wedataReader(group = "seviri",
                     channel="LST",
                     start_date=pd.Timestamp('2019-01-01 00:00'),
                     end_date=pd.Timestamp("2019-01-01 12:00"),
                     experiment_path= experiment_path,
                     eo_path=eo_path)
 
-dataset = StatsDataset(zarr_array=reader.channel,
+dataset = weDataset(zarr_array=reader.channel,
                        indices=reader.get_indices(),
                        source=reader.source)
 
