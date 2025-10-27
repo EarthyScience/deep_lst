@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 
 import torch
+from pathlib import Path
 
 def welford_incremental(prev_mean, prev_M2, prev_count, x_batch):
     """
@@ -54,12 +55,18 @@ def iterate_statistics(data_loader, device='cpu'):
     prev_mean, prev_M2, prev_count = 0, 0, 0
     min_total = float('inf')
     max_total = float('-inf')
+    nan_total = 0
+    sample_total = 0
 
     counter = 0
     for b in data_loader:
 
+        b_flat = b.view(-1)
+
+        nan_total += torch.isnan(b_flat).sum().item()
+        sample_total += b_flat.numel()
+
         b = b[~torch.isnan(b)]
-        print(f"Processed batch of size {b.shape}, after removing NaNs: {b.shape}")
 
         prev_mean, prev_M2, prev_count = welford_incremental(prev_mean, prev_M2, prev_count, b)
         min_total = min(min_total, b.min().item())
@@ -70,8 +77,50 @@ def iterate_statistics(data_loader, device='cpu'):
             print(f"Processing batch {counter}")
 
     mean, std = finalize_welford(prev_mean, prev_M2, prev_count)
-    print("Overall min:", min_total)
-    print("Overall max:", max_total)
-    print("Overall mean:", mean)
-    print("Overall std:", std)
-    return mean, std, min_total, max_total
+    nan_ratio = nan_total / sample_total if sample_total > 0 else 0
+
+    print("\n===== Overall Statistics =====")
+    print(f"Total samples: {sample_total}")
+    print(f"Total NaNs: {nan_total} ({nan_ratio:.2%})")
+    print(f"Min: {min_total}")
+    print(f"Max: {max_total}")
+    print(f"Mean: {mean}")
+    print(f"Std: {std}")
+
+    return mean, std, min_total, max_total, nan_total, sample_total
+
+
+def to_scalar(x):
+    """Convert tensors/arrays to Python floats/ints."""
+    if hasattr(x, "item"):  # torch.Tensor or np scalar
+        return x.item()
+    if isinstance(x, (np.ndarray, list)) and np.size(x) == 1:
+        return float(np.array(x).ravel()[0])
+    return float(x) if np.isscalar(x) else np.nan
+
+def save_statistics(stats_dict, variable_name, output_path):
+    """
+    Append a single variable's statistics to a Parquet file.
+    """
+    # Convert to DataFrame
+    df = pd.DataFrame([{
+        "variable": variable_name,
+        "mean": to_scalar(stats_dict["mean"]),
+        "std": to_scalar(stats_dict["std"]),
+        "min": to_scalar(stats_dict["min"]),
+        "max": to_scalar(stats_dict["max"]),
+        "nan_count": int(to_scalar(stats_dict["nan_count"])),
+        "sample_count": int(to_scalar(stats_dict["sample_count"]))
+    }])
+
+    # Ensure directory exists
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Append or create
+    if output_path.exists():
+        old = pd.read_parquet(output_path)
+        df = pd.concat([old, df], ignore_index=True)
+
+    df.to_parquet(output_path, index=False)
+    print(f"Appended stats for {variable_name} to {output_path}")

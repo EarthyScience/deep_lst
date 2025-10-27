@@ -27,19 +27,42 @@ class wedataReader:
     def _select_channel(self, channel: str): 
         channel_arr = self.store[channel]
         return channel_arr
+    
+    def apply_filtering(self, mask = "LWMASK"):
 
-    def get_indices(self):
+        mask_da = self.store[mask]
+        print(f"Mask dims: {mask_da.dims}, shape: {mask_da.shape}")
+
+        # Drop time if present
+        if "time" in mask_da.dims:
+            print("Mask has a time dimension; using first timestep.")
+            mask_da = mask_da.isel(time=0)
+
+        mask_arr = mask_da.values  # shape (lat, lon)
+        n_lat, n_lon = mask_arr.shape
+
+        assert self.source["lat_idx"].max() < n_lat and self.source["lon_idx"].max() < n_lon, \
+            f"indices out of range: lat_idx max={self.source['lat_idx'].max()}, lon_idx max={self.source['lon_idx'].max()}"
+
+        # Probe mask statistics
+        unique_vals = np.unique(mask_arr)
+        print(f"Unique mask values: {unique_vals[:20]}")
+
+        land_mask = mask_arr[self.source["lat_idx"].to_numpy(), self.source["lon_idx"].to_numpy()] == 1
+
+        df_land = self.source.loc[land_mask].reset_index(drop=True)
+
+        print(f"Retained {len(df_land)} / {len(self.source)} points over land.")
+        self.source = df_land
+
+    def get_temporal_indices(self):
         
-        TIME_INDEX = self.channel['time'].to_index() 
-        self.time_idx = TIME_INDEX.slice_indexer(start=self.start_date, end=self.end_date)
-        num_times = self.time_idx.stop - self.time_idx.start
+        TIME_INDEX = pd.DatetimeIndex(self.channel['time'].values)
 
-        # Repeat each row/col combination for each time step
-        # Tile the time indices for all points
-        combined_indices = pd.DataFrame({
-            'time_idx': np.tile(np.arange(self.time_idx.start, self.time_idx.stop), len(self.source)),
-            'row_idx': np.repeat(self.source['row_idx'].values, num_times),
-            'col_idx': np.repeat(self.source['col_idx'].values, num_times)
-        })
+        # Half-open selection: [start, end)
+        mask = (TIME_INDEX >= self.start_date) & (TIME_INDEX < self.end_date)
+        self.time_idxs = np.nonzero(mask)[0].astype(np.int64)
+        return self.time_idxs
 
-        return combined_indices
+    def get_spatial_indices(self):
+        return self.source.reset_index(drop=True)
