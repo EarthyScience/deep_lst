@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 
 class weDataset(Dataset):
-    def __init__(self, zarr_array, spatial_indices, temporal_indices):
+    def __init__(self, zarr_array, spatial_indices, temporal_indices = None):
         """
         zarr_array: xarray.DataArray or zarr.Array
         indices: 3d pandas dataframe or array
@@ -14,7 +14,7 @@ class weDataset(Dataset):
 
         
         self.P = len(self.spatial_indices)
-        self.T = len(self.temporal_indices)
+        self.T = len(self.temporal_indices) if self.temporal_indices is not None else 1
         self.samples = self.P * self.T
 
         print(f"Initialized StatsDataset with {self.samples} samples.")
@@ -27,9 +27,14 @@ class weDataset(Dataset):
         t_index = idx // self.P
         p_index = idx % self.P
 
-        t = self.temporal_indices[t_index]
         row, col, lat_idx, lon_idx = self.spatial_indices.iloc[p_index]
 
-        x = self.data[t, lat_idx, lon_idx].values  # lazy-load element, era5 order time, lat, lon
+        if self.temporal_indices is not None:
+            t = self.temporal_indices[t_index]
+            x = self.data[t, lat_idx, lon_idx].values  # lazy-load element order time, lat, lon
+            return x
 
-        return x
+        else:
+            x = self.data[lat_idx, lon_idx].values 
+            return x
+            

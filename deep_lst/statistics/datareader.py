@@ -57,12 +57,15 @@ class wedataReader:
 
     def get_temporal_indices(self):
         
-        TIME_INDEX = pd.DatetimeIndex(self.channel['time'].values)
+        if 'time' in self.channel.dims:
+            TIME_INDEX = pd.DatetimeIndex(self.channel['time'].values)
 
-        # Half-open selection: [start, end)
-        mask = (TIME_INDEX >= self.start_date) & (TIME_INDEX < self.end_date)
-        self.time_idxs = np.nonzero(mask)[0].astype(np.int64)
-        return self.time_idxs
+            # Half-open selection: [start, end)
+            mask = (TIME_INDEX >= self.start_date) & (TIME_INDEX < self.end_date)
+            self.time_idxs = np.nonzero(mask)[0].astype(np.int64)
+            return self.time_idxs
+        else:
+            return None
 
     def get_spatial_indices(self):
         return self.source.reset_index(drop=True)

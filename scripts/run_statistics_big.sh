@@ -18,4 +18,8 @@ WORKDIR=/Net/Groups/BGI/people/mwessel/deep_lst
 
 cd $WORKDIR
 
-${WORKDIR}/.venv/bin/python3 ${WORKDIR}/run_statistics.py
+${WORKDIR}/.venv/bin/python3 ${WORKDIR}/run_statistics.py \
+    --modality era5 \
+    --variable skt \
+    --experiment _johannisburg \
+    --eo_path /Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/lst_store.zarr

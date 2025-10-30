@@ -16,9 +16,9 @@ import time
 import multiprocessing
 import argparse
 
-from deep_lst.datasets import weDataset
-from deep_lst.datareader import wedataReader
-from deep_lst.statistics import iterate_statistics, save_statistics
+from deep_lst.statistics.datasets import weDataset
+from deep_lst.statistics.datareader import wedataReader
+from deep_lst.deep_lst.statistics.helpers import iterate_statistics, save_statistics
 from torch.utils.data import DataLoader
 
 num_cpus = multiprocessing.cpu_count()  # should be 64
@@ -34,8 +34,7 @@ parser.add_argument('--experiment', type=str, required=False,
 parser.add_argument('--eo_path', type=str, required=False,
                     default="/Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/seviri_lst.zarr",
                     help='Path to the EO Zarr store.')
-parser.add_argument('--variable', type=str, required=False,
-                    default="skt",
+parser.add_argument('--variable', type=str, required=True,
                     help='Variable to compute statistics for.')
 args = parser.parse_args()
 
