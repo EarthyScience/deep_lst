@@ -18,7 +18,7 @@ import argparse
 
 from deep_lst.statistics.datasets import weDataset
 from deep_lst.statistics.datareader import wedataReader
-from deep_lst.deep_lst.statistics.helpers import iterate_statistics, save_statistics
+from deep_lst.statistics.helpers import iterate_statistics, save_statistics
 from torch.utils.data import DataLoader
 
 num_cpus = multiprocessing.cpu_count()  # should be 64
@@ -40,10 +40,7 @@ args = parser.parse_args()
 
 eo_path = args.eo_path
 
-if args.modality == "seviri":
-    land_mask = "LWMASK"
-else:
-    land_mask = "lsm"
+
 
 experiment_path = f"/Net/Groups/BGI/people/mwessel/deep_lst/experiments/filtered_{args.modality}{args.experiment}.parquet"
 output_path = f"/Net/Groups/BGI/people/mwessel/deep_lst/experiments/filtered_{args.modality}{args.experiment}_statistics.parquet"
@@ -54,8 +51,6 @@ reader = wedataReader(group = args.modality,
                     end_date=pd.Timestamp("2017-01-31 23:00"),
                     experiment_path= experiment_path,
                     eo_path=eo_path)
-
-reader.apply_filtering(mask=land_mask)
 
 dataset = weDataset(zarr_array=reader.channel,
                        spatial_indices=reader.get_spatial_indices(), 

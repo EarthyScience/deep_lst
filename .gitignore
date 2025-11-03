@@ -1,6 +1,7 @@
 scripts/out
 experiments/
 notebooks/
+plots/
 
 # Python-generated files
 __pycache__/

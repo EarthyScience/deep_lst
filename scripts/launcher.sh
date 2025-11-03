@@ -3,12 +3,13 @@
 WORKDIR=/Net/Groups/BGI/people/mwessel/deep_lst
 cd $WORKDIR
 
+STORE_DIR="/Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/lst_store.zarr"
 MODALITY=seviri
 
 if [ "$MODALITY" = "era5" ]; then
     VARS=("stl1" "swvl1" "u10" "v10" "sp" "t2m" "d2m" "strd" "str" "ssr" "crr" "tcwv" "skt" "tvh" "tvl")
 else
-    VARS=("standard_error" "DEM" "AL-NI-DH" "FVC")
+    VARS=("LST" "standard_error" "DEM" "AL-NI-DH" "FVC")
 fi
 
 wait_for_job() {
@@ -23,7 +24,7 @@ wait_for_job() {
 last_jobid=""
 for v in "${VARS[@]}"; do
   wait_for_job "$last_jobid"
-  out=$(sbatch --export=ALL,VAR="$v",MODALITY="$MODALITY" scripts/run_statistics_work.sh)
+  out=$(sbatch --export=ALL,VAR="$v",MODALITY="$MODALITY",STORE_DIR="$STORE_DIR" scripts/run_statistics_work.sh)
   last_jobid=$(sed -E 's/[^0-9]*([0-9]+).*/\1/' <<< "$out")
   echo "Submitted $v as job ${last_jobid}"
 done

@@ -21,4 +21,4 @@ ${WORKDIR}/.venv/bin/python3 ${WORKDIR}/run_statistics.py \
     --modality $MODALITY \
     --variable $VAR \
     --experiment _johannisburg \
-    --eo_path /Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/lst_store.zarr
+    --eo_path $STORE_DIR
