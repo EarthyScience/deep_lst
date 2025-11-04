@@ -12,7 +12,7 @@ class wedataReader:
                  config,
                  group,
                  eo_path: str,
-                 lw_mask = True,
+                 landmask = True,
                  normalised=True):
 
         self.config = config
@@ -30,8 +30,8 @@ class wedataReader:
         self.statistics = pd.read_parquet(self.config[self.group]['statistics'])
         self._create_statistics_lookup()
 
-        if lw_mask:
-            self.apply_filtering()
+        if landmask:
+            self.set_landmask()
 
         self.normalised = normalised
 
@@ -41,7 +41,7 @@ class wedataReader:
     
     def _time_indices(self):
         
-        time_index = pd.date_range(start='2017-01-01 00:00', end='2022-12-31 23:00', freq='h')
+        time_index = pd.DatetimeIndex(pd.date_range(start='2017-01-01 00:00', end='2022-12-31 23:00', freq='h'))
 
         mask = (time_index >= self.config['train_start']) & (time_index < self.config['train_end'])
         time_idxs = np.nonzero(mask)[0].astype(np.int64)
@@ -54,19 +54,20 @@ class wedataReader:
         time_idx = self.temporal_indices[t_index]
         return time_idx, lat_idx, lon_idx
 
-    def get_data(self, sample_indices):
+    def get_data(self, sample_indices, type):
 
-        X_dyn = self.store[self.channels_source["dynamic"]][sample_indices[0], sample_indices[1], sample_indices[2]]
-        X_stat = self.store[self.channels_source["static"]][sample_indices[1], sample_indices[2]]
-        X = X_dyn | X_stat
+        if type == "source":
+            X_dyn = {var: torch.from_numpy(self.store[var][sample_indices[0], sample_indices[1], sample_indices[2]].values) for var in self.channels_source["dynamic"]}
+            X_stat = {var: torch.from_numpy(self.store[var][sample_indices[1], sample_indices[2]].values) for var in self.channels_source["static"]}
+            data = X_dyn | X_stat
 
-        y = self.store[self.channels_target["target"]][sample_indices[0], sample_indices[1], sample_indices[2]]
+        if type == "target":
+            data = {var: torch.from_numpy(self.store[var][sample_indices[0], sample_indices[1], sample_indices[2]].values) for var in self.channels_target}
 
         if self.normalised:
-            X = {self.normalise(X, var) for var in X.keys()}
-            y = {self.normalise(y, var) for var in y.keys()}
+            data = {var: self.normalise(data, var) for var in data.keys()}
 
-        return X, y
+        return data
     
     def normalise(self, data, var):
         return (data[var]-self.mean_lookup[var])/self.std_lookup[var]
@@ -74,7 +75,7 @@ class wedataReader:
     def denormalise(self, data, var):
         return data[var]*self.std_lookup[var] + self.mean_lookup[var]
     
-    def apply_filtering(self):
+    def set_landmask(self):
 
         if self.group == "seviri":
             mask = "LWMASK"
@@ -83,11 +84,13 @@ class wedataReader:
 
         mask_arr = self.store[mask].values  # shape (lat, lon)
 
-        self.land_mask = mask_arr[self.spatial_indices["lat_idx"].to_numpy(), self.spatial_indices["lon_idx"].to_numpy()] == 1
-        df_land = self.spatial_indices.loc[self.land_mask].reset_index(drop=True)
+        land_mask = mask_arr[self.spatial_indices["lat_idx"].to_numpy(), self.spatial_indices["lon_idx"].to_numpy()] == 1
 
-        print(f"Retained {len(df_land)} / {len(self.spatial_indices)} points over land.")
-        self.spatial_indices = df_land
+        self.land_mask = pd.DataFrame({
+            'row_idx': self.spatial_indices['row_idx'].to_numpy(),
+            'col_idx': self.spatial_indices['col_idx'].to_numpy(),
+            'mask': land_mask
+        })
 
 
 class weDataset(Dataset):
@@ -101,14 +104,32 @@ class weDataset(Dataset):
         """
 
         self.config = config
-        self.reader_era5 = wedataReader('era5', self.config, eo_path=eo_path)
-        self.reader_seviri = wedataReader('seviri', self.config, eo_path=eo_path)
+
+        self.reader_era5 = wedataReader(group='era5', 
+                                        config=self.config, 
+                                        eo_path=eo_path,
+                                        normalised=True)
+        self.reader_seviri = wedataReader(group='seviri', 
+                                           config=self.config, 
+                                           eo_path=eo_path,
+                                           normalised=True)
+
+        self.reader_seviri.spatial_indices = self.apply_landmask(
+            self.reader_seviri.spatial_indices,
+            self.reader_seviri.land_mask,
+            col='mask'
+        )
+        self.reader_era5.spatial_indices = self.apply_landmask(
+            self.reader_era5.spatial_indices,
+            self.reader_seviri.land_mask,
+            col='mask'
+        )
 
         self.P = len(self.reader_seviri.spatial_indices)
         self.T = len(self.reader_seviri.temporal_indices) 
         self.samples = self.P * self.T
 
-        print(f"Initialized StatsDataset with {self.samples} samples.")
+        print(f"Initialized weDataset with {self.samples} samples.")
 
     def __len__(self):
         return self.samples
@@ -119,13 +140,19 @@ class weDataset(Dataset):
         p_index = idx % self.P
 
         time_idx, lat_idx, lon_idx = self.reader_seviri.get_indices(t_index=t_index, p_index=p_index)
-        X_seviri, target = self.reader_seviri.get_data((time_idx, lat_idx, lon_idx))
+        source_seviri = self.reader_seviri.get_data((time_idx, lat_idx, lon_idx), type="source")
+        target = self.reader_seviri.get_data((time_idx, lat_idx, lon_idx), type="target")
 
         time_idx, lat_idx, lon_idx = self.reader_era5.get_indices(t_index=t_index, p_index=p_index)
-        X_era5, _ = self.reader_era5.get_data((time_idx, lat_idx, lon_idx))
+        source_era5 = self.reader_era5.get_data((time_idx, lat_idx, lon_idx), type="source")
 
-        X_all = X_seviri | X_era5
+        source_all = source_seviri | source_era5
 
-        return X_all, target
+        return source_all, target
+
+    def apply_landmask(self, spatial_indices: pd.DataFrame, landmask: pd.DataFrame, col='mask'):
+        si = spatial_indices.merge(landmask, on=['row_idx','col_idx'], how='inner')
+        si = si.loc[si[col]].drop(columns=[col]).reset_index(drop=True)
+        return si
     
 

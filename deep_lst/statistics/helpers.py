@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from pathlib import Path
 
-def welford_incremental(prev_mean, prev_M2, prev_count, x_batch):
+def welford_incremental(prev_mean, prev_M2, prev_count, x_batch, float_dtype=torch.float32):
     """
     Vectorized incremental update of mean and M2 for a new batch.
     
@@ -20,6 +20,12 @@ def welford_incremental(prev_mean, prev_M2, prev_count, x_batch):
     Returns:
         new_mean, new_M2, new_count
     """
+    if not torch.is_floating_point(x_batch):
+        x_batch = x_batch.to(dtype=float_dtype)
+    else:
+        # Optionally standardize float precision
+        x_batch = x_batch.to(dtype=float_dtype)
+
     batch_count = x_batch.shape[0]
     batch_mean = x_batch.mean(dim=0)
     batch_delta = x_batch - batch_mean
