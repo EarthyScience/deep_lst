@@ -4,12 +4,12 @@ WORKDIR=/Net/Groups/BGI/people/mwessel/deep_lst
 cd $WORKDIR
 
 STORE_DIR="/Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/lst_store.zarr"
-MODALITY=seviri
+MODALITY=era5
 
 if [ "$MODALITY" = "era5" ]; then
     VARS=("stl1" "swvl1" "u10" "v10" "sp" "t2m" "d2m" "strd" "str" "ssr" "crr" "tcwv" "skt" "tvh" "tvl")
 else
-    VARS=("LST" "standard_error" "DEM" "AL-NI-DH" "FVC")
+    VARS=("LST" "standard_error" "AL-NI-DH" "FVC")
 fi
 
 wait_for_job() {

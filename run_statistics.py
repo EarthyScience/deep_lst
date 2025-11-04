@@ -42,8 +42,8 @@ eo_path = args.eo_path
 
 
 
-experiment_path = f"/Net/Groups/BGI/people/mwessel/deep_lst/experiments/filtered_{args.modality}{args.experiment}.parquet"
-output_path = f"/Net/Groups/BGI/people/mwessel/deep_lst/experiments/filtered_{args.modality}{args.experiment}_statistics.parquet"
+experiment_path = f"/Net/Groups/BGI/people/mwessel/deep_lst/experiments/new_{args.modality}{args.experiment}.parquet"
+output_path = f"/Net/Groups/BGI/people/mwessel/deep_lst/experiments/new_{args.modality}{args.experiment}_statistics.parquet"
 
 reader = wedataReader(group = args.modality,
                     channel=args.variable,

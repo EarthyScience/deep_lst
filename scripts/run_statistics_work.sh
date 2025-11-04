@@ -20,5 +20,5 @@ cd $WORKDIR
 ${WORKDIR}/.venv/bin/python3 ${WORKDIR}/run_statistics.py \
     --modality $MODALITY \
     --variable $VAR \
-    --experiment _johannisburg \
+    --experiment _johannisburg_ \
     --eo_path $STORE_DIR
