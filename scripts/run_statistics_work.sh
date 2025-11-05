@@ -4,7 +4,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=32Gb
-#SBATCH --time=00:20:00
+#SBATCH --time=08:00:00
 #SBATCH --output=scripts/out/eo_stats.%j
 #SBATCH --job-name=eo_stats
 
@@ -17,8 +17,10 @@ WORKDIR=/Net/Groups/BGI/people/mwessel/deep_lst
 
 cd $WORKDIR
 
-${WORKDIR}/.venv/bin/python3 ${WORKDIR}/run_statistics.py \
+${WORKDIR}/.venv/bin/python3 ${WORKDIR}/deep_lst/run_statistics.py \
     --modality $MODALITY \
     --variable $VAR \
-    --experiment _johannisburg_ \
     --eo_path $STORE_DIR
+
+
+# --experiment "_johannisburg" \

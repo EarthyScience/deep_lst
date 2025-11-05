@@ -3,13 +3,13 @@
 WORKDIR=/Net/Groups/BGI/people/mwessel/deep_lst
 cd $WORKDIR
 
-STORE_DIR="/Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/lst_store.zarr"
-MODALITY=era5
+STORE_DIR="/Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/lst_test.zarr"
+MODALITY=seviri
 
 if [ "$MODALITY" = "era5" ]; then
-    VARS=("tvh" "tvl") #("stl1" "swvl1" "u10" "v10" "sp" "t2m" "d2m" "strd" "str" "ssr" "crr" "tcwv" "skt" "tvh" "tvl")
+    VARS=("stl1" "swvl1" "u10" "v10" "sp" "t2m" "d2m" "strd" "str" "ssr" "crr" "tcwv" "skt" "tvh" "tvl")
 else
-    VARS=("LANDCOV") #("LST" "DEM" "standard_error" "AL-NI-DH" "FVC" "LANDCOV")
+    VARS=("LST" "DEM" "standard_error" "AL-NI-DH" "FVC" "LANDCOV")
 fi
 
 wait_for_job() {

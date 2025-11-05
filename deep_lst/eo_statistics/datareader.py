@@ -4,6 +4,9 @@ import time
 import pandas as pd
 import numpy as np
 
+import torch
+from torch.utils.data import Dataset
+
 class wedataReader:
     def __init__(self, 
                  group: str,
@@ -61,17 +64,61 @@ class wedataReader:
         print(f"Retained {len(df_land)} / {len(self.source)} points over land.")
         self.source = df_land
 
-    def get_temporal_indices(self):
+    def get_temporal_indices(self, frac):
         
-        if 'time' in self.channel.dims:
-            TIME_INDEX = pd.DatetimeIndex(self.channel['time'].values)
 
-            # Half-open selection: [start, end)
-            mask = (TIME_INDEX >= self.start_date) & (TIME_INDEX < self.end_date)
-            self.time_idxs = np.nonzero(mask)[0].astype(np.int64)
-            return self.time_idxs
-        else:
+        if "time" not in self.channel.dims:
             return None
+        
+        TIME_INDEX = pd.DatetimeIndex(self.channel['time'].values)
 
-    def get_spatial_indices(self):
-        return self.source.reset_index(drop=True)
+        # Half-open selection: [start, end)
+        mask = (TIME_INDEX >= self.start_date) & (TIME_INDEX < self.end_date)
+        self.time_idxs = np.nonzero(mask)[0].astype(np.int64)
+
+        rng = np.random.default_rng(42)
+        k = max(1, int(round(len(self.time_idxs) * frac))) # ensures at least one sample
+
+        return np.sort(rng.choice(self.time_idxs, size=k, replace=False))
+
+
+    def get_spatial_indices(self, frac):
+        return self.source.sample(frac=frac, random_state=42).reset_index(drop=True)
+
+
+class weDataset(Dataset):
+    def __init__(self, zarr_array, spatial_indices, temporal_indices = None):
+        """
+        zarr_array: xarray.DataArray or zarr.Array
+        indices: 3d pandas dataframe or array
+        source: pandas data frame, read from source parquet
+        """
+        self.data = zarr_array
+        self.spatial_indices = spatial_indices
+        self.temporal_indices = temporal_indices
+
+        self.P = len(self.spatial_indices)
+        self.T = len(self.temporal_indices) if self.temporal_indices is not None else 1
+        self.samples = self.P * self.T
+
+        print(f"Initialized StatsDataset with {self.samples} samples.")
+
+    def __len__(self):
+        return self.samples
+
+    def __getitem__(self, idx):
+
+        t_index = idx // self.P
+        p_index = idx % self.P
+
+        row, col, lat_idx, lon_idx = self.spatial_indices.iloc[p_index]
+
+        if self.temporal_indices is not None:
+            t = self.temporal_indices[t_index]
+            x = self.data[t, lat_idx, lon_idx].values  # lazy-load element order time, lat, lon
+            return x
+
+        else:
+            x = self.data[lat_idx, lon_idx].values 
+            return x
+            

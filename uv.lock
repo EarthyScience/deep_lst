@@ -499,6 +499,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "netcdf4" },
     { name = "odc" },
+    { name = "odc-geo" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "torch" },
@@ -508,8 +509,11 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-dev = [
+wedata = [
+    { name = "geopandas" },
+    { name = "odc" },
     { name = "odc-geo" },
+    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -520,6 +524,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.7" },
     { name = "netcdf4", specifier = ">=1.7.3" },
     { name = "odc", specifier = ">=0.1.2" },
+    { name = "odc-geo", specifier = ">=0.4.10" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "torch", specifier = ">=2.9.0" },
@@ -529,7 +534,12 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "odc-geo", specifier = ">=0.4.10" }]
+wedata = [
+    { name = "geopandas", specifier = ">=1.1.1" },
+    { name = "odc", specifier = ">=0.1.2" },
+    { name = "odc-geo", specifier = ">=0.4.10" },
+    { name = "tqdm", specifier = ">=4.67.1" },
+]
 
 [[package]]
 name = "donfig"

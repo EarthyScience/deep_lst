@@ -7,8 +7,6 @@ sys.path.append("/Net/Groups/BGI/people/mwessel/wedata")  # for wedata imports w
 
 from pathlib import Path
 from wedata.typehints import StatisticsDict
-from wedata.modalities import ModalityId
-from wedata.eo_zarr import EOZarrStore
 
 import pandas as pd
 import torch
@@ -16,9 +14,8 @@ import time
 import multiprocessing
 import argparse
 
-from deep_lst.statistics.datasets import weDataset
-from deep_lst.statistics.datareader import wedataReader
-from deep_lst.statistics.helpers import iterate_statistics, save_statistics
+from eo_statistics.datareader import wedataReader, weDataset
+from eo_statistics.helpers import iterate_statistics, save_statistics
 from torch.utils.data import DataLoader
 
 num_cpus = multiprocessing.cpu_count()  # should be 64
@@ -40,23 +37,21 @@ args = parser.parse_args()
 
 eo_path = args.eo_path
 
-
-
 experiment_path = f"/Net/Groups/BGI/people/mwessel/deep_lst/experiments/new_{args.modality}{args.experiment}.parquet"
 output_path = f"/Net/Groups/BGI/people/mwessel/deep_lst/experiments/new_{args.modality}{args.experiment}_statistics.parquet"
 
 reader = wedataReader(group = args.modality,
                     channel=args.variable,
                     start_date=pd.Timestamp('2017-01-01 00:00'),
-                    end_date=pd.Timestamp("2017-01-31 23:00"),
+                    end_date=pd.Timestamp("2017-12-31 23:00"),
                     experiment_path= experiment_path,
                     eo_path=eo_path)
 
 dataset = weDataset(zarr_array=reader.channel,
-                       spatial_indices=reader.get_spatial_indices(), 
-                       temporal_indices=reader.get_temporal_indices())
+                       spatial_indices=reader.get_spatial_indices(frac = 0.1), 
+                       temporal_indices=reader.get_temporal_indices(frac=0.1))
 
-loader = DataLoader(dataset, batch_size=256*4, shuffle=True, num_workers=num_cpus-2, 
+loader = DataLoader(dataset, batch_size=256, shuffle=True, num_workers=32, 
                     persistent_workers=True, prefetch_factor=1, 
                     drop_last=False)
 
