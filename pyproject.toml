@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastparquet>=2024.11.0",
+    "flatdict>=4.0.1",
     "geopandas>=1.1.1",
     "ipykernel>=7.0.1",
     "matplotlib>=3.10.7",
@@ -14,6 +15,7 @@ dependencies = [
     "odc-geo>=0.4.10",
     "pandas>=2.3.3",
     "pyarrow>=21.0.0",
+    "pytorch-lightning>=2.5.5",
     "torch>=2.9.0",
     "tqdm>=4.67.1",
     "xarray>=2025.10.1",
