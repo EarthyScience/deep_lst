@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import time
 import pandas as pd
 import numpy as np
-
 import torch
 from torch.utils.data import Dataset
 
@@ -11,39 +10,41 @@ class wedataReader:
     def __init__(self, 
                  config,
                  group,
-                 eo_path: str,
                  landmask = True,
-                 normalised=True):
+                 normalised: bool = True,
+                 split: str = "train"):
 
         self.config = config
         self.group = group
-
-        self.store = xr.open_zarr(eo_path, group=self.group)
-        self.channels_source = self.config[self.group]["channels"]["source"]
+        self.split = split
+        
+        self.store = xr.open_zarr(self.config["eo_path"], group=self.group)
+        self.channels_input = self.config[self.group]["channels"]["input"]
         self.channels_target = self.config[self.group]["channels"]["target"]
+        self.use_input = self.config[self.group]['use_input']
 
-        spatial_indices = pd.read_parquet(self.config[self.group]['spatial_indices'])
+        spatial_indices = pd.read_parquet(self.config["experiment_path"] + self.config[group]["spatial_indices"])
         self.spatial_indices = spatial_indices[['row_idx', 'col_idx', 'lat_idx', 'lon_idx']].astype('int64').reset_index(drop=True)
 
         self.temporal_indices = self._time_indices()
 
-        self.statistics = pd.read_parquet(self.config[self.group]['statistics'])
+        self.statistics = pd.read_parquet(self.config["experiment_path"] + self.config[group]['statistics'])
         self._create_statistics_lookup()
 
-        if landmask:
-            self.set_landmask()
-
         self.normalised = normalised
+
+        if landmask:
+            self._create_landmask()
 
     def _create_statistics_lookup(self):
         self.mean_lookup = self.statistics.set_index('variable')["mean"]
         self.std_lookup = self.statistics.set_index('variable')["std"]
     
     def _time_indices(self):
-        
-        time_index = pd.DatetimeIndex(pd.date_range(start='2017-01-01 00:00', end='2022-12-31 23:00', freq='h'))
 
-        mask = (time_index >= self.config['train_start']) & (time_index < self.config['train_end'])
+        time_index = pd.DatetimeIndex(pd.date_range(start=self.config['index_start'], end=self.config['index_end'], freq='h'))
+
+        mask = (time_index >= self.config[f"{self.split}_start"]) & (time_index < self.config[f"{self.split}_end"])
         time_idxs = np.nonzero(mask)[0].astype(np.int64)
 
         return time_idxs
@@ -52,21 +53,38 @@ class wedataReader:
 
         row_idx, col_idx, lat_idx, lon_idx = self.spatial_indices.iloc[p_index]
         time_idx = self.temporal_indices[t_index]
-        return time_idx, lat_idx, lon_idx
+        return (time_idx, lat_idx, lon_idx)
+    
+    def get_input(self, sample_indices):
+        """
+        Returns inputs according to self.use_input:
+        - if 'dynamic' in use_input: include dynamic vars
+        - if 'static' in use_input: include static vars
+        - if both are present: merged dict of both
+        """
+        
+        selected = self.use_input if isinstance(self.use_input, (list, tuple, set)) else [self.use_input]
 
-    def get_data(self, sample_indices, type):
+        data = {}
+        if 'dynamic' in selected:
+            data.update(self._get_data(sample_indices, type='dynamic'))
+        if 'static' in selected:
+            data.update(self._get_data(sample_indices, type='static'))
+        return data
 
-        if type == "source":
-            X_dyn = {var: torch.from_numpy(self.store[var][sample_indices[0], sample_indices[1], sample_indices[2]].values) for var in self.channels_source["dynamic"]}
-            X_stat = {var: torch.from_numpy(self.store[var][sample_indices[1], sample_indices[2]].values) for var in self.channels_source["static"]}
-            data = X_dyn | X_stat
-
-        if type == "target":
-            data = {var: torch.from_numpy(self.store[var][sample_indices[0], sample_indices[1], sample_indices[2]].values) for var in self.channels_target}
-
+    def _get_data(self, sample_indices, type):
+        if type == "dynamic":
+            data = {var: torch.from_numpy(self.store[var][sample_indices[0], sample_indices[1], sample_indices[2]].values) for var in self.channels_input[type]}
+        else:
+            data = {var: torch.from_numpy(self.store[var][sample_indices[1], sample_indices[2]].values) for var in self.channels_input[type]}
         if self.normalised:
             data = {var: self.normalise(data, var) for var in data.keys()}
+        return data
 
+    def get_target(self, sample_indices, type= None):
+        data = {var: torch.from_numpy(self.store[var][sample_indices[0], sample_indices[1], sample_indices[2]].values) for var in self.channels_target}
+        if self.normalised:
+            data = {var: self.normalise(data, var) for var in data.keys()}
         return data
     
     def normalise(self, data, var):
@@ -74,8 +92,8 @@ class wedataReader:
 
     def denormalise(self, data, var):
         return data[var]*self.std_lookup[var] + self.mean_lookup[var]
-    
-    def set_landmask(self):
+
+    def _create_landmask(self):
 
         if self.group == "seviri":
             mask = "LWMASK"
@@ -96,7 +114,8 @@ class wedataReader:
 class weDataset(Dataset):
     def __init__(self, 
                  config,
-                 eo_path: str):
+                 split: str = "train"
+                 ):
         """
         zarr_array: xarray.DataArray or zarr.Array
         indices: 3d pandas dataframe or array
@@ -104,14 +123,15 @@ class weDataset(Dataset):
         """
 
         self.config = config
+        self.split = split
 
         self.reader_era5 = wedataReader(group='era5', 
                                         config=self.config, 
-                                        eo_path=eo_path,
+                                        split=self.split,
                                         normalised=True)
         self.reader_seviri = wedataReader(group='seviri', 
-                                           config=self.config, 
-                                           eo_path=eo_path,
+                                           config=self.config,
+                                           split=self.split,
                                            normalised=True)
 
         self.reader_seviri.spatial_indices = self.apply_landmask(
@@ -139,17 +159,21 @@ class weDataset(Dataset):
         t_index = idx // self.P
         p_index = idx % self.P
 
-        time_idx, lat_idx, lon_idx = self.reader_seviri.get_indices(t_index=t_index, p_index=p_index)
-        source_seviri = self.reader_seviri.get_data((time_idx, lat_idx, lon_idx), type="source")
-        target = self.reader_seviri.get_data((time_idx, lat_idx, lon_idx), type="target")
+        sample_indices_seviri = self.reader_seviri.get_indices(t_index=t_index, p_index=p_index)
+        input_seviri = self.reader_seviri.get_input(sample_indices_seviri)
 
-        time_idx, lat_idx, lon_idx = self.reader_era5.get_indices(t_index=t_index, p_index=p_index)
-        source_era5 = self.reader_era5.get_data((time_idx, lat_idx, lon_idx), type="source")
+        sample_indices_era5 = self.reader_era5.get_indices(t_index=t_index, p_index=p_index)
+        input_era5 = self.reader_era5.get_input(sample_indices_era5)
 
-        source_all = source_seviri | source_era5
+        input_combined = input_seviri | input_era5
 
-        return source_all, target
+        target = self.reader_seviri.get_target(sample_indices_seviri)
 
+        return input_combined, target
+    
+    def _get_from_dict(self, data_dict, maplist):
+        return {data_dict[key] for key in maplist}
+    
     def apply_landmask(self, spatial_indices: pd.DataFrame, landmask: pd.DataFrame, col='mask'):
         si = spatial_indices.merge(landmask, on=['row_idx','col_idx'], how='inner')
         si = si.loc[si[col]].drop(columns=[col]).reset_index(drop=True)

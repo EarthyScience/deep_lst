@@ -48,8 +48,8 @@ reader = wedataReader(group = args.modality,
                     eo_path=eo_path)
 
 dataset = weDataset(zarr_array=reader.channel,
-                       spatial_indices=reader.get_spatial_indices(frac = 0.1), 
-                       temporal_indices=reader.get_temporal_indices(frac=0.1))
+                       spatial_indices=reader.get_spatial_indices(frac = 0.05), 
+                       temporal_indices=reader.get_temporal_indices(frac=0.05))
 
 loader = DataLoader(dataset, batch_size=256, shuffle=True, num_workers=32, 
                     persistent_workers=True, prefetch_factor=1, 

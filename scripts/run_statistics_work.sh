@@ -4,7 +4,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=32Gb
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=scripts/out/eo_stats.%j
 #SBATCH --job-name=eo_stats
 
