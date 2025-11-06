@@ -5,34 +5,52 @@ print(sys.path)
 sys.path.append("/Net/Groups/BGI/people/mwessel/deep_lst")  # for deep_lst imports without installation
 
 from deep_lst.misc.utils import open_config
-from deep_lst.mlp.datareader import wedataReader, weDataset
 from deep_lst.mlp.datamodule import MLPDataModule
 from deep_lst.mlp.model import MLP
+from pytorch_lightning import loggers
+from lightning_fabric.plugins.environments import LightningEnvironment
 
 import pytorch_lightning as pl
 import time 
+import torch
 
-config = open_config("johannisburg")
+def main():
 
-print(config)
+    config = open_config(experiment="johannisburg", path="./experiments")
+    print(config)
 
-input_dim = 5
-output_dim = 1
-hidden_dim = 64
+    torch.set_float32_matmul_precision('medium')
 
-model = MLP(input_dim=input_dim, 
-            hidden_dim=hidden_dim, 
-            output_dim=output_dim)
+    data_module = MLPDataModule(config=config, 
+                                batch_size=256, 
+                                num_workers=30)
+    data_module.setup()
 
-data_module = MLPDataModule(config=config, 
-                            batch_size=256, 
-                            num_workers=8)
+    hidden_sizes = [128, 64, 128]  # Example hidden layer sizes
 
-trainer = pl.Trainer(max_epochs=10, 
-                     devices=1)
+    model = MLP(input_size=len(data_module.feature_list), 
+                hidden_size=hidden_sizes, 
+                output_size=len(data_module.target_list))
 
-start_time = time.time()
-print("Fitting the model.")
-trainer.fit(model, datamodule=data_module)
-print("Time required for fitting ... minutes ...:", (time.time() - start_time)/60)
+    csv_logger = loggers.CSVLogger(
+        save_dir="./experiments/johannisburg/logs/",
+        name="mlp_logs"
+    )
 
+    use_gpu = torch.cuda.is_available()
+    ngpu = torch.cuda.device_count() 
+    print("GPU:", torch.cuda.get_device_name(0))
+
+    trainer = pl.Trainer(max_epochs=10, 
+                        logger=csv_logger,
+                        accelerator="gpu",
+                        devices=ngpu,
+                        strategy="ddp")
+
+    start_time = time.time()
+    print("Fitting the model.")
+    trainer.fit(model, datamodule=data_module)
+    print("Time required for fitting ... minutes ...:", (time.time() - start_time)/60)
+
+if __name__ == "__main__":
+    main()
