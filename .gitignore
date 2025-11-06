@@ -1,4 +1,6 @@
 scripts/out
+scripts/bin
+
 experiments/
 notebooks/
 plots/
