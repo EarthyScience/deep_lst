@@ -1,4 +1,6 @@
 import pytorch_lightning as pl
+import torch
+
 from torch.utils.data import DataLoader
 from deep_lst.mlp.datareader import wedataReader, weDataset
 
@@ -12,20 +14,12 @@ class MLPDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
 
-        self.train_dataset = weDataset(
-            config=self.config,
-            split='train'
-        )
+        self.train_dataset = weDataset(config=self.config, split='train')
+        self.val_dataset = weDataset(config=self.config, split='val')
+        self.test_dataset = weDataset(config=self.config, split='test')
 
-        self.val_dataset = weDataset(
-            config=self.config,
-            split='val'
-        )
-
-        self.test_dataset = weDataset(
-            config=self.config,
-            split='test'
-        )
+        self.feature_list = self.train_dataset.feature_list
+        self.target_list = ['LST']  
 
     def train_dataloader(self):
 
@@ -35,7 +29,8 @@ class MLPDataModule(pl.LightningDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=True
+            drop_last=True,
+            collate_fn=self._collate_fn
         )
     
     def val_dataloader(self):
@@ -46,7 +41,8 @@ class MLPDataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=False
+            drop_last=False,
+            collate_fn=self._collate_fn
         )
     
     def test_dataloader(self):
@@ -57,6 +53,23 @@ class MLPDataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=False
+            drop_last=False,
+            collate_fn=self._collate_fn
         )
     
+    def _collate_fn(self, batch):
+        inputs_list, targets_list = zip(*batch) 
+        
+        X_rows = []
+        for inp in inputs_list:
+            # flatten scalars/1D to 1D and concatenate in your desired key order
+            row = torch.cat([inp[k].float().reshape(-1) for k in self.feature_list], dim=0)
+            X_rows.append(row)
+        X = torch.stack(X_rows, dim=0)  # [B, F]
+
+        y_rows = []
+        for tgt in targets_list:
+            y_row = torch.cat([tgt[k].float().reshape(-1) for k in self.target_list], dim=0)
+            y_rows.append(y_row)
+        y = torch.stack(y_rows, dim=0)
+        return X, y

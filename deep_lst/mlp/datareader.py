@@ -6,6 +6,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from deep_lst.misc.filter import SpatialFilter, TemporalFilter
+from deep_lst.misc.utils import build_feature_list
+
 class wedataReader:
     def __init__(self, 
                  config,
@@ -150,6 +153,8 @@ class weDataset(Dataset):
         self.samples = self.P * self.T
 
         print(f"Initialized weDataset with {self.samples} samples.")
+
+        self.feature_list = build_feature_list(self.config) 
 
     def __len__(self):
         return self.samples
