@@ -176,9 +176,6 @@ class weDataset(Dataset):
 
         return input_combined, target
     
-    def _get_from_dict(self, data_dict, maplist):
-        return {data_dict[key] for key in maplist}
-    
     def apply_landmask(self, spatial_indices: pd.DataFrame, landmask: pd.DataFrame, col='mask'):
         si = spatial_indices.merge(landmask, on=['row_idx','col_idx'], how='inner')
         si = si.loc[si[col]].drop(columns=[col]).reset_index(drop=True)

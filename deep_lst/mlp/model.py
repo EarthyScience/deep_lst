@@ -8,6 +8,8 @@ class MLP(LightningModule):
     def __init__(self, input_size, hidden_size, output_size, activation=nn.ReLU(), dropout=0.1):
         super(MLP, self).__init__()
 
+        self.save_hyperparameters()
+
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
@@ -47,6 +49,8 @@ class MLP(LightningModule):
         y_hat = y_hat[cloud_mask]
 
         loss = F.mse_loss(y_hat, y)
+
+        self.log("train_valid_count", cloud_mask.sum(), reduce_fx="sum")
         self.log('train_loss', loss, sync_dist=True)
 
         return loss
@@ -61,7 +65,13 @@ class MLP(LightningModule):
         y = y[cloud_mask]
         y_hat = y_hat[cloud_mask]
 
+        if cloud_mask.sum() == 0:
+            return 0.0
+
         loss = F.mse_loss(y_hat, y)
+
+
+        self.log("val_valid_count", cloud_mask.sum(), reduce_fx="sum")
         self.log('val_loss', loss, sync_dist=True)
 
         return loss

@@ -1,7 +1,6 @@
 import os
-print(os.getcwd())
 import sys
-print(sys.path)
+
 sys.path.append("/Net/Groups/BGI/people/mwessel/deep_lst")  # for deep_lst imports without installation
 
 from deep_lst.misc.utils import open_config
@@ -13,6 +12,15 @@ from lightning_fabric.plugins.environments import LightningEnvironment
 import pytorch_lightning as pl
 import time 
 import torch
+
+CSV_LOGGER = loggers.CSVLogger(
+        save_dir="./experiments/johannisburg/logs/",
+        name="mlp_logs"
+    )
+WANB_LOGGER = loggers.WandbLogger(
+        project="deep_lst",
+        name="mlp_johannisburg"
+    )
 
 def main():
 
@@ -32,17 +40,12 @@ def main():
                 hidden_size=hidden_sizes, 
                 output_size=len(data_module.target_list))
 
-    csv_logger = loggers.CSVLogger(
-        save_dir="./experiments/johannisburg/logs/",
-        name="mlp_logs"
-    )
-
     use_gpu = torch.cuda.is_available()
     ngpu = torch.cuda.device_count() 
     print("GPU:", torch.cuda.get_device_name(0))
 
     trainer = pl.Trainer(max_epochs=10, 
-                        logger=csv_logger,
+                        logger=[CSV_LOGGER, WANB_LOGGER],
                         accelerator="gpu",
                         devices=ngpu,
                         strategy="ddp")
