@@ -6,29 +6,34 @@ import numpy as np
 
 import torch
 from torch.utils.data import Dataset
+from misc.filter import SpatialFilter, TemporalFilter
 
 class wedataReader:
     def __init__(self, 
                  group: str,
                  channel: str,
-                 start_date: pd.Timestamp,
-                 end_date: pd.Timestamp,
-                 experiment_path: str,
-                 eo_path: str,
+                 config: dict,
                  lw_mask = True):
 
         self.group = group
-        self.store = xr.open_zarr(eo_path, group=self.group)
-        experiment = pd.read_parquet(experiment_path)
-        self.source = experiment[['row_idx', 'col_idx', 'lat_idx', 'lon_idx']].astype('int64')
-        self.start_date = start_date
-        self.end_date = end_date
+        self.store = xr.open_zarr(config['eo_path'], group=self.group)
+        self.config = config
+
         self.channel = self._select_channel(channel)
 
-        if lw_mask:
-            self.apply_filtering()
-            
-        print(f"wedataReader initialized for channel {channel} from {start_date} to {end_date}.")
+        experiment = pd.read_parquet(self.config["experiment_path"] + self.config[group]["spatial_indices"])
+        self.spatial_indices = experiment[['row_idx', 'col_idx', 'lat_idx', 'lon_idx']].astype('int64')
+
+        self.time_index = self._time_index()
+        self.start_date = config['stats_start']
+        self.end_date = config['stats_end']
+
+        self.lw_mask = lw_mask
+
+        self.spatial_filter = SpatialFilter(self.store, spatial_indices=self.spatial_indices)
+        self.temporal_filter = TemporalFilter(self.store, time_index=self.time_index)
+
+        print(f"wedataReader initialized for channel {channel} from {self.start_date} to {self.end_date}.")
         print(f"Channel dimensions: {self.channel.dims}")
         print(f"Channel shape: {self.channel.shape}")
 
@@ -36,55 +41,46 @@ class wedataReader:
         channel_arr = self.store[channel]
         return channel_arr
     
-    def apply_filtering(self):
+    def _time_index(self):
+        time_index = pd.DatetimeIndex(pd.date_range(start=self.config['index_start'], end=self.config['index_end'], freq='h'))
+        return time_index
 
-        if self.group == "seviri":
-            mask = "LWMASK"
-        else:
-            mask = "lsm"
+    def get_temporal_indices(self, frac=None, stratify = None):
 
-        mask_da = self.store[mask]
-        print(f"Applying land water mask with dims: {mask_da.dims}, shape: {mask_da.shape}")
-
-        # Drop time if present
-        if "time" in mask_da.dims:
-            print("Mask has a time dimension; using first timestep.")
-            mask_da = mask_da.isel(time=0)
-
-        mask_arr = mask_da.values  # shape (lat, lon)
-
-        n_lat, n_lon = mask_arr.shape
-        assert self.source["lat_idx"].max() < n_lat and self.source["lon_idx"].max() < n_lon, \
-            f"indices out of range: lat_idx max={self.source['lat_idx'].max()}, lon_idx max={self.source['lon_idx'].max()}"
-
-
-        land_mask = mask_arr[self.source["lat_idx"].to_numpy(), self.source["lon_idx"].to_numpy()] == 1
-        df_land = self.source.loc[land_mask].reset_index(drop=True)
-
-        print(f"Retained {len(df_land)} / {len(self.source)} points over land.")
-        self.source = df_land
-
-    def get_temporal_indices(self, frac):
+        """
+        Docstring for get_temporal_indices
         
-
+        :param self: Description
+        :param frac: Description
+        :param stratify: Description
+        """
         if "time" not in self.channel.dims:
+            print("Data has no time dimension, skipping temporal indices.")
             return None
         
-        TIME_INDEX = pd.DatetimeIndex(self.channel['time'].values)
+        self.temporal_indices = self.temporal_filter.apply_mask(self.start_date, self.end_date)
+        print(self.temporal_indices)
+        
+        if frac is not None:
+            if stratify is not None:
+                print("Applying stratification for temporal indices.")
+                self.temporal_indices = self.temporal_filter.apply_stratification(frac=frac, by=stratify)
+            else:
+                self.temporal_indices = self.temporal_filter.apply_rgn(frac=frac)
 
-        # Half-open selection: [start, end)
-        mask = (TIME_INDEX >= self.start_date) & (TIME_INDEX < self.end_date)
-        self.time_idxs = np.nonzero(mask)[0].astype(np.int64)
+        return self.temporal_indices
 
-        rng = np.random.default_rng(42)
-        k = max(1, int(round(len(self.time_idxs) * frac))) # ensures at least one sample
+    def get_spatial_indices(self, frac = None):
+        
+        
+        if self.lw_mask:
+            self.spatial_indices = self.spatial_filter.apply_mask(masking="land")
+        if frac is not None:
+            self.spatial_indices = self.spatial_filter.apply_rgn(frac)
 
-        return np.sort(rng.choice(self.time_idxs, size=k, replace=False))
+        return self.spatial_indices
 
-
-    def get_spatial_indices(self, frac):
-        return self.source.sample(frac=frac, random_state=42).reset_index(drop=True)
-
+        
 
 class weDataset(Dataset):
     def __init__(self, zarr_array, spatial_indices, temporal_indices = None):
@@ -97,11 +93,16 @@ class weDataset(Dataset):
         self.spatial_indices = spatial_indices
         self.temporal_indices = temporal_indices
 
+        if self.temporal_indices is not None:
+            assert "time" in getattr(self.data, "dims", ()), \
+                "temporal_indices given but data has no 'time' dimension"
+
         self.P = len(self.spatial_indices)
         self.T = len(self.temporal_indices) if self.temporal_indices is not None else 1
         self.samples = self.P * self.T
 
         print(f"Initialized StatsDataset with {self.samples} samples.")
+        print(f"Initialized self.temporal_indices {self.temporal_indices}.")
 
     def __len__(self):
         return self.samples

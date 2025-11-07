@@ -24,7 +24,7 @@ wait_for_job() {
 last_jobid=""
 for v in "${VARS[@]}"; do
   wait_for_job "$last_jobid"
-  out=$(sbatch --export=ALL,VAR="$v",MODALITY="$MODALITY",STORE_DIR="$STORE_DIR" scripts/run_statistics_work.sh)
+  out=$(sbatch --export=ALL,VAR="$v",MODALITY="$MODALITY",STORE_DIR="$STORE_DIR" scripts/get_eo_statistics.sh)
   last_jobid=$(sed -E 's/[^0-9]*([0-9]+).*/\1/' <<< "$out")
   echo "Submitted $v as job ${last_jobid}"
 done

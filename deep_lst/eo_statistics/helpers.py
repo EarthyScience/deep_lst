@@ -104,19 +104,22 @@ def to_scalar(x):
         return float(np.array(x).ravel()[0])
     return float(x) if np.isscalar(x) else np.nan
 
-def save_statistics(stats_dict, variable_name, output_path):
+def save_statistics(statistics, variable_name, stratification, time_fraction, space_fraction, output_path):
     """
     Append a single variable's statistics to a Parquet file.
     """
     # Convert to DataFrame
     df = pd.DataFrame([{
         "variable": variable_name,
-        "mean": to_scalar(stats_dict["mean"]),
-        "std": to_scalar(stats_dict["std"]),
-        "min": to_scalar(stats_dict["min"]),
-        "max": to_scalar(stats_dict["max"]),
-        "nan_count": int(to_scalar(stats_dict["nan_count"])),
-        "sample_count": int(to_scalar(stats_dict["sample_count"]))
+        "mean": to_scalar(statistics[0]),
+        "std": to_scalar(statistics[1]),
+        "min": to_scalar(statistics[2]),
+        "max": to_scalar(statistics[3]),
+        "nan_count": int(to_scalar(statistics[4])),
+        "sample_count": int(to_scalar(statistics[5])),
+        "stratification": stratification,
+        "time_fraction": time_fraction,
+        "space_fraction": space_fraction
     }])
 
     # Ensure directory exists
