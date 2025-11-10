@@ -37,9 +37,10 @@ class MLPDataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.val_dataset,
-            batch_size=512,
+            batch_size=self.batch_size*4,
             shuffle=True,
             num_workers=self.num_workers,
+            persistent_workers=True,  
             pin_memory=True,
             drop_last=False,
             collate_fn=self._collate_fn
@@ -53,6 +54,7 @@ class MLPDataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
+            persistent_workers=True,  
             drop_last=False,
             collate_fn=self._collate_fn
         )
