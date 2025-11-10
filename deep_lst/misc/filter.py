@@ -21,8 +21,10 @@ class SpatialFilter:
         # Drop time if present
         if "time" in mask.dims:
             mask = mask.isel(time=0)
+        
+        self.land_mask = mask.values[self.spatial_indices["lat_idx"].to_numpy(), self.spatial_indices["lon_idx"].to_numpy()] == 1 # land should be 1, inland water 3
 
-        return mask.values  # shape (lat, lon)
+        return self.land_mask  # shape (lat, lon)
 
 
     def apply_mask(self, masking = "land"):
@@ -30,8 +32,7 @@ class SpatialFilter:
         if masking == "land":
             mask = self._land_mask()
 
-        index_mask = mask[self.spatial_indices["lat_idx"].to_numpy(), self.spatial_indices["lon_idx"].to_numpy()] == 1
-        self.spatial_indices = self.spatial_indices.loc[index_mask].reset_index(drop=True)
+        self.spatial_indices = self.spatial_indices.loc[mask].reset_index(drop=True)
 
         return self.spatial_indices
     

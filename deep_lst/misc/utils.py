@@ -1,10 +1,23 @@
 import yaml
 import os
+from pathlib import Path
 
 def open_config(experiment: str, path: str = "deep_lst/experiments") -> dict:
     path = os.path.expanduser(path)
     with open(f"{path}/{experiment}/config.yaml", 'r') as stream:
         return yaml.safe_load(stream)
+
+def open_hparams(experiment: str, version: str, path: str = "deep_lst/experiments") -> dict:
+    path = os.path.expanduser(path)
+    with open(f"{path}/{experiment}/logs/prototype_{experiment}/{version}/hparams.yaml", 'r') as stream:
+        return yaml.safe_load(stream)
+    
+def load_checkpoint(experiment, version, name = "prototype", path = ".experiments/"):
+    checkpoints_root = Path(path+experiment + f"/logs/{name}_{experiment}/" + version + "/checkpoints/")
+    print(f"Looking for checkpoints in {checkpoints_root}")
+    checkpoint_path = sorted(checkpoints_root.glob("*.ckpt"))[-1]
+    return checkpoint_path
+
 
 def build_feature_list(config: dict) -> list:
     """
