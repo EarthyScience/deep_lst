@@ -8,7 +8,7 @@ class MLP(LightningModule):
     def __init__(self, input_size, hidden_size, output_size, activation=nn.ReLU(), dropout=0.1):
         super(MLP, self).__init__()
 
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['activation'])
 
         self.input_size = input_size
         self.hidden_size = hidden_size

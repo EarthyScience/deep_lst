@@ -13,42 +13,55 @@ import pytorch_lightning as pl
 import time 
 import torch
 
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--experiment", required=True, type=str, help="Name of the experiment.")
+args = parser.parse_args()
+
+print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
+print("SLURM_NNODES:", os.environ.get("SLURM_NNODES"))
+print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS")) 
+
+
 CSV_LOGGER = loggers.CSVLogger(
-        save_dir="./experiments/johannisburg/logs/",
-        name="mlp_logs"
+        save_dir=f"./experiments/{args.experiment}/logs/",
+        name=f"prototype_{args.experiment}"
     )
 WANB_LOGGER = loggers.WandbLogger(
         project="deep_lst",
-        name="mlp_johannisburg"
+        name=f"prototype_{args.experiment}"
     )
 
 def main():
 
-    config = open_config(experiment="johannisburg", path="./experiments")
+    config = open_config(experiment=args.experiment, path="./experiments")
     print(config)
 
     torch.set_float32_matmul_precision('medium')
 
     data_module = MLPDataModule(config=config, 
-                                batch_size=256, 
-                                num_workers=30)
+                                batch_size=config['batch_size'], 
+                                num_workers=16)
     data_module.setup()
 
-    hidden_sizes = [128, 64, 128]  # Example hidden layer sizes
+    hidden_sizes = config['hidden_sizes']  # Example hidden layer sizes
 
     model = MLP(input_size=len(data_module.feature_list), 
                 hidden_size=hidden_sizes, 
                 output_size=len(data_module.target_list))
 
-    use_gpu = torch.cuda.is_available()
     ngpu = torch.cuda.device_count() 
     print("GPU:", torch.cuda.get_device_name(0))
 
-    trainer = pl.Trainer(max_epochs=10, 
+    trainer = pl.Trainer(max_epochs=config['max_epochs'], 
                         logger=[CSV_LOGGER, WANB_LOGGER],
                         accelerator="gpu",
                         devices=ngpu,
-                        strategy="ddp")
+                        num_nodes=2,
+                        strategy="ddp",
+                        #limit_train_batches=0.5,
+                        limit_val_batches=0.5)
 
     start_time = time.time()
     print("Fitting the model.")
