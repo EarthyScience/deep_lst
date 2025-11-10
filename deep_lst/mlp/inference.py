@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 
 from deep_lst.mlp.datamodule import MLPDataModule
 from deep_lst.mlp.model import MLP
-from deep_lst.mlp.datareader import wedataReader
+from deep_lst.mlp.datareader import wedataReader, weTestDataset
 
 from deep_lst.misc.filter import SpatialFilter, TemporalFilter
 
@@ -25,28 +25,31 @@ from deep_lst.misc.normalisation import Normaliser
 from torch.utils.data import DataLoader, Dataset
 
 
-def inference(config,
-              hparams = None):
+def inference(config):
 
-    data_module = MLPDataModule(config=config, 
-                                batch_size=config['batch_size']*4, 
-                                num_workers=4)
-    data_module.setup()
+    testData = weTestDataset(config=config, start_time=config['test_start'], end_time=config['test_end'])
+    test_loader = DataLoader(
+        testData,
+        batch_size=config['batch_size']*2,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        drop_last=False,
+        collate_fn=testData._collate_fn
+    )
 
     hidden_sizes = config['hidden_sizes']  # Example hidden layer sizes
 
-    model = MLP(input_size=len(data_module.feature_list), 
+    model = MLP(input_size=len(testData.feature_list), 
                 hidden_size=hidden_sizes, 
-                output_size=len(data_module.target_list))
+                output_size=len(testData.target_list))
 
-    checkpoint_path = load_checkpoint(experiment="baseline", version="version_0", path="./deep_lst/experiments/")
+    checkpoint_path = load_checkpoint(experiment=config['experiment_name'], version="version_0", path="./experiments/")
     print(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
 
     model.eval()
-
-    test_loader = data_module.test_dataloader()
 
     predictions = []
     targets = []
@@ -69,16 +72,16 @@ def inference(config,
     targets = normaliser.denormalise(targets, var='LST')
 
     df = pd.DataFrame({"predictions": predictions.flatten(), "targets": targets.flatten()})
-    df.to_parquet(config['experiment_path'] + "logs/prototype_baseline/version_0/inference_results.parquet")
-    
+    df.to_parquet(config['experiment_path'] + f"logs/prototype_{config['experiment_name']}/version_0/inference_results.parquet")
+
     return np.asarray(predictions), np.asarray(targets)
 
 
 if __name__ == "__main__":
     
-    config = open_config(experiment="baseline", path="./deep_lst/experiments")
+    config = open_config(experiment="baseline_0", path="./experiments")
     print(config)
-    predictions, targets = inference(config=config, hparams=None)
+    predictions, targets = inference(config=config)
 
     print("Predictions shape:", predictions.shape)
     print("Targets shape:", targets.shape)

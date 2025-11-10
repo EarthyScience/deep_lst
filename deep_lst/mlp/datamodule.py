@@ -2,7 +2,7 @@ import pytorch_lightning as pl
 import torch
 
 from torch.utils.data import DataLoader
-from deep_lst.mlp.datareader import wedataReader, weDataset
+from deep_lst.mlp.datareader import weTrainDataset
 
 class MLPDataModule(pl.LightningDataModule):
 
@@ -14,12 +14,11 @@ class MLPDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
 
-        self.train_dataset = weDataset(config=self.config, split='train')
-        self.val_dataset = weDataset(config=self.config, split='val')
-        self.test_dataset = weDataset(config=self.config, split='test')
+        self.train_dataset = weTrainDataset(config=self.config, split='train')
+        self.val_dataset = weTrainDataset(config=self.config, split='val')
 
         self.feature_list = self.train_dataset.feature_list
-        self.target_list = ['LST']  
+        self.target_list = self.train_dataset.target_list
 
     def train_dataloader(self):
 
@@ -42,19 +41,6 @@ class MLPDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             persistent_workers=True,  
             pin_memory=True,
-            drop_last=False,
-            collate_fn=self._collate_fn
-        )
-    
-    def test_dataloader(self):
-
-        return DataLoader(
-            self.test_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            persistent_workers=True,  
             drop_last=False,
             collate_fn=self._collate_fn
         )
