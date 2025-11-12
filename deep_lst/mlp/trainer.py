@@ -60,8 +60,8 @@ def main():
                         devices=ngpu,
                         num_nodes=2,
                         strategy="ddp",
-                        #limit_train_batches=0.5,
-                        limit_val_batches=0.5)
+                        limit_train_batches=config['train_batches_fraction'],
+                        limit_val_batches=config['train_batches_fraction'])
 
     start_time = time.time()
     print("Fitting the model.")

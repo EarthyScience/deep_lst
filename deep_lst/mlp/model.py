@@ -39,7 +39,10 @@ class MLP(LightningModule):
         return layers
     
     def training_step(self, batch, batch_idx):
+
         X, y = batch
+        # impute samples with missing FVC with zero (feature mean after normalisation)
+        X = torch.nan_to_num(X, nan=0.0)
 
         y_hat = self.forward(X)
 
@@ -50,13 +53,20 @@ class MLP(LightningModule):
 
         loss = F.mse_loss(y_hat, y)
 
+        if torch.isnan(loss):
+            print("NaN loss! y_hat stats:", y_hat.min(), y_hat.max())
+            print("y stats:", y.min(), y.max())
+
         self.log("train_valid_count", cloud_mask.sum(), reduce_fx="sum")
         self.log('train_loss', loss, sync_dist=True)
 
         return loss
     
     def validation_step(self, batch, batch_idx):  
+
         X, y = batch
+        # impute samples with missing FVC with zero (feature mean after normalisation)
+        X = torch.nan_to_num(X, nan=0.0)
 
         y_hat = self.forward(X)
 
@@ -78,5 +88,8 @@ class MLP(LightningModule):
     
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        for name, param in self.named_parameters():
+            if torch.isnan(param).any():
+                print(f"NaN in parameter {name}")
         return optimizer
     

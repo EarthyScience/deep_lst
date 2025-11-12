@@ -173,6 +173,24 @@ class weTrainDataset(Dataset):
 
         return input_combined, target
     
+    def _collate_fn(self, batch):
+
+        inputs_list, targets_list = zip(*batch) 
+            
+        X_rows = []
+        for inp in inputs_list:
+            # flatten scalars/1D to 1D and concatenate in your desired key order
+            row = torch.cat([inp[k].float().reshape(-1) for k in self.feature_list], dim=0)
+            X_rows.append(row)
+            X = torch.stack(X_rows, dim=0)  # [B, F]
+
+        y_rows = []
+        for tgt in targets_list:
+            y_row = torch.cat([tgt[k].float().reshape(-1) for k in self.target_list], dim=0)
+            y_rows.append(y_row)
+        y = torch.stack(y_rows, dim=0)
+        return X, y
+    
     
 class weTestDataset(Dataset):
     def __init__(self, 
