@@ -8,32 +8,30 @@ if str(ROOT) not in sys.path:
 
 print(os.getcwd())  # ensure we are in deep_lst/deep_lst/mlp
 
-import xarray as xr
 import numpy as np
 import torch
 import pandas as pd
-import matplotlib.pyplot as plt
+import argparse
 
-from deep_lst.mlp.datamodule import MLPDataModule
 from deep_lst.mlp.model import MLP
-from deep_lst.mlp.datareader import wedataReader, weTestDataset
-
-from deep_lst.misc.filter import SpatialFilter, TemporalFilter
-
-from deep_lst.misc.utils import open_config, open_hparams, load_checkpoint
+from deep_lst.mlp.datareader import weTestDataset
+from deep_lst.misc.utils import open_config, load_checkpoint
 from deep_lst.misc.normalisation import Normaliser
-from torch.utils.data import DataLoader, Dataset
 
+from torch.utils.data import DataLoader
 
-def inference(config):
+argparser = argparse.ArgumentParser()
+argparser.add_argument("--experiment", default="", type=str, help="Name of the experiment.")
+args = argparser.parse_args()
+
+def inference(config, version, log_path):
 
     testData = weTestDataset(config=config, start_time=config['test_start'], end_time=config['test_end'])
     test_loader = DataLoader(
         testData,
-        batch_size=config['batch_size']*2,
+        batch_size=config['batch_size']*4,
         shuffle=False,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=16,
         drop_last=False,
         collate_fn=testData._collate_fn
     )
@@ -44,7 +42,7 @@ def inference(config):
                 hidden_size=hidden_sizes, 
                 output_size=len(testData.target_list))
 
-    checkpoint_path = load_checkpoint(experiment=config['experiment_name'], version="version_0", path="./experiments/")
+    checkpoint_path = load_checkpoint(experiment=config['experiment_name'], version=version, path="./experiments/")
     print(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
@@ -72,19 +70,18 @@ def inference(config):
     targets = normaliser.denormalise(targets, var='LST')
 
     df = pd.DataFrame({"predictions": predictions.flatten(), "targets": targets.flatten()})
-    df.to_parquet(config['experiment_path'] + f"logs/prototype_{config['experiment_name']}/version_0/inference_results.parquet")
+    df.to_parquet(log_path + "inference_results.parquet")
 
     return np.asarray(predictions), np.asarray(targets)
 
 
 if __name__ == "__main__":
     
-    config = open_config(experiment="baseline_0", path="./experiments")
-    print(config)
-    predictions, targets = inference(config=config)
+    experiment = args.experiment
+    config = open_config(experiment=experiment, path="./experiments")
+    version = "version_0"   
+    log_path = config["experiment_path"] + f"logs/prototype_{experiment}/{version}/"
 
-    print("Predictions shape:", predictions.shape)
-    print("Targets shape:", targets.shape)
-    print("Predictions shape:", predictions)
-    print("Targets shape:", targets)
-    print("Targets shape:", np.isfinite(targets).sum())
+    predictions, targets = inference(config=config, version=version, log_path=log_path)
+
+    print("Inference completed.")
