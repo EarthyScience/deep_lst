@@ -7,6 +7,22 @@ import numpy as np
 import torch
 from pathlib import Path
 
+def load_statistics_npz(path: Path) -> dict[str, dict[str, float]]:
+    path = Path(path)
+    out: dict[str, dict[str, float]] = {}
+
+    with np.load(path, allow_pickle=True) as z:
+        variables = list(z["variables"])
+        stat_names = [k for k in z.files if k != "variables"]
+
+        for i, var in enumerate(variables):
+            out[str(var)] = {}
+            for stat in stat_names:
+                out[str(var)][stat] = np.asarray(z[stat][i]).item()
+
+    return out
+
+    
 def welford_incremental(prev_mean, prev_M2, prev_count, x_batch, float_dtype=torch.float32):
     """
     Vectorized incremental update of mean and M2 for a new batch.

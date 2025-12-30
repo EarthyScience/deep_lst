@@ -20,8 +20,8 @@ cd $WORKDIR
 ${WORKDIR}/.venv/bin/python3 ${WORKDIR}/deep_lst/get_eo_statistics.py \
     --modality $MODALITY \
     --variable $VAR \
-    --experiment "global" \
+    --experiment $EXPERIMENT \
     --stratification "month_hour" \
-    --time_fraction 0.01 \
-    --space_fraction 0.01 \
+    --time_fraction 0.1 \
+    --space_fraction 0.1 \
 
