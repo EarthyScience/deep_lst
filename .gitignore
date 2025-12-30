@@ -17,3 +17,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# experiments
+outputs/
+data/
+*.ckpt
+.ipynb_checkpoints/
+__pycache__/
