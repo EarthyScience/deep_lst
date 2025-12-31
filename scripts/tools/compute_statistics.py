@@ -11,7 +11,8 @@ from wedata.schemes.torch.base import VariableType
 
 from eo_statistics.dataset import UnimodalDataset
 from eo_statistics.helpers import *
-from eo_statistics.time_filter import TemporalFilter
+from utils.time_filter import get_temporal_indices
+from utils.misc import open_config
 
 import torch
 from tqdm import tqdm
@@ -116,12 +117,12 @@ def main():
     else:
         raise ValueError(f"Modality {args.modality} not supported.")
 
+    CONFIG = open_config(experiment="test", path="experiments")
+
     store = EOZarrStore(args.store, mode='r')
     spatial_indices = np.load(args.indices)['mapping']
 
-    tf = TemporalFilter.from_range("2017-01-01 00:00", "2017-12-31 23:00")
-    temporal_indices = tf.filter_by_date("2017-01-01 00:00", "2017-01-31 23:00")
-    temporal_indices = tf.stratified_sample(temporal_indices, frac=0.05, by="month_hour", seed=42)
+    temporal_indices = get_temporal_indices(CONFIG, split = 'train', stratify=False)
 
     stats = calculate_statistics(store, 
                                 reader=Reader,
