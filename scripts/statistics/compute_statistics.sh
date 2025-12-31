@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=120Gb
-#SBATCH --time=04:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=scripts/out/compute_statistics.%j
 #SBATCH --job-name=compute_statistics
 
@@ -18,15 +18,14 @@ export NUMEXPR_NUM_THREADS=1
 WORKDIR=/Net/Groups/BGI/people/mwessel/deep_lst
 cd $WORKDIR
 
-EXPERIMENT="test"
-MODALITY="seviri"
+EXPERIMENT="global"
+MODALITY="era5"
 
-${WORKDIR}/.venv/bin/python3 ${WORKDIR}/deep_lst/compute_statistics.py \
+${WORKDIR}/.venv/bin/python3 ${WORKDIR}/deep_lst/scripts/tools/compute_statistics.py \
     --modality $MODALITY \
-    --statistics "experiments/${MODALITY}_statistics.parquet" \
+    --statistics "assets/${MODALITY}/${EXPERIMENT}/statistics/statistics.npz" \
     --store "/Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/${MODALITY}_test2.zarr" \
-    --indices "/Net/Groups/BGI/people/mwessel/wedata/wedata/datasets/${MODALITY}/global_indices_subset.npz" \
-    --device cuda:0 \
-    --batch_size 2052 \
-    --num_workers 24
+    --indices "assets/${MODALITY}/${EXPERIMENT}/indices/indices_5p.npz" \
+    --batch_size 1024 \
+    --num_workers 26
 
