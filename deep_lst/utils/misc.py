@@ -3,12 +3,12 @@ import yaml
 import os
 from pathlib import Path
 
-def open_config(experiment: str, path: str = "deep_lst/experiments") -> dict:
+def open_config(experiment: str, path: str = "experiments") -> dict:
     path = os.path.expanduser(path)
-    with open(f"{path}/{experiment}/config.yaml", 'r') as stream:
+    with open(f"{path}/{experiment}/config.yml", 'r') as stream:
         return yaml.safe_load(stream)
 
-def open_hparams(experiment: str, version: str, path: str = "deep_lst/experiments") -> dict:
+def open_hparams(experiment: str, version: str, path: str = "experiments") -> dict:
     path = os.path.expanduser(path)
     with open(f"{path}/{experiment}/logs/prototype_{experiment}/{version}/hparams.yaml", 'r') as stream:
         return yaml.safe_load(stream)
