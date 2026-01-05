@@ -10,9 +10,8 @@ from wedata.statistics import StandardStatisticsMetric
 from wedata.schemes.torch.base import VariableType
 
 from dataset import UnimodalDataset
-from eo_statistics.helpers import *
 from utils.time_filter import get_temporal_indices
-from utils.misc import open_config
+from utils.misc import *
 
 import torch
 from tqdm import tqdm
