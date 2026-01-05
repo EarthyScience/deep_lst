@@ -7,7 +7,7 @@ from pathlib import Path
 from deep_lst.utils.time_filter import get_temporal_indices
 from wedata.eo_zarr import EOZarrStore
 
-def get_reader_from_modality(modality_id: str, config: dict):
+def get_reader_from_modality(modality_id: str, config: dict, split: str):
     if modality_id == "era5":
         from wedata.data_reader.era5 import Era5Reader as Reader
     elif modality_id == "seviri":
@@ -22,7 +22,7 @@ def get_reader_from_modality(modality_id: str, config: dict):
     store = EOZarrStore(store_path, mode="r+")
 
     spatial_idx = np.load(indices_path)["mapping"]
-    temporal_idx = get_temporal_indices(config, split="train", stratify=False)
+    temporal_idx = get_temporal_indices(config, split=split, stratify=False)
 
     reader = Reader(eozarr_store=store, config=config)
 
@@ -68,8 +68,9 @@ class UnimodalDataset(Dataset):
     def from_modality(cls,
         modality_id: str,
         config: dict,
+        split: str,
     ):
-        reader, spatial_idx, temporal_idx = get_reader_from_modality(modality_id, config)
+        reader, spatial_idx, temporal_idx = get_reader_from_modality(modality_id, config, split)
 
         dataset = cls(
             reader=reader,
