@@ -85,7 +85,7 @@ class TemporalFilter:
 def get_temporal_indices(config, split: str, stratify: bool = False) -> np.ndarray:
 
     tf = TemporalFilter.from_range("2017-01-01 00:00", "2017-12-31 23:00")
-    temporal_indices = tf.filter_by_date(config[f"{split}_start"], config["{split}_end"])
+    temporal_indices = tf.filter_by_date(config[f"{split}_start"], config[f"{split}_end"])
     if stratify:
         temporal_indices = tf.stratified_sample(temporal_indices, frac=0.05, by="month_hour", seed=42)
     return temporal_indices

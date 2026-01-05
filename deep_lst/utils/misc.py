@@ -19,6 +19,53 @@ def load_checkpoint(experiment, version, name = "prototype", path = ".experiment
     checkpoint_path = sorted(checkpoints_root.glob("*.ckpt"))[-1]
     return checkpoint_path
 
+def save_statistics_npz(statistics: dict, path: Path) -> None:
+    """
+    statistics: {var: {stat_name: scalar}}
+    Writes one .npz with:
+      - variables: array[str] of variable names (index)
+      - each stat_name: array[float] aligned with `variables`
+    """
+    path = Path(path)
+    if path.suffix != ".npz":
+        path = path.with_suffix(".npz")
+
+    variables = np.array(list(statistics.keys()), dtype=object)
+
+    # Collect all stat names (assumes scalars only)
+    stat_names = sorted({k for stats in statistics.values() for k in stats.keys()})
+
+    arrays: dict[str, np.ndarray] = {"variables": variables}
+
+    for stat in stat_names:
+        vals = []
+        for var in variables:
+            if stat not in statistics[var]:
+                raise KeyError(f"Missing statistic '{stat}' for variable '{var}'.")
+            vals.append(np.asarray(statistics[var][stat]).item())  # ensure scalar python value
+        arrays[stat] = np.asarray(vals)
+
+    np.savez(path, **arrays)
+
+def load_statistics_from_npz(path: Path) -> dict[str, dict[str, float]]:
+    """
+    Loads statistics saved with `save_statistics_npz`.
+    Returns:
+        dict[var_name, dict[stat_name, value]]
+    """
+    path = Path(path)
+    out: dict[str, dict[str, float]] = {}
+
+    with np.load(path, allow_pickle=True) as z:
+        variables = list(z["variables"])
+        stat_names = [k for k in z.files if k != "variables"]
+
+        for i, var in enumerate(variables):
+            out[str(var)] = {}
+            for stat in stat_names:
+                out[str(var)][stat] = np.asarray(z[stat][i]).item()
+
+    return out
 
 def build_feature_list(config: dict) -> list:
     """
