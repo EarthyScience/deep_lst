@@ -33,7 +33,7 @@ def get_reader_from_modality(modality_id: str, config: dict):
 
 
 class UnimodalDataset(Dataset):
-    def __init__(self, reader, spatial_indices, temporal_indices, config):
+    def __init__(self, reader, spatial_indices, temporal_indices, config, modality_id: str):
         """
         zarr_array: xarray.DataArray or zarr.Array
         indices: 3d pandas dataframe or array
@@ -43,6 +43,7 @@ class UnimodalDataset(Dataset):
         self.reader = reader
         self.temporal_indices = temporal_indices
         self.config = config
+        self.modality_id = modality_id
         
         self.P = len(self.spatial_indices)
         self.T = len(self.temporal_indices)
@@ -58,10 +59,8 @@ class UnimodalDataset(Dataset):
 
         t_index = self.temporal_indices[idx // self.P]
         p_index = self.spatial_indices[idx % self.P]
-        t_slice = slice(t_index, t_index + self.config["time_window"])
-        sample = self.reader.get_data_single(spatial_idx=p_index, time_idx=t_slice)
-        
-        #sample['indices'] = torch.from_numpy((t_index, p_index))
+
+        sample = self.reader.get_data_single(space_idx=p_index, time_idx=t_index)
 
         return sample
     
@@ -77,6 +76,7 @@ class UnimodalDataset(Dataset):
             spatial_indices=spatial_idx,
             temporal_indices=temporal_idx,
             config=config,
+            modality_id=modality_id,
         )
 
         return dataset
@@ -104,9 +104,9 @@ class MultimodalDataset(Dataset):
         data = {}
         for modality_id, reader in self.readers.items():
             t_index = self.temporal_indices[idx // self.P]
-            t_slice = slice(t_index, t_index + self.config["time_window"])  
             p_index = self.spatial_indices[modality_id][idx % self.P]
-            data[modality_id] = reader.get_data_single(spatial_idx=p_index, time_idx=t_slice)
+
+            data[modality_id] = reader.get_data_single(space_idx=p_index, time_idx=t_index)
         
         return data
 
