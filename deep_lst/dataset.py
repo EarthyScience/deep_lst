@@ -1,8 +1,9 @@
 import pandas as pd
 from torch.utils.data import Dataset
+import torch
 
 class UnimodalDataset(Dataset):
-    def __init__(self, spatial_indices, reader, temporal_indices = None):
+    def __init__(self, reader, spatial_indices, temporal_indices):
         """
         zarr_array: xarray.DataArray or zarr.Array
         indices: 3d pandas dataframe or array
@@ -10,12 +11,7 @@ class UnimodalDataset(Dataset):
         """
         self.spatial_indices = spatial_indices
         self.reader = reader
-
-        # only for degbugging change in the future
-        if temporal_indices is not None:
-            self.temporal_indices = temporal_indices
-        else:
-            self.temporal_indices = _time_index(idx_start="2017-01-01 00:00", idx_end="2017-01-01 02:00")
+        self.temporal_indices = temporal_indices
         
         self.P = len(self.spatial_indices)
         self.T = len(self.temporal_indices)
@@ -29,14 +25,29 @@ class UnimodalDataset(Dataset):
 
     def __getitem__(self, idx):
 
-        t_index = idx // self.P
+        t_index = self.temporal_indices[idx // self.P]
         p_index = self.spatial_indices[idx % self.P]
 
         sample = self.reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
         
+        #sample['indices'] = torch.from_numpy((t_index, p_index))
+
         return sample
 
+class MultimodalDataset(Dataset):
 
-def _time_index(idx_start, idx_end, config=None):
-    time_index = pd.DatetimeIndex(pd.date_range(start=idx_start, end=idx_end, freq='h'))
-    return time_index
+    def __init__(self, reader: dict[str, UnimodalDataset], spatial_indices, temporal_indices):
+
+        self.readers = reader
+        self.modalities = list(readers.keys())
+        self.length = min(len(reader) for reader in readers.values())
+        print(f"Initialized MultimodalDataset with {self.length} samples.")
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        data = {}
+        for modality_id, reader in self.readers.items():
+            data[modality_id] = reader[idx]
+        return data

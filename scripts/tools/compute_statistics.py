@@ -9,7 +9,7 @@ from wedata.eo_zarr import EOZarrStore
 from wedata.statistics import StandardStatisticsMetric
 from wedata.schemes.torch.base import VariableType
 
-from eo_statistics.dataset import UnimodalDataset
+from dataset import UnimodalDataset
 from eo_statistics.helpers import *
 from utils.time_filter import get_temporal_indices
 from utils.misc import open_config
