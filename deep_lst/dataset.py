@@ -97,6 +97,7 @@ class MultimodalDataset(Dataset):
         self.samples = self.P * self.T
 
         print(f"Initialized MultimodalDataset with {self.samples} samples.")
+        print(f"Initialized self.temporal_indices {self.temporal_indices}.")
 
     def __len__(self):
         return self.samples
@@ -115,12 +116,13 @@ class MultimodalDataset(Dataset):
     def from_modalities(cls,
         modality_ids: list[str],
         config: dict,
+        split: str
     ):
         readers = {}
         spatial_indices = {}
 
         for modality_id in modality_ids:
-            reader, spatial_idx, temporal_idx = get_reader_from_modality(modality_id, config)
+            reader, spatial_idx, temporal_idx = get_reader_from_modality(modality_id, config, split)
             readers[modality_id] = reader
             spatial_indices[modality_id] = spatial_idx
 
