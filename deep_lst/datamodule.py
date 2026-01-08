@@ -49,6 +49,7 @@ class DataModule(pl.LightningDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
+            persistent_workers=True,
             drop_last=True,
             collate_fn=self.collate_multimodal_tensordict
         )
@@ -61,6 +62,7 @@ class DataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             persistent_workers=True,  
+            persistent_workers=True,
             pin_memory=True,
             drop_last=False,
             collate_fn=self.collate_multimodal_tensordict
@@ -84,9 +86,10 @@ class DataModule(pl.LightningDataModule):
         
         if pack_tensors, returns a TensorDict with additional inputs key that contains a tensor per modality stacked along channels.
         """
+        batch_size = len(batch)
         stacked = {modality: td_stack([sample[modality] for sample in batch], dim=0) for modality in self.modality_ids}
 
-        td_out = TensorDict({}, batch_size=self.config['batch_size'], device=self.config['device'])
+        td_out = TensorDict({}, batch_size=batch_size, device=self.config['device'])
         # Put each modality under a nested key namespace
         for modality in self.modality_ids:
             for key, values in stacked[modality].items():

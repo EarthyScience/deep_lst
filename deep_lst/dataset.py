@@ -50,7 +50,6 @@ class UnimodalDataset(Dataset):
         self.samples = self.P * self.T
 
         print(f"Initialized Unimodal dataset with {self.samples} samples.")
-        print(f"Initialized self.temporal_indices {self.temporal_indices}.")
 
     def __len__(self):
         return self.samples
@@ -97,7 +96,6 @@ class MultimodalDataset(Dataset):
         self.samples = self.P * self.T
 
         print(f"Initialized MultimodalDataset with {self.samples} samples.")
-        print(f"Initialized self.temporal_indices {self.temporal_indices}.")
 
     def __len__(self):
         return self.samples
