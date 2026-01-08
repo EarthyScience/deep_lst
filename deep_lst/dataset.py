@@ -60,7 +60,8 @@ class UnimodalDataset(Dataset):
         self.samples = self.P * self.T
 
         self.inputs = {mod : variable_keys(self.config, modality=mod, var_type="input") for mod in self.modality_ids}
-        self.targets = {mod : variable_keys(self.config, modality=mod, var_type="diagnostic") for mod in self.modality_ids}
+        self.diagnostics = {mod : variable_keys(self.config, modality=mod, var_type="diagnostic") for mod in self.modality_ids}
+        self.prognostics = {mod : variable_keys(self.config, modality=mod, var_type="prognostic") for mod in self.modality_ids}
 
         print(f"Initialized Unimodal dataset with {self.samples} samples.")
 
@@ -109,7 +110,8 @@ class MultimodalDataset(Dataset):
         self.samples = self.P * self.T
 
         self.inputs = {mod : variable_keys(self.config, modality=mod, var_type="input") for mod in self.modality_ids}
-        self.targets = {mod : variable_keys(self.config, modality=mod, var_type="diagnostic") for mod in self.modality_ids}
+        self.diagnostics = {mod : variable_keys(self.config, modality=mod, var_type="diagnostic") for mod in self.modality_ids}
+        self.prognostics = {mod : variable_keys(self.config, modality=mod, var_type="prognostic") for mod in self.modality_ids}
 
         print(f"Initialized MultimodalDataset with {self.samples} samples.")
 
@@ -131,12 +133,17 @@ class MultimodalDataset(Dataset):
             input_keys = self.inputs.get(modality_id, [])
             if input_keys:
                 data.set(("inputs", modality_id),
-                        torch.stack([data.get(k) for k in input_keys], dim=-1))
+                        torch.cat([data.get(k) for k in input_keys], dim=-1))
 
-            target_keys = self.targets.get(modality_id, [])
-            if target_keys:
-                data.set(("targets", modality_id),
-                        torch.stack([data.get(k) for k in target_keys], dim=-1))
+            diagnostic_keys = self.diagnostics.get(modality_id, [])
+            if diagnostic_keys:
+                data.set(("diagnostics", modality_id),
+                        torch.cat([data.get(k) for k in diagnostic_keys], dim=-1))
+            
+            prognostic_keys = self.prognostics.get(modality_id, [])
+            if prognostic_keys:
+                data.set(("prognostics", modality_id),
+                        torch.cat([data.get(k) for k in prognostic_keys], dim=-1))
 
         return data
 

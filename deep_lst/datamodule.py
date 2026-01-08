@@ -30,7 +30,8 @@ class DataModule(pl.LightningDataModule):
         )
         
         self.input_size = sum(len(var) for var in self.train_dataset.inputs.values())
-        self.target_size = sum(len(var) for var in self.train_dataset.targets.values())
+        self.diagnostic_size = sum(len(var) for var in self.train_dataset.diagnostics.values())
+        self.prognostic_size = sum(len(var) for var in self.train_dataset.prognostics.values())
 
     def train_dataloader(self):
 
