@@ -7,6 +7,9 @@ from pathlib import Path
 from deep_lst.utils.time_filter import get_temporal_indices
 from wedata.eo_zarr import EOZarrStore
 
+from tensordict import TensorDict
+from tensordict import stack as td_stack
+
 def get_reader_from_modality(modality_id: str, config: dict, split: str):
     if modality_id == "era5":
         from wedata.data_reader.era5 import Era5Reader as Reader
@@ -31,6 +34,13 @@ def get_reader_from_modality(modality_id: str, config: dict, split: str):
 
     return reader, spatial_idx, temporal_idx
 
+def variable_keys(config, modality, var_type: str) -> list[tuple[str, str]]:
+    keys = []
+    for var in config['modality'][modality].get('variables', []):
+        (varname, meta), = var.items()
+        if meta.get("type") == var_type:
+            keys.append((modality, varname))
+    return keys
 
 class UnimodalDataset(Dataset):
     def __init__(self, reader, spatial_indices, temporal_indices, config, modality_id: str):
@@ -48,6 +58,9 @@ class UnimodalDataset(Dataset):
         self.P = len(self.spatial_indices)
         self.T = len(self.temporal_indices)
         self.samples = self.P * self.T
+
+        self.inputs = {mod : variable_keys(self.config, modality=mod, var_type="input") for mod in self.modality_ids}
+        self.targets = {mod : variable_keys(self.config, modality=mod, var_type="diagnostic") for mod in self.modality_ids}
 
         print(f"Initialized Unimodal dataset with {self.samples} samples.")
 
@@ -88,12 +101,15 @@ class MultimodalDataset(Dataset):
         self.readers = reader
         self.spatial_indices = spatial_indices
         self.temporal_indices = temporal_indices
-        self.modalities = list(self.readers.keys())
+        self.modality_ids = list(self.readers.keys())
         self.config = config
 
-        self.P = len(self.spatial_indices[self.modalities[0]])
+        self.P = len(self.spatial_indices[self.modality_ids[0]])
         self.T = len(self.temporal_indices)
         self.samples = self.P * self.T
+
+        self.inputs = {mod : variable_keys(self.config, modality=mod, var_type="input") for mod in self.modality_ids}
+        self.targets = {mod : variable_keys(self.config, modality=mod, var_type="diagnostic") for mod in self.modality_ids}
 
         print(f"Initialized MultimodalDataset with {self.samples} samples.")
 
@@ -101,13 +117,27 @@ class MultimodalDataset(Dataset):
         return self.samples
 
     def __getitem__(self, idx):
-        data = {}
+        
+        t_index = self.temporal_indices[idx // self.P]
+
+        data = TensorDict({}, batch_size=[]) 
         for modality_id, reader in self.readers.items():
-            t_index = self.temporal_indices[idx // self.P]
             p_index = self.spatial_indices[modality_id][idx % self.P]
 
-            data[modality_id] = reader.get_data_single(space_idx=p_index, time_idx=t_index)
-        
+            data_mod = reader.get_data_single(space_idx=p_index, time_idx=t_index)
+
+            data.set((modality_id,), data_mod)
+
+            input_keys = self.inputs.get(modality_id, [])
+            if input_keys:
+                data.set(("inputs", modality_id),
+                        torch.stack([data.get(k) for k in input_keys], dim=-1))
+
+            target_keys = self.targets.get(modality_id, [])
+            if target_keys:
+                data.set(("targets", modality_id),
+                        torch.stack([data.get(k) for k in target_keys], dim=-1))
+
         return data
 
     @classmethod
