@@ -38,11 +38,13 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=True,
+            shuffle=False,
             num_workers=self.num_workers,
-            pin_memory=True,
+            pin_memory=self.config['pin_memory'],
+            prefetch_factor=self.config['prefetch_factor'],
             persistent_workers=True,
             drop_last=True,
+            multiprocessing_context='fork',
             collate_fn=self.collate_multimodal_tensordict
         )
     
@@ -54,8 +56,10 @@ class DataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             persistent_workers=True,  
-            pin_memory=True,
+            pin_memory=self.config['pin_memory'],
+            prefetch_factor=self.config['prefetch_factor'],
             drop_last=False,
+            multiprocessing_context='fork',
             collate_fn=self.collate_multimodal_tensordict
         )
 

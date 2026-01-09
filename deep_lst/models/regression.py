@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import code
+import time
+import torch.cuda as cuda
 
 from deep_lst.losses.mse import MaskedMSEStep, MaskedMSERollout
 
@@ -20,11 +22,6 @@ class MultiModalMLP(nn.Module):
         self.modality_ids = list(config['modality'].keys())
 
         self.net = self.dense()
-
-        self.step_loss = MaskedMSEStep(
-            key_predictions = ("predictions", "LST"),
-            key_targets     = ("seviri", "LST")
-        )
 
     def forward(self, *inputs):
         
@@ -54,73 +51,45 @@ class LitTDmodule(LightningModule):
 
         self.model = model
         self.config = config
+
+        self.step_loss = MaskedMSEStep(
+            predictions = ("predictions", "LST"),
+            targets     = ("seviri", "LST")
+        )
     
     def training_step(self, batch, batch_idx):
 
-        out = self.model(batch)
+        loss = self.step_loss(self, batch, stage="train")
 
-        y_hat = out['predictions', 'LST']
-        y = out['seviri', 'LST']
-
-        valid = torch.isfinite(y) & torch.isfinite(y_hat)
-        n_valid = valid.sum()
-
-        if n_valid == 0:
-            self.log("train_valid_count", 0, prog_bar=True, sync_dist=True)
-            return None 
-
-        loss = F.mse_loss(y_hat[valid], y[valid])
-
-        self.log("train_loss", loss, prog_bar=True, sync_dist=True)
+        if batch_idx % 100 == 0:
+            torch.cuda.empty_cache()
 
         return loss
     
     def validation_step(self, batch, batch_idx):  
 
-        out = self.model(batch)
+        loss = self.step_loss(self, batch, stage="val")
 
-        y_hat = out['predictions','LST']
-        y = out['seviri','LST']
-
-        valid = torch.isfinite(y) & torch.isfinite(y_hat)
-        n_valid = valid.sum()
-
-        if n_valid == 0:
-            self.log("val_valid_count", 0, prog_bar=True, sync_dist=True)
-            return None 
-
-        loss = F.mse_loss(y_hat[valid], y[valid])
-
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True)
+        if batch_idx % 100 == 0:
+            torch.cuda.empty_cache()
 
         return loss
     
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.config['learning_rate'])
-        for name, param in self.named_parameters():
-            if torch.isnan(param).any():
-                print(f"NaN in parameter {name}")
-        return optimizer
-    
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, 
+            T_max=self.config.get('max_epochs', 25)
+        )
+        
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch'
+            }
+        }
 
-
-def masked_mse(y_hat, y):
-
-    valid = torch.isfinite(y) & torch.isfinite(y_hat)
-    n_valid = valid.sum()
-
-    if n_valid == 0:
-        return (y_hat.sum() * 0.0), n_valid
-
-    loss = F.mse_loss(y_hat[valid], y[valid])
-
-    return loss, n_valid
-
-
-def td_num_nonfinite(x) -> int:
-    """Return number of non-finite values (NaN or +/-Inf) in tensor x; else 0."""
-    return int((~torch.isfinite(x)).sum().item())
-
-def td_num_nan(x) -> int:
-    """Return number of NaNs in tensor x; else 0."""
-    return int(torch.isnan(x).sum().item())
+    def on_train_epoch_end(self):
+        """Clear any accumulated state at epoch end"""
+        torch.cuda.empty_cache()

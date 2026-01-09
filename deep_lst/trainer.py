@@ -7,6 +7,7 @@ from deep_lst.models.regression import MultiModalMLP, LitTDmodule
 from pytorch_lightning import loggers
 from lightning_fabric.plugins.environments import LightningEnvironment
 from tensordict.nn import TensorDictModule, TensorDictSequential
+from pytorch_lightning.profilers import AdvancedProfiler
 
 import pytorch_lightning as pl
 import time 
@@ -45,6 +46,8 @@ def main():
             name=config['name']
         )
 
+    profiler = AdvancedProfiler(dirpath=f"./experiments/{args.experiment_name}", filename="perf_logs")
+
     torch.set_float32_matmul_precision('medium')
 
     data_module = DataModule(config=config)
@@ -67,11 +70,14 @@ def main():
                         devices=ngpu,
                         num_nodes=1,
                         strategy="ddp",
-                        limit_train_batches=0.5,
-                        limit_val_batches=0.3,
+                        limit_train_batches=config['limit_train_batches'],
+                        limit_val_batches=config['limit_val_batches'],
                         precision="bf16-mixed",
                         gradient_clip_val=1.0,
-                        gradient_clip_algorithm="norm")
+                        gradient_clip_algorithm="norm",
+                        log_every_n_steps=50)
+
+    print("Trainer world_size:", trainer.world_size, "devices:", torch.cuda.device_count())
 
     start_time = time.time()
     print("Fitting the model.")

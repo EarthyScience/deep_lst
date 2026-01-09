@@ -2,6 +2,7 @@ import pandas as pd
 from torch.utils.data import Dataset
 import torch
 import numpy as np
+import time
 
 from pathlib import Path
 from deep_lst.utils.time_filter import get_temporal_indices
@@ -19,8 +20,8 @@ def get_reader_from_modality(modality_id: str, config: dict, split: str):
         raise ValueError(f"Unknown modality id {modality_id}")
 
     store_path = Path(config["store_path"]) / config["modality"][modality_id]["store_name"]
-    indices_path = Path(config["assets_path"]) / modality_id / config["experiment"] / "indices" / "indices.npz"
-    statistics_path = Path(config["assets_path"]) / modality_id / config["experiment"] / "statistics" / "statistics.npz"
+    indices_path = Path(config["assets_path"]) / modality_id / config["experiment"] / "indices" / config["indices"]
+    statistics_path = Path(config["assets_path"]) / modality_id / config["experiment"] / "statistics" / config["statistics"]
 
     store = EOZarrStore(store_path, mode="r+")
 
@@ -132,18 +133,21 @@ class MultimodalDataset(Dataset):
 
             input_keys = self.inputs.get(modality_id, [])
             if input_keys:
-                data.set(("inputs", modality_id),
-                        torch.cat([data.get(k) for k in input_keys], dim=-1))
+                input_tensors = [data_mod[k] if k in data_mod else data[k] 
+                           for k in input_keys]
+                data[("inputs", modality_id)] = torch.cat(input_tensors, dim=-1)
 
             diagnostic_keys = self.diagnostics.get(modality_id, [])
             if diagnostic_keys:
-                data.set(("diagnostics", modality_id),
-                        torch.cat([data.get(k) for k in diagnostic_keys], dim=-1))
+                diagnostic_tensors = [data_mod[k] if k in data_mod else data[k] 
+                           for k in diagnostic_keys]
+                data[("diagnostics", modality_id)] = torch.cat(diagnostic_tensors, dim=-1)
             
             prognostic_keys = self.prognostics.get(modality_id, [])
             if prognostic_keys:
-                data.set(("prognostics", modality_id),
-                        torch.cat([data.get(k) for k in prognostic_keys], dim=-1))
+                prognostic_tensors = [data_mod[k] if k in data_mod else data[k] 
+                           for k in prognostic_keys]
+                data[("prognostics", modality_id)] = torch.cat(prognostic_tensors, dim=-1)
 
         return data
 
