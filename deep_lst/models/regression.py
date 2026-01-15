@@ -52,10 +52,21 @@ class LitTDmodule(LightningModule):
         self.model = model
         self.config = config
 
-        self.step_loss = MaskedMSEStep(
-            predictions = ("predictions", "LST"),
-            targets     = ("seviri", "LST")
-        )
+        if config['step_loss'] == 'rollout':
+            self.step_loss = MaskedMSERollout(
+                predictions = ("predictions", "LST"),
+                targets     = ("seviri", "LST"),
+                prognostics=("prognostics", "seviri"),
+                inputs_era=("inputs", "era5"),
+                inputs_seviri=("inputs", "seviri"),
+            )
+        elif config['step_loss'] == 'stepwise':
+            self.step_loss = MaskedMSEStep(
+                predictions = ("predictions", "LST"),
+                targets     = ("seviri", "LST")
+            )
+        else:
+            raise ValueError(f"Unknown step_loss type {config['step_loss']}")
     
     def training_step(self, batch, batch_idx):
 
@@ -63,6 +74,14 @@ class LitTDmodule(LightningModule):
 
         if batch_idx % 100 == 0:
             torch.cuda.empty_cache()
+
+        # Check weights after backward (before optimizer step)
+        if batch_idx == 1:  # After first update
+            for name, param in self.model.named_parameters():
+                if torch.isnan(param).any():
+                    print(f"NaN in weights after batch {batch_idx}: {name}")
+                    print(f"  Gradient stats: min={param.grad.min()}, max={param.grad.max()}, mean={param.grad.mean()}")
+
 
         return loss
     
@@ -76,7 +95,10 @@ class LitTDmodule(LightningModule):
         return loss
     
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.config['learning_rate'])
+        optimizer = torch.optim.AdamW(self.parameters(), 
+                                    lr=self.config['learning_rate'],
+                                    eps=1e-8,         # Numerical stability
+                                    weight_decay=0.0)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, 
             T_max=self.config.get('max_epochs', 25)
