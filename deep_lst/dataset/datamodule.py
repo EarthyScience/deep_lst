@@ -2,7 +2,7 @@ import pytorch_lightning as pl
 import torch
 
 from torch.utils.data import DataLoader
-from deep_lst.dataset import UnimodalDataset, MultimodalDataset
+from deep_lst.dataset.dataset import UnimodalDataset, MultimodalDataset
 from tensordict import TensorDict
 from tensordict import stack as td_stack
 
@@ -38,7 +38,7 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=False,
+            shuffle=True,
             num_workers=self.num_workers,
             pin_memory=self.config['pin_memory'],
             prefetch_factor=self.config['prefetch_factor'],
@@ -53,7 +53,7 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
-            shuffle=False,
+            shuffle=True,
             num_workers=self.num_workers,
             persistent_workers=True,  
             pin_memory=self.config['pin_memory'],

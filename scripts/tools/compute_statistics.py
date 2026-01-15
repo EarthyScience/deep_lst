@@ -9,9 +9,9 @@ from wedata.eo_zarr import EOZarrStore
 from wedata.statistics import StandardStatisticsMetric
 from wedata.schemes.torch.base import VariableType
 
-from dataset import UnimodalDataset
-from utils.time_filter import get_temporal_indices
-from utils.misc import *
+from deep_lst.dataset.dataset import UnimodalDataset
+from deep_lst.utils.time_filter import get_temporal_indices
+from deep_lst.utils.misc import *
 
 import torch
 from tqdm import tqdm
