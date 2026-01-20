@@ -72,25 +72,17 @@ class LitTDmodule(LightningModule):
 
         loss = self.step_loss(self, batch, stage="train")
 
-        if batch_idx % 100 == 0:
-            torch.cuda.empty_cache()
-
-        # Check weights after backward (before optimizer step)
-        if batch_idx == 1:  # After first update
-            for name, param in self.model.named_parameters():
-                if torch.isnan(param).any():
-                    print(f"NaN in weights after batch {batch_idx}: {name}")
-                    print(f"  Gradient stats: min={param.grad.min()}, max={param.grad.max()}, mean={param.grad.mean()}")
-
-
         return loss
     
     def validation_step(self, batch, batch_idx):  
 
         loss = self.step_loss(self, batch, stage="val")
 
-        if batch_idx % 100 == 0:
-            torch.cuda.empty_cache()
+        return loss
+
+    def test_step(self, batch, batch_idx):  
+
+        loss = self.step_loss(self, batch, stage="test")
 
         return loss
     

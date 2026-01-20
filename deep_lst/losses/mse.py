@@ -29,21 +29,19 @@ class MaskedMSEStep:
 
         valid = torch.isfinite(y) & torch.isfinite(y_hat)
         
-        n_valid = valid.sum().item() 
-        lit_module.log(f"{stage}_valid_count", n_valid, prog_bar=True, sync_dist=True)
+        count = valid.sum()  # tensor
+        # Log count as sum over epoch
+        lit_module.log(f"{stage}_count", count, on_step=False, on_epoch=True, sync_dist=True, reduce_fx="sum")
 
         if n_valid == 0:
-            del out, y_hat, y, valid
-            return None
+            loss = torch.zeros((), device=y.device, dtype=y.dtype)
+            lit_module.log(f"{stage}_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
+            return loss
 
-        loss = F.mse_loss(y_hat[valid], y[valid])
-
-        # Verify loss is scalar and has gradient
-        print(f"  Loss: {loss.item():.4f}, requires_grad: {loss.requires_grad}")
-
+        mse = F.mse_loss(y_hat[valid], y[valid])
+        
         lit_module.log(f"{stage}_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
-
-        del out, y_hat, y, valid
+            
         return loss
 
 

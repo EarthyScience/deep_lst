@@ -28,6 +28,12 @@ class DataModule(pl.LightningDataModule):
             config=self.config,
             split="val",
         )
+
+        self.test_dataset = MultimodalDataset.from_modalities(
+            modality_ids=self.modality_ids,
+            config=self.config,
+            split="test",
+        )
         
         self.input_size = sum(len(var) for var in self.train_dataset.inputs.values())
         self.diagnostic_size = sum(len(var) for var in self.train_dataset.diagnostics.values())
@@ -58,7 +64,22 @@ class DataModule(pl.LightningDataModule):
             persistent_workers=True,  
             pin_memory=self.config['pin_memory'],
             prefetch_factor=self.config['prefetch_factor'],
-            drop_last=False,
+            drop_last=True,
+            multiprocessing_context='fork',
+            collate_fn=self.collate_multimodal_tensordict
+        )
+
+    def test_dataloader(self):
+
+        return DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True,  
+            pin_memory=self.config['pin_memory'],
+            prefetch_factor=self.config['prefetch_factor'],
+            drop_last=True,
             multiprocessing_context='fork',
             collate_fn=self.collate_multimodal_tensordict
         )
