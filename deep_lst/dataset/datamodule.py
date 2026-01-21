@@ -9,12 +9,12 @@ from tensordict import stack as td_stack
 
 class DataModule(pl.LightningDataModule):
 
-    def __init__(self, config):
+    def __init__(self, config, modality_ids=None):
         super().__init__()
         self.config = config
         self.batch_size = config['batch_size']
         self.num_workers = config['num_workers']
-        self.modality_ids = list(sorted(config['modality'].keys())) # era, seviri
+        self.modality_ids = modality_ids # era, seviri
 
     def setup(self, stage=None):
 
@@ -35,9 +35,9 @@ class DataModule(pl.LightningDataModule):
             split="test",
         )
         
-        self.input_size = sum(len(var) for var in self.train_dataset.inputs.values())
-        self.diagnostic_size = sum(len(var) for var in self.train_dataset.diagnostics.values())
-        self.prognostic_size = sum(len(var) for var in self.train_dataset.prognostics.values())
+        self.input_size = sum(len(self.config[mod]["inputs"]) for mod in self.modality_ids)
+        self.diagnostic_size = sum(len(self.config[mod]["diagnostics"]) for mod in self.modality_ids)
+        self.prognostic_size = sum(len(self.config[mod]["prognostics"]) for mod in self.modality_ids)
 
     def train_dataloader(self):
 

@@ -7,41 +7,26 @@ import time
 from pathlib import Path
 from deep_lst.utils.time_filter import get_temporal_indices
 from wedata.eo_zarr import EOZarrStore
+import wedata
 
 from tensordict import TensorDict
 from tensordict import stack as td_stack
 
 def get_reader_from_modality(modality_id: str, config: dict, split: str):
-    if modality_id == "era5":
-        from wedata.data_reader.era5 import Era5Reader as Reader
-    elif modality_id == "seviri":
-        from wedata.data_reader.seviri import SeviriReader as Reader
-    else:
-        raise ValueError(f"Unknown modality id {modality_id}")
 
-    store_path = Path(config["store_path"]) / config["modality"][modality_id]["store_name"]
-    indices_path = Path(config["assets_path"]) / modality_id / config["experiment"] / "indices" / config["indices"]
-    statistics_path = Path(config["assets_path"]) / modality_id / config["experiment"] / "statistics" / config["statistics"]
 
-    store = EOZarrStore(store_path, mode="r+")
+    store = EOZarrStore(config[modality_id]["store_path"], mode="r+")
 
-    spatial_idx = np.load(indices_path)["mapping"]
+    spatial_idx = np.load(config[modality_id]["indices_path"])["mapping"]
     temporal_idx = get_temporal_indices(config, split=split, stratify=False)
 
-    reader = Reader(eozarr_store=store, config=config)
+    reader = wedata.get_data_reader(modality_id, eozarr_store=store, **config[modality_id])
 
     reader.available_indices(indices=spatial_idx)
-    reader.set_normalizer(file=statistics_path)
+    reader.set_normalizer(file=config[modality_id]["statistics_path"])
 
     return reader, spatial_idx, temporal_idx
 
-def variable_keys(config, modality, var_type: str) -> list[tuple[str, str]]:
-    keys = []
-    for var in config['modality'][modality].get('variables', []):
-        (varname, meta), = var.items()
-        if meta.get("type") == var_type:
-            keys.append((modality, varname))
-    return keys
 
 class UnimodalDataset(Dataset):
     def __init__(self, reader, spatial_indices, temporal_indices, config, modality_id: str):
@@ -53,16 +38,14 @@ class UnimodalDataset(Dataset):
         self.spatial_indices = spatial_indices
         self.reader = reader
         self.temporal_indices = temporal_indices
-        self.config = config
-        self.modality_id = modality_id
         
         self.P = len(self.spatial_indices)
         self.T = len(self.temporal_indices)
         self.samples = self.P * self.T
 
-        self.inputs = {mod : variable_keys(self.config, modality=mod, var_type="input") for mod in self.modality_ids}
-        self.diagnostics = {mod : variable_keys(self.config, modality=mod, var_type="diagnostic") for mod in self.modality_ids}
-        self.prognostics = {mod : variable_keys(self.config, modality=mod, var_type="prognostic") for mod in self.modality_ids}
+        self.inputs = config[modality_id]['inputs']
+        self.diagnostics = config[modality_id]['diagnostics']
+        self.prognostics = config[modality_id]['prognostics']
 
         print(f"Initialized Unimodal dataset with {self.samples} samples.")
 
@@ -74,7 +57,7 @@ class UnimodalDataset(Dataset):
         t_index = self.temporal_indices[idx // self.P]
         p_index = self.spatial_indices[idx % self.P]
 
-        sample = self.reader.get_data_single(space_idx=p_index, time_idx=t_index)
+        sample = self.reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
 
         return sample
     
@@ -104,15 +87,14 @@ class MultimodalDataset(Dataset):
         self.spatial_indices = spatial_indices
         self.temporal_indices = temporal_indices
         self.modality_ids = list(self.readers.keys())
-        self.config = config
 
         self.P = len(self.spatial_indices[self.modality_ids[0]])
         self.T = len(self.temporal_indices)
         self.samples = self.P * self.T
 
-        self.inputs = {mod : variable_keys(self.config, modality=mod, var_type="input") for mod in self.modality_ids}
-        self.diagnostics = {mod : variable_keys(self.config, modality=mod, var_type="diagnostic") for mod in self.modality_ids}
-        self.prognostics = {mod : variable_keys(self.config, modality=mod, var_type="prognostic") for mod in self.modality_ids}
+        self.inputs = {mod : config[mod]['inputs'] for mod in self.modality_ids}
+        self.diagnostics = {mod : config[mod]['diagnostics'] for mod in self.modality_ids}
+        self.prognostics = {mod : config[mod]['prognostics'] for mod in self.modality_ids}
 
         print(f"Initialized MultimodalDataset with {self.samples} samples.")
 
@@ -127,7 +109,7 @@ class MultimodalDataset(Dataset):
         for modality_id, reader in self.readers.items():
             p_index = self.spatial_indices[modality_id][idx % self.P]
 
-            data_mod = reader.get_data_single(space_idx=p_index, time_idx=t_index)
+            data_mod = reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
 
             data.set((modality_id,), data_mod)
 

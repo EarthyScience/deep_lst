@@ -10,7 +10,7 @@ from deep_lst.losses.mse import MaskedMSEStep, MaskedMSERollout
 
 class MultiModalMLP(nn.Module):
 
-    def __init__(self, input_size, target_size, config):
+    def __init__(self, input_size, target_size, config, modality_ids=None):
         super().__init__()
 
         self.input_size = input_size
@@ -19,7 +19,9 @@ class MultiModalMLP(nn.Module):
         self.activation = nn.ReLU() if config['activation'] == 'relu' else None
         self.hidden_sizes = config['hidden_sizes']
         self.dropout = config['dropout']
-        self.modality_ids = list(config['modality'].keys())
+
+        # Change this to fetch from datareader config directly
+        self.modality_ids = modality_ids
 
         self.net = self.dense()
 
