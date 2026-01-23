@@ -1,0 +1,80 @@
+era5: 
+  variables:
+      - stl1: {'type':'input','kind': 'dynamic', 'long_name': 'Surface temperature', 'description': 'Surface temperature (K)'} 
+      - swvl1: {'type':'input','kind': 'dynamic', 'long_name': 'Surface volumetric soil water layer 1', 'description': 'Volumetric soil water layer 1 (m³/m³)'}
+      #- skt: {'type':'input', 'kind': 'dynamic', 'long_name': 'Skin temperature', 'description': 'Skin temperature (K)'}
+      - t2m: {'type':'input','kind': 'dynamic', 'long_name': '2 m Temperature', 'description': 'Air temperature at 2 m (K)'}
+      - d2m: {'type':'input','kind': 'dynamic', 'long_name': '2 m Dewpoint temperature', 'description': 'Dewpoint temperature at 2 m (K)'}
+      - sp: {'type':'input','kind': 'dynamic', 'long_name': 'Surface pressure', 'description': 'Surface pressure (Pa)'}
+      - u10: {'type':'input','kind': 'dynamic', 'long_name': '10 m U wind component', 'description': 'U component of wind at 10 m (m/s)'}
+      - v10: {'type':'input','kind': 'dynamic', 'long_name': '10 m V wind component', 'description': 'V component of wind at 10 m (m/s)'}
+      - ssrd: {'type':'input','kind': 'dynamic', 'long_name': 'Surface solar radiation downwards', 'description': 'Surface solar radiation downwards (J/m²)'}
+      - strd: {'type':'input','kind': 'dynamic', 'long_name': 'Surface thermal radiation downwards', 'description': 'Surface thermal radiation downwards (J/m²)'}
+      - tp: {'type':'input','kind': 'dynamic', 'long_name': 'Total precipitation', 'description': 'Total precipitation (m)'}  
+      - cp: {'type':'input','kind': 'dynamic', 'long_name': 'Convective precipitation', 'description': 'Convective precipitation (m)'}
+      - sf: {'type':'input','kind': 'dynamic', 'long_name': 'Snowfall', 'description': 'Snowfall (m)'}
+      - tcwv: {'type':'input','kind': 'dynamic', 'long_name': 'Total column water vapour', 'description': 'Total column water vapour (kg/m²)'}  
+      - tvh: {'type':'input','kind': 'static', 'long_name': 'Vegetation high cover', 'description': 'High vegetation cover (static)'}
+      - tvl: {'type':'input','kind': 'static', 'long_name': 'Vegetation low cover', 'description': 'Medium vegetation cover (static)'}       
+      - lsm: {'type':'input','kind': 'ancillary', 'long_name': 'Land sea mask', 'description': 'Land surface model type'}
+  normalization:
+    type: zscore
+  store_name: era5.zarr
+  row_extent: 721
+  col_extent: 1440
+  lookback: 1
+  horizon: 3
+  patch_size: 32
+
+seviri:
+  variables:
+      - LST: {'type':'diagnostic','kind': 'dynamic', 'long_name': 'Land surface temperature', 'description': 'Surface skin temperature (K)'}
+      - DEM: {'type':'input','kind': 'static', 'long_name': 'Digital elevation model', 'description': 'Elevation above sea level (m)'}
+      - LWMASK: {'type':'input','kind': 'ancillary', 'long_name': 'Land/water mask', 'description': 'Land/water mask (1=land, 0=water)'}
+      - LANDCOV: {'type':'input','kind': 'ancillary', 'long_name': 'Land cover', 'description': 'Land cover classification'}
+  normalization:
+    type: zscore
+  store_name: seviri.zarr
+  row_extent: 3201
+  col_extent: 3201
+  lookback: 1
+  horizon: 3
+  patch_size: 32
+
+
+train_start: '2017-01-01 00:01:00' # lookback doesnt treat boundaries yet.
+train_end: '2017-11-30 00:23:00'
+val_start: '2017-12-01 00:00:00'
+val_end: '2017-12-31 00:23:00'
+test_start: '2018-02-01 00:00:00'
+test_end: '2018-02-14 00:23:00'
+
+lookback: 1
+horizon: 3
+patch_size: 16
+
+step_loss: rollout # options: rollout, stepwise
+
+epochs: 35
+hidden_sizes: [256, 128, 128, 64, 128]
+learning_rate: 0.0001
+dropout: 0.1
+activation: 'relu'
+
+batch_size: 96
+num_workers: 24
+pin_memory: True
+prefetch_factor: 1 # default
+limit_train_batches: 2500
+limit_val_batches: 500
+
+assets_path: /Net/Groups/BGI/people/mwessel/deep_lst/assets/
+store_path: /Net/Groups/BGI/work_5/scratch/mwessel/wegen-stores/
+experiment: europe
+name: test_rollout
+
+indices: indices_patched.npz # currently patched seamlessly with size 32x32
+statistics: statistics.npz
+
+wandb_logger: False
+csv_logger: True

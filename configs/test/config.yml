@@ -1,0 +1,91 @@
+datareader:
+  era5: 
+    modality_id: era5
+    inputs:
+      - stl1
+      - swvl1
+      #- skt
+      - t2m
+      - d2m
+      - sp
+      - u10
+      - v10
+      - ssrd
+      - strd
+      - tp
+      - cp
+      - sf
+      - tcwv
+      - tvh
+      - tvl
+      - lsm
+    prognostics: []
+    diagnostics: []
+    normalization: zscore
+    store_name: era5.zarr
+    row_extent: 721
+    col_extent: 1440
+    lookback: 1
+    horizon: 3
+    patch_size: 32
+
+    train_start: '2017-01-01 01:00' # lookback doesnt treat boundaries yet.
+    train_end: '2017-11-30 23:00'
+    val_start: '2017-12-01 00:00'
+    val_end: '2017-12-31 23:00'
+    test_start: '2017-12-31 00:00'
+    test_end: '2017-12-31 23:00'
+
+    store_path: /Net/Groups/BGI/tscratch/mwessel/wegen-stores/era5.zarr
+    samples_path: /Net/Groups/BGI/people/mwessel/deep_lst/assets/era5/samples/indices_europe.npz
+    statistics_path: /Net/Groups/BGI/people/mwessel/deep_lst/assets/era5/statistics/statistics_global.npz
+
+  seviri:
+    modality_id: seviri
+    inputs:
+      - DEM
+      - LWMASK
+      - LANDCOV
+    prognostics: []
+    diagnostics: 
+      - LST
+    
+    normalization: zscore
+    store_name: seviri.zarr
+    row_extent: 3201
+    col_extent: 3201
+    lookback: 1
+    horizon: 3
+    patch_size: 32
+
+    train_start: '2017-01-01 01:00' # lookback doesnt treat boundaries yet.
+    train_end: '2017-11-30 23:00'
+    val_start: '2017-12-01 00:00'
+    val_end: '2017-12-31 23:00'
+    test_start: '2017-12-31 00:00'
+    test_end: '2017-12-31 23:00'
+
+    store_path: /Net/Groups/BGI/tscratch/mwessel/wegen-stores/seviri.zarr
+    samples_path: /Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/samples/indices_europe.npz
+    statistics_path: /Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/statistics/statistics_global.npz
+
+model:
+  hidden_sizes: [256, 128, 128, 64, 128]
+  learning_rate: 0.0001
+  dropout: 0.2
+  activation: 'relu'
+  step_loss: stepwise # options: rollout, stepwise
+
+training:
+  epochs: 35
+  batch_size: 96
+  num_workers: 24
+  pin_memory: True
+  prefetch_factor: 1 # default
+  limit_train_batches: 2500
+  limit_val_batches: 500
+
+experiment: europe
+name: test
+wandb_logger: False
+csv_logger: True
