@@ -2,11 +2,12 @@ import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 import torch
 
-from deep_lst.losses.mse import DiagnosticMSE, RolloutMSE
+#from deep_lst.deep_lst.mlp.loss_logic import DiagnosticMSE, RolloutMSE
 from torch.utils.data import DataLoader
 from deep_lst.dataset.dataset import MultimodalDataset
-from tensordict import stack as td_stack
+from deep_lst.dataset.collator import Collator
 
+import importlib
 
 class LitDataModule(pl.LightningDataModule):
 
@@ -14,6 +15,7 @@ class LitDataModule(pl.LightningDataModule):
         super().__init__()
         self.datareader_pars = config['datareader']
         self.training_pars = config["training"]
+        self.collate_fn = Collator(config['model']['name'])
 
     def setup(self, stage=None):
 
@@ -43,7 +45,7 @@ class LitDataModule(pl.LightningDataModule):
             persistent_workers=True,
             drop_last=True,
             multiprocessing_context='fork',
-            collate_fn=self.collate_multimodal_tensordict
+            collate_fn=self.collate_fn
         )
     
     def val_dataloader(self):
@@ -57,7 +59,7 @@ class LitDataModule(pl.LightningDataModule):
             prefetch_factor=self.training_pars ['prefetch_factor'],
             drop_last=True,
             multiprocessing_context='fork',
-            collate_fn=self.collate_multimodal_tensordict
+            collate_fn=self.collate_fn
         )
 
     def test_dataloader(self):
@@ -71,19 +73,8 @@ class LitDataModule(pl.LightningDataModule):
             prefetch_factor=self.training_pars ['prefetch_factor'],
             drop_last=True,
             multiprocessing_context='fork',
-            collate_fn=self.collate_multimodal_tensordict
+            collate_fn=self.collate_fn
         )
-
-    def collate_multimodal_tensordict(self, batch, pack_tensors=True):
-        """
-        batch: list of samples
-        each sample is dict: {modality_id: TensorDict}
-        returns:
-        dict: {modality_id: TensorDict with batch dim prepended}
-        
-        if pack_tensors, returns a TensorDict with additional inputs key that contains a tensor per modality stacked along channels.
-        """
-        return td_stack(batch, dim=0) #td_out
 
 
 
@@ -95,12 +86,14 @@ class LitModelModule(LightningModule):
         self.model = model
         self.config = config
 
-        if config['step_loss'] == 'rollout':
-            self.step_loss = RolloutMSE()
-        elif config['step_loss'] == 'stepwise':
-            self.step_loss = DiagnosticMSE()
-        else:
-            raise ValueError(f"Unknown step_loss type {config['step_loss']}")
+        self.step_loss = self._get_loss(
+            model_id=config['name'],
+            loss_name=config['step_loss']
+        )()
+    
+    def _get_loss(self, model_id: str, loss_name: str):
+        module = importlib.import_module(f"deep_lst.{model_id}")
+        return getattr(module, loss_name)
     
     def training_step(self, batch, batch_idx):
         loss = self.step_loss(self, batch, stage="train")
