@@ -3,6 +3,8 @@ from deep_lst.utils.misc import open_config
 from deep_lst.models.regression import MultiModalMLP
 from deep_lst.dataset.datamodule import DataModule
 
+from wedata.grids import T1H
+
 import numpy as np
 import code
 import torch
@@ -10,7 +12,7 @@ from tensordict import stack as td_stack  # tensordict.stack
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 
-CONFIG = open_config(experiment="test", path="experiments")
+CONFIG = open_config(experiment="test", path="configs")
 
 
 def collate_multimodal_tensordict(batch):
@@ -34,8 +36,8 @@ def variable_keys(config, modality, var_type: str) -> list[tuple[str, str]]:
 
 uni_dataset = UnimodalDataset.from_modality(
      modality_id="era5",
-     config=CONFIG,
-     split="train",
+     config=CONFIG["datareader"]["era5"],
+     split="test",
  )
 
 uniloader = torch.utils.data.DataLoader(
@@ -48,9 +50,8 @@ uniloader = torch.utils.data.DataLoader(
 b1 = next(iter(uniloader))
 
 multi_dataset = MultimodalDataset.from_modalities(
-    modality_ids=["era5", "seviri"],
-    config=CONFIG,
-    split="train",
+    config=CONFIG["datareader"],
+    split="test",
 )
 
 multiloader = torch.utils.data.DataLoader(
@@ -63,12 +64,13 @@ multiloader = torch.utils.data.DataLoader(
 
 b2 = next(iter(multiloader))
 
+code.interact(local=locals())
 
-data_module = DataModule(config=CONFIG, modality_ids=["era5", "seviri"])
+data_module = DataModule(config=CONFIG)
 
-in_size = len(CONFIG['era5']['inputs'] + CONFIG['seviri']['inputs'] + CONFIG['era5']['prognostics'] + CONFIG['seviri']['prognostics'])
-out_size = len(CONFIG['era5']['prognostics'] + CONFIG['seviri']['prognostics'] + CONFIG['era5']['diagnostics'] + CONFIG['seviri']['diagnostics'])
-model = MultiModalMLP(input_size = in_size , target_size=out_size, config=CONFIG, modality_ids=["era5", "seviri"])
+in_size = len(CONFIG['datareader']['era5']['inputs'] + CONFIG['datareader']['seviri']['inputs'] + CONFIG['datareader']['era5']['prognostics'] + CONFIG['datareader']['seviri']['prognostics'])
+out_size = len(CONFIG['datareader']['era5']['prognostics'] + CONFIG['datareader']['seviri']['prognostics'] + CONFIG['datareader']['era5']['diagnostics'] + CONFIG['datareader']['seviri']['diagnostics'])
+model = MultiModalMLP(input_size = in_size , target_size=out_size, config=CONFIG)
 
 
 td_model = TensorDictModule(

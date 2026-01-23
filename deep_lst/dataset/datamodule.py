@@ -9,45 +9,36 @@ from tensordict import stack as td_stack
 
 class DataModule(pl.LightningDataModule):
 
-    def __init__(self, config, modality_ids=None):
+    def __init__(self, config):
         super().__init__()
-        self.config = config
-        self.batch_size = config['batch_size']
-        self.num_workers = config['num_workers']
-        self.modality_ids = modality_ids # era, seviri
+        self.datareader_pars = config['datareader']
+        self.training_pars = config["training"]
 
     def setup(self, stage=None):
 
         self.train_dataset = MultimodalDataset.from_modalities(
-            modality_ids=self.modality_ids,
-            config=self.config,
+            config=self.datareader_pars,
             split="train",
         )
         self.val_dataset = MultimodalDataset.from_modalities(
-            modality_ids=self.modality_ids,
-            config=self.config,
+            config=self.datareader_pars,
             split="val",
         )
 
         self.test_dataset = MultimodalDataset.from_modalities(
-            modality_ids=self.modality_ids,
-            config=self.config,
+            config=self.datareader_pars,
             split="test",
         )
-        
-        self.input_size = sum(len(self.config[mod]["inputs"]) for mod in self.modality_ids)
-        self.diagnostic_size = sum(len(self.config[mod]["diagnostics"]) for mod in self.modality_ids)
-        self.prognostic_size = sum(len(self.config[mod]["prognostics"]) for mod in self.modality_ids)
 
     def train_dataloader(self):
 
         return DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.training_pars['batch_size'],
             shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=self.config['pin_memory'],
-            prefetch_factor=self.config['prefetch_factor'],
+            num_workers=self.training_pars['num_workers'],
+            pin_memory=self.training_pars['pin_memory'],
+            prefetch_factor=self.training_pars ['prefetch_factor'],
             persistent_workers=True,
             drop_last=True,
             multiprocessing_context='fork',
@@ -58,12 +49,11 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.training_pars['batch_size'],
             shuffle=True,
-            num_workers=self.num_workers,
-            persistent_workers=True,  
-            pin_memory=self.config['pin_memory'],
-            prefetch_factor=self.config['prefetch_factor'],
+            num_workers=self.training_pars['num_workers'],
+            pin_memory=self.training_pars['pin_memory'],
+            prefetch_factor=self.training_pars ['prefetch_factor'],
             drop_last=True,
             multiprocessing_context='fork',
             collate_fn=self.collate_multimodal_tensordict
@@ -73,12 +63,11 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.test_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.training_pars['batch_size'],
             shuffle=True,
-            num_workers=self.num_workers,
-            persistent_workers=True,  
-            pin_memory=self.config['pin_memory'],
-            prefetch_factor=self.config['prefetch_factor'],
+            num_workers=self.training_pars['num_workers'],
+            pin_memory=self.training_pars['pin_memory'],
+            prefetch_factor=self.training_pars ['prefetch_factor'],
             drop_last=True,
             multiprocessing_context='fork',
             collate_fn=self.collate_multimodal_tensordict
