@@ -4,20 +4,13 @@ from tensordict import TensorDict
 
 import code
 
-class MaskedMSEStep:
+class DiagnosticMSE:
     
-    def __init__(self, predictions=("predictions", "LST"),  
-                    targets=("seviri", "LST"),           
-                    prognostics=("prognostics", "seviri"),
-                    inputs_era=("inputs", "era5"),
-                    inputs_seviri=("inputs", "seviri"),
-    
-        ):
-        self.predictions = predictions
-        self.targets = targets
-        self.prognostics = prognostics
-        self.inputs_era = inputs_era
-        self.inputs_seviri = inputs_seviri
+    def __init__(self):
+        self.predictions = ("predictions", "seviri")
+        self.diagnostics = ("diagnostics", "seviri")
+        self.inputs_era = ("inputs", "era5")
+        self.inputs_seviri = ("inputs", "seviri")
 
     def __call__(self, lit_module, batch, stage: str):
         """
@@ -27,7 +20,7 @@ class MaskedMSEStep:
         out = lit_module.model(batch)
 
         y_hat = out[self.predictions]
-        y     = out[self.targets]
+        y     = out[self.diagnostics]
 
         valid = torch.isfinite(y) & torch.isfinite(y_hat)
         
@@ -42,31 +35,24 @@ class MaskedMSEStep:
             return loss
 
         loss = F.mse_loss(y_hat[valid], y[valid])
-        
-        #code.interact(local=locals())
 
         lit_module.log(f"{stage}_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
             
         return loss
 
 
-class MaskedMSERollout:
+class RolloutMSE:
     
-    def __init__(self, 
-                    predictions=("predictions", "LST"),  
-                    targets=("seviri", "LST"),           
-                    prognostics=("prognostics", "seviri"),
-                    inputs_era=("inputs", "era5"),
-                    inputs_seviri=("inputs", "seviri"),
+    def __init__(self,
                     detach_rollout=False,  # True = truncated rollout, False = full BPTT through rollout
                     min_valid_fraction=0.05,  # Minimum fraction of valid pixels to compute loss
                     ):
 
-        self.predictions = predictions
-        self.targets = targets
-        self.prognostics = prognostics
-        self.inputs_era = inputs_era
-        self.inputs_seviri = inputs_seviri
+        self.predictions = ("predictions", "seviri")
+        self.diagnostics = ("diagnostics", "seviri")
+        self.prognostics = ("prognostics", "seviri")
+        self.inputs_era = ("inputs", "era5")
+        self.inputs_seviri = ("inputs", "seviri")
         self.detach_rollout = detach_rollout
 
         self.min_valid_fraction = min_valid_fraction

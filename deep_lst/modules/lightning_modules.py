@@ -1,13 +1,14 @@
 import pytorch_lightning as pl
+from pytorch_lightning import LightningModule
 import torch
 
+from deep_lst.losses.mse import DiagnosticMSE, RolloutMSE
 from torch.utils.data import DataLoader
-from deep_lst.dataset.dataset import UnimodalDataset, MultimodalDataset
-from tensordict import TensorDict
+from deep_lst.dataset.dataset import MultimodalDataset
 from tensordict import stack as td_stack
 
 
-class DataModule(pl.LightningDataModule):
+class LitDataModule(pl.LightningDataModule):
 
     def __init__(self, config):
         super().__init__()
@@ -84,3 +85,53 @@ class DataModule(pl.LightningDataModule):
         """
         return td_stack(batch, dim=0) #td_out
 
+
+
+class LitModelModule(LightningModule):
+
+    def __init__(self, model, config):
+        super().__init__()
+
+        self.model = model
+        self.config = config
+
+        if config['step_loss'] == 'rollout':
+            self.step_loss = RolloutMSE()
+        elif config['step_loss'] == 'stepwise':
+            self.step_loss = DiagnosticMSE()
+        else:
+            raise ValueError(f"Unknown step_loss type {config['step_loss']}")
+    
+    def training_step(self, batch, batch_idx):
+        loss = self.step_loss(self, batch, stage="train")
+        return loss
+    
+    def validation_step(self, batch, batch_idx):  
+        loss = self.step_loss(self, batch, stage="val")
+        return loss
+
+    def test_step(self, batch, batch_idx):  
+        loss = self.step_loss(self, batch, stage="test")
+        return loss
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(), 
+                                    lr=self.config['learning_rate'],
+                                    eps=1e-8,         # Numerical stability
+                                    weight_decay=0.0)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, 
+            T_max=self.config.get('max_epochs', 25)
+        )
+        
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch'
+            }
+        }
+
+    def on_train_epoch_end(self):
+        """Clear any accumulated state at epoch end"""
+        torch.cuda.empty_cache()

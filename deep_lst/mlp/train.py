@@ -2,11 +2,10 @@ import os
 import sys
 
 from deep_lst.utils.misc import open_config
-from deep_lst.dataset.datamodule import DataModule
-from deep_lst.models.regression import MultiModalMLP, LitTDmodule
+from deep_lst.modules.lightning_modules import LitDataModule, LitModelModule
+from deep_lst.mlp.regression import MultiModalMLP
 from pytorch_lightning import loggers as lgrs
-from lightning_fabric.plugins.environments import LightningEnvironment
-from tensordict.nn import TensorDictModule, TensorDictSequential
+from tensordict.nn import TensorDictModule
 from pytorch_lightning.profilers import AdvancedProfiler
 
 import pytorch_lightning as pl
@@ -25,13 +24,10 @@ print("SLURM_NNODES:", os.environ.get("SLURM_NNODES"))
 print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS")) 
 
 
-def get_input_size(config):
+def get_sizes(config):
     in_size = len(config['era5']['inputs'] + config['seviri']['inputs'] + config['era5']['prognostics'] + config['seviri']['prognostics'])
-    return in_size
-
-def get_output_size(config):
     out_size = len(config['era5']['prognostics'] + config['seviri']['prognostics'] + config['era5']['diagnostics'] + config['seviri']['diagnostics'])
-    return out_size
+    return in_size, out_size
 
 def main():
 
@@ -55,18 +51,17 @@ def main():
 
     torch.set_float32_matmul_precision('medium')
 
-    data_module = DataModule(config=config)
+    data_module = LitDataModule(config=config)
     data_module.setup()
 
-    in_size = get_input_size(config["datareader"])
-    out_size = get_output_size(config["datareader"])
+    in_size, out_size = get_sizes(config["datareader"])
 
     td_model = TensorDictModule(
         module=MultiModalMLP(in_size, out_size, config["model"]),
         in_keys=[("inputs", "era5"), ("inputs", "seviri")], #, ("prognostics", "seviri")],
-        out_keys=[("predictions", "LST")],
+        out_keys=[("predictions", "seviri")],
     )
-    lit_model = LitTDmodule(td_model, config["model"])
+    model_module = LitModelModule(td_model, config["model"])
 
     ngpu = torch.cuda.device_count() 
     if ngpu != 0:
@@ -91,7 +86,7 @@ def main():
 
     start_time = time.time()
     print("Fitting the model.")
-    trainer.fit(lit_model, datamodule=data_module)
+    trainer.fit(model_module, datamodule=data_module)
     print("Time required for fitting ... minutes ...:", (time.time() - start_time)/60)
 
 if __name__ == "__main__":

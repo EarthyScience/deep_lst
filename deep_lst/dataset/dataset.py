@@ -23,7 +23,7 @@ def get_sample_indices(config: dict, split: str):
 
     space, time = np.meshgrid(spatial_idx, temporal_idx, indexing='ij')
     indices = np.stack([space.ravel(), time.ravel()], axis=1)
-    print(indices.shape)
+
     return indices
 
 def get_reader_from_modality(modality_id, config: dict, split: str):
@@ -44,7 +44,7 @@ def get_reader_from_modality(modality_id, config: dict, split: str):
 
 
 class UnimodalDataset(Dataset):
-    def __init__(self, reader, indices, config):
+    def __init__(self, reader, indices):
         """
         zarr_array: xarray.DataArray or zarr.Array
         indices: 3d pandas dataframe or array
@@ -83,21 +83,16 @@ class UnimodalDataset(Dataset):
 
 class MultimodalDataset(Dataset):
 
-    def __init__(self, reader: dict[str], indices: dict[str],  config):
+    def __init__(self, reader: dict[str], indices: dict[str],  **kwargs):
 
         self.readers = reader
         self.indices = indices
-        self.modality_ids = list(self.readers.keys())
-        self.config = config
-
-        self.inputs = {mod : config[mod]['inputs'] for mod in self.modality_ids}
-        self.diagnostics = {mod : config[mod]['diagnostics'] for mod in self.modality_ids}
-        self.prognostics = {mod : config[mod]['prognostics'] for mod in self.modality_ids}
-
-        print(f"Initialized MultimodalDataset with {len(self.indices[self.modality_ids[0]])} samples.")
+        self.kwargs = kwargs
+        self.samples = len(self.indices[next(iter(self.readers))])
+        print(f"Initialized MultimodalDataset with {self.samples} samples.")
 
     def __len__(self):
-        return len(self.indices[self.modality_ids[0]])
+        return self.samples
 
     def __getitem__(self, idx):
 
@@ -108,28 +103,26 @@ class MultimodalDataset(Dataset):
             p_index, t_index = self.indices[modality][idx]
             data_mod = reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
 
-            data.set((modality,), data_mod)
-
-            if self.config[modality]['inputs']:
+            # This will change with structured dtype where concatenation isnt needed anymore
+            if self.kwargs[modality]['inputs']:
                 input_tensors = [data_mod[k] if k in data_mod else data[k] 
-                           for k in self.config[modality]['inputs']]
+                           for k in self.kwargs[modality]['inputs']]
                 data[("inputs", modality)] = torch.cat(input_tensors, dim=-1)
 
-            if self.config[modality]['diagnostics']:
+            if self.kwargs[modality]['diagnostics']:
                 diagnostic_tensors = [data_mod[k] if k in data_mod else data[k] 
-                           for k in self.config[modality]['diagnostics']]
+                           for k in self.kwargs[modality]['diagnostics']]
                 data[("diagnostics", modality)] = torch.cat(diagnostic_tensors, dim=-1)
             
-            if self.config[modality]['prognostics']:
+            if self.kwargs[modality]['prognostics']:
                 prognostic_tensors = [data_mod[k] if k in data_mod else data[k] 
-                           for k in self.config[modality]['prognostics']]
+                           for k in self.kwargs[modality]['prognostics']]
                 data[("prognostics", modality)] = torch.cat(prognostic_tensors, dim=-1)
 
         return data
 
     @classmethod
     def from_modalities(cls,
-        #modality_ids: list[str],
         config: dict,
         split: str
     ):
@@ -144,7 +137,7 @@ class MultimodalDataset(Dataset):
         dataset = cls(
             reader=readers,
             indices=indices,
-            config=config,
+            **config,
         )
 
         return dataset
