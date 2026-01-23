@@ -46,8 +46,8 @@ def main():
                 name=config['name']
             )
         loggers.append(wandb_logger)
-
-    profiler = AdvancedProfiler(dirpath=f"./experiments/{config['name']}", filename="perf_logs")
+    if config['profiler']:
+        AdvancedProfiler(dirpath=f"./experiments/{config['name']}", filename="perf_logs")
 
     torch.set_float32_matmul_precision('medium')
 
@@ -70,22 +70,21 @@ def main():
 
     trainer = pl.Trainer(max_epochs=config["training"]['epochs'], 
                         logger=loggers,
-                        accelerator="cpu", #"gpu",
-                        devices= 1, #ngpu,
+                        accelerator="gpu",
+                        devices= ngpu,
                         num_nodes=1,
                         strategy="ddp",
-                        overfit_batches=5,  # Use only 5 batches for both train/val
+                        #overfit_batches=5,  # Use only 5 batches for both train/val
                         limit_train_batches=config["training"]['limit_train_batches'],
                         limit_val_batches=config["training"]['limit_val_batches'],
                         precision="bf16-mixed",
                         gradient_clip_val=1.0,
                         gradient_clip_algorithm="norm",
-                        log_every_n_steps=1) # decrease to reduce logging overhead
+                        log_every_n_steps=5) # decrease to reduce logging overhead
 
     print("Trainer world_size:", trainer.world_size, "devices:", torch.cuda.device_count())
 
     start_time = time.time()
-    print("Fitting the model.")
     trainer.fit(model_module, datamodule=data_module)
     print("Time required for fitting ... minutes ...:", (time.time() - start_time)/60)
 

@@ -16,6 +16,9 @@ class MultiModalMLP(nn.Module):
 
         self.net = self.dense()
 
+    def name(self):
+        return 'mlp'
+
     def forward(self, *inputs):
         
         inputs = [x for x in inputs if x is not None]

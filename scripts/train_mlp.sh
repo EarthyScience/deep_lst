@@ -4,8 +4,7 @@
 #SBATCH --cpus-per-task=32 # one GPU : 32 threads (1/8 of the total available threads)
 #SBATCH --mem=120GB # Memory per CPU, For A40: 120GB. for A100: 240GB
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --time=00:20:00
+#SBATCH --time=04:00:00
 #SBATCH --output=scripts/out/train_test.%j
 #SBATCH --job-name=train_test
 
@@ -24,4 +23,4 @@ cd $WORKDIR
 source ${WORKDIR}/.venv/bin/activate
 export PYTHONPATH="$WORKDIR"
 
-srun python3 ${WORKDIR}/deep_lst/train.py --experiment_name ${EXPERIMENT_NAME}
+srun python3 ${WORKDIR}/deep_lst/mlp/train.py --experiment_name ${EXPERIMENT_NAME}
