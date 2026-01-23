@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 from tensordict import TensorDict
 
+import code
+
 class MaskedMSEStep:
     
     def __init__(self, predictions=("predictions", "LST"),  
@@ -33,13 +35,16 @@ class MaskedMSEStep:
         # Log count as sum over epoch
         lit_module.log(f"{stage}_count", count, on_step=False, on_epoch=True, sync_dist=True, reduce_fx="sum")
 
-        if n_valid == 0:
-            loss = torch.zeros((), device=y.device, dtype=y.dtype)
+        if int(count.item()) == 0:
+            print("no valid pixels found for loss computation!")
+            loss = y_hat.sum() * 0.0          # keeps grad graph (requires_grad=True)
             lit_module.log(f"{stage}_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
             return loss
 
-        mse = F.mse_loss(y_hat[valid], y[valid])
+        loss = F.mse_loss(y_hat[valid], y[valid])
         
+        #code.interact(local=locals())
+
         lit_module.log(f"{stage}_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
             
         return loss

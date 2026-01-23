@@ -52,10 +52,6 @@ class UnimodalDataset(Dataset):
         """
         self.indices = indices
         self.reader = reader
-        
-        #self.P = len(self.spatial_indices)
-        #self.T = len(self.temporal_indices)
-        #self.samples = self.P * self.T
 
         print(f"Initialized Unimodal dataset with {len(self.indices)} samples.")
 
@@ -63,9 +59,6 @@ class UnimodalDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, idx):
-
-        #t_index = self.temporal_indices[idx // self.P]
-        #p_index = self.spatial_indices[idx % self.P]
 
         p_index, t_index = self.indices[idx]
         sample = self.reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
@@ -95,6 +88,7 @@ class MultimodalDataset(Dataset):
         self.readers = reader
         self.indices = indices
         self.modality_ids = list(self.readers.keys())
+        self.config = config
 
         self.inputs = {mod : config[mod]['inputs'] for mod in self.modality_ids}
         self.diagnostics = {mod : config[mod]['diagnostics'] for mod in self.modality_ids}
@@ -116,22 +110,19 @@ class MultimodalDataset(Dataset):
 
             data.set((modality,), data_mod)
 
-            input_keys = self.inputs.get(modality, [])
-            if input_keys:
+            if self.config[modality]['inputs']:
                 input_tensors = [data_mod[k] if k in data_mod else data[k] 
-                           for k in input_keys]
+                           for k in self.config[modality]['inputs']]
                 data[("inputs", modality)] = torch.cat(input_tensors, dim=-1)
 
-            diagnostic_keys = self.diagnostics.get(modality, [])
-            if diagnostic_keys:
+            if self.config[modality]['diagnostics']:
                 diagnostic_tensors = [data_mod[k] if k in data_mod else data[k] 
-                           for k in diagnostic_keys]
+                           for k in self.config[modality]['diagnostics']]
                 data[("diagnostics", modality)] = torch.cat(diagnostic_tensors, dim=-1)
             
-            prognostic_keys = self.prognostics.get(modality, [])
-            if prognostic_keys:
+            if self.config[modality]['prognostics']:
                 prognostic_tensors = [data_mod[k] if k in data_mod else data[k] 
-                           for k in prognostic_keys]
+                           for k in self.config[modality]['prognostics']]
                 data[("prognostics", modality)] = torch.cat(prognostic_tensors, dim=-1)
 
         return data

@@ -4,7 +4,7 @@ import sys
 from deep_lst.utils.misc import open_config
 from deep_lst.dataset.datamodule import DataModule
 from deep_lst.models.regression import MultiModalMLP, LitTDmodule
-from pytorch_lightning import loggers
+from pytorch_lightning import loggers as lgrs
 from lightning_fabric.plugins.environments import LightningEnvironment
 from tensordict.nn import TensorDictModule, TensorDictSequential
 from pytorch_lightning.profilers import AdvancedProfiler
@@ -17,62 +17,71 @@ import argparse
 import code
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--experiment_name", required=True, type=str, help="Name of the experiment.")
+parser.add_argument("--config", required=True, type=str, help="Name of the experiment.")
 args = parser.parse_args()
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
 print("SLURM_NNODES:", os.environ.get("SLURM_NNODES"))
 print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS")) 
 
-def keys_by_type_from_cfg(config, var_type: str) -> list[tuple[str, str]]:
-    keys: list[tuple[str, str]] = []
-    for modality, modality_conf in config["modality"].items():
-        for var in modality_conf.get("variables", []):
-            (varname, meta), = var.items()
-            if meta.get("type") == var_type:
-                keys.append((modality, varname))
-    return keys
+
+def get_input_size(config):
+    in_size = len(config['era5']['inputs'] + config['seviri']['inputs'] + config['era5']['prognostics'] + config['seviri']['prognostics'])
+    return in_size
+
+def get_output_size(config):
+    out_size = len(config['era5']['prognostics'] + config['seviri']['prognostics'] + config['era5']['diagnostics'] + config['seviri']['diagnostics'])
+    return out_size
 
 def main():
 
-    config = open_config(experiment=args.experiment_name, path="experiments")
+    config = open_config(experiment=args.config, path="configs")
 
-    csv_logger = loggers.CSVLogger(
-        save_dir=f"./experiments/{args.experiment_name}/logs/",
-        name=config['name']
-    )
-    wandb_logger = loggers.WandbLogger(
-            project="deep_lst",
+    loggers = []
+    if config['csv_logger']:
+        csv_logger = lgrs.CSVLogger(
+            save_dir=f"./experiments/{config['name']}/logs/",
             name=config['name']
         )
+        loggers.append(csv_logger)
+    if config['wandb_logger']:
+        wandb_logger = lgrs.WandbLogger(
+                project="deep_lst",
+                name=config['name']
+            )
+        loggers.append(wandb_logger)
 
-    profiler = AdvancedProfiler(dirpath=f"./experiments/{args.experiment_name}", filename="perf_logs")
+    profiler = AdvancedProfiler(dirpath=f"./experiments/{config['name']}", filename="perf_logs")
 
     torch.set_float32_matmul_precision('medium')
 
     data_module = DataModule(config=config)
     data_module.setup()
 
+    in_size = get_input_size(config["datareader"])
+    out_size = get_output_size(config["datareader"])
+
     td_model = TensorDictModule(
-        module=MultiModalMLP(data_module.input_size+data_module.prognostic_size, data_module.diagnostic_size+data_module.prognostic_size, config),
-        in_keys=[("inputs", "era5"), ("inputs", "seviri"), ("prognostics", "seviri")],
+        module=MultiModalMLP(in_size, out_size, config["model"]),
+        in_keys=[("inputs", "era5"), ("inputs", "seviri")], #, ("prognostics", "seviri")],
         out_keys=[("predictions", "LST")],
     )
-    lit_model = LitTDmodule(td_model, config)
+    lit_model = LitTDmodule(td_model, config["model"])
 
     ngpu = torch.cuda.device_count() 
-    print("GPU:", torch.cuda.get_device_name(0))
+    if ngpu != 0:
+       print("GPU:", torch.cuda.get_device_name(0))
     print("number of GPUs:", ngpu)
 
-    trainer = pl.Trainer(max_epochs=config['epochs'], 
-                        logger=[csv_logger, wandb_logger],
-                        accelerator="gpu",
-                        devices=ngpu,
+    trainer = pl.Trainer(max_epochs=config["training"]['epochs'], 
+                        logger=loggers,
+                        accelerator="cpu", #"gpu",
+                        devices= 1, #ngpu,
                         num_nodes=1,
                         strategy="ddp",
-                        #overfit_batches=5,  # Use only 5 batches for both train/val
-                        limit_train_batches=config['limit_train_batches'],
-                        limit_val_batches=config['limit_val_batches'],
+                        overfit_batches=5,  # Use only 5 batches for both train/val
+                        limit_train_batches=config["training"]['limit_train_batches'],
+                        limit_val_batches=config["training"]['limit_val_batches'],
                         precision="bf16-mixed",
                         gradient_clip_val=1.0,
                         gradient_clip_algorithm="norm",
