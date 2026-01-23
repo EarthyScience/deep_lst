@@ -56,7 +56,7 @@ datareader:
     col_extent: 3201
     lookback: 1
     horizon: 3
-    patch_size: 32
+    patch_size: 16
 
     train_start: '2017-01-01 01:00' # lookback doesnt treat boundaries yet.
     train_end: '2017-11-30 23:00'
@@ -70,11 +70,12 @@ datareader:
     statistics_path: /Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/statistics/statistics_global.npz
 
 model:
+  name: mlp
   hidden_sizes: [256, 128, 128, 64, 128]
   learning_rate: 0.0001
   dropout: 0.2
   activation: 'relu'
-  step_loss: stepwise # options: rollout, stepwise
+  step_loss: DiagnosticMSE # options: DiagnosticMSE, RolloutMSE
 
 training:
   epochs: 35
@@ -89,3 +90,4 @@ experiment: europe
 name: test
 wandb_logger: False
 csv_logger: True
+profiler: False
