@@ -30,9 +30,36 @@ wedata = { path = "../wedata", editable = true }
 zarr = { path = "../zarr-python", editable = true}
 
 [dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "ruff>=0.14.14",
+]
 wedata = [
     "odc-geo>=0.4.10",
     "geopandas>=1.1.1",
     "odc>=0.1.2",
     "tqdm>=4.67.1",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [
+    "deep_lst/inference/verification.py",
+    "deep_lst/inference/inference.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.format]
+quote-style = "double"

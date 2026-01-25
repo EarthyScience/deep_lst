@@ -1,6 +1,6 @@
-era5: 
+era5:
   variables:
-      - stl1: {'type':'input','kind': 'dynamic', 'long_name': 'Surface temperature', 'description': 'Surface temperature (K)'} 
+      - stl1: {'type':'input','kind': 'dynamic', 'long_name': 'Surface temperature', 'description': 'Surface temperature (K)'}
       - swvl1: {'type':'input','kind': 'dynamic', 'long_name': 'Surface volumetric soil water layer 1', 'description': 'Volumetric soil water layer 1 (m³/m³)'}
       #- skt: {'type':'input', 'kind': 'dynamic', 'long_name': 'Skin temperature', 'description': 'Skin temperature (K)'}
       - t2m: {'type':'input','kind': 'dynamic', 'long_name': '2 m Temperature', 'description': 'Air temperature at 2 m (K)'}
@@ -10,12 +10,12 @@ era5:
       - v10: {'type':'input','kind': 'dynamic', 'long_name': '10 m V wind component', 'description': 'V component of wind at 10 m (m/s)'}
       - ssrd: {'type':'input','kind': 'dynamic', 'long_name': 'Surface solar radiation downwards', 'description': 'Surface solar radiation downwards (J/m²)'}
       - strd: {'type':'input','kind': 'dynamic', 'long_name': 'Surface thermal radiation downwards', 'description': 'Surface thermal radiation downwards (J/m²)'}
-      - tp: {'type':'input','kind': 'dynamic', 'long_name': 'Total precipitation', 'description': 'Total precipitation (m)'}  
+      - tp: {'type':'input','kind': 'dynamic', 'long_name': 'Total precipitation', 'description': 'Total precipitation (m)'}
       - cp: {'type':'input','kind': 'dynamic', 'long_name': 'Convective precipitation', 'description': 'Convective precipitation (m)'}
       - sf: {'type':'input','kind': 'dynamic', 'long_name': 'Snowfall', 'description': 'Snowfall (m)'}
-      - tcwv: {'type':'input','kind': 'dynamic', 'long_name': 'Total column water vapour', 'description': 'Total column water vapour (kg/m²)'}  
+      - tcwv: {'type':'input','kind': 'dynamic', 'long_name': 'Total column water vapour', 'description': 'Total column water vapour (kg/m²)'}
       - tvh: {'type':'input','kind': 'static', 'long_name': 'Vegetation high cover', 'description': 'High vegetation cover (static)'}
-      - tvl: {'type':'input','kind': 'static', 'long_name': 'Vegetation low cover', 'description': 'Medium vegetation cover (static)'}       
+      - tvl: {'type':'input','kind': 'static', 'long_name': 'Vegetation low cover', 'description': 'Medium vegetation cover (static)'}
       - lsm: {'type':'input','kind': 'ancillary', 'long_name': 'Land sea mask', 'description': 'Land surface model type'}
   normalization:
     type: zscore

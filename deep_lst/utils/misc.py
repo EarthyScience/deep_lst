@@ -1,23 +1,28 @@
-import torch
-import yaml
 import os
 from pathlib import Path
 
+import numpy as np
+import yaml
+
+
 def open_config(experiment: str, path: str = "experiments") -> dict:
     path = os.path.expanduser(path)
-    with open(f"{path}/{experiment}/config.yml", 'r') as stream:
+    with open(f"{path}/{experiment}/config.yml") as stream:
         return yaml.safe_load(stream)
+
 
 def open_hparams(experiment: str, version: str, path: str = "experiments") -> dict:
     path = os.path.expanduser(path)
-    with open(f"{path}/{experiment}/logs/prototype_{experiment}/{version}/hparams.yaml", 'r') as stream:
+    with open(f"{path}/{experiment}/logs/prototype_{experiment}/{version}/hparams.yaml") as stream:
         return yaml.safe_load(stream)
-    
-def load_checkpoint(experiment, version, name = "prototype", path = ".experiments/"):
-    checkpoints_root = Path(path+experiment + f"/logs/{name}_{experiment}/" + version + "/checkpoints/")
+
+
+def load_checkpoint(experiment, version, name="prototype", path=".experiments/"):
+    checkpoints_root = Path(path + experiment + f"/logs/{name}_{experiment}/" + version + "/checkpoints/")
     print(f"Looking for checkpoints in {checkpoints_root}")
     checkpoint_path = sorted(checkpoints_root.glob("*.ckpt"))[-1]
     return checkpoint_path
+
 
 def save_statistics_npz(statistics: dict, path: Path) -> None:
     """
@@ -47,6 +52,7 @@ def save_statistics_npz(statistics: dict, path: Path) -> None:
 
     np.savez(path, **arrays)
 
+
 def load_statistics_from_npz(path: Path) -> dict[str, dict[str, float]]:
     """
     Loads statistics saved with `save_statistics_npz`.
@@ -67,6 +73,7 @@ def load_statistics_from_npz(path: Path) -> dict[str, dict[str, float]]:
 
     return out
 
+
 def build_feature_list(config: dict) -> list:
     """
     Returns a flat list of input feature names from cfg, in order:
@@ -75,8 +82,8 @@ def build_feature_list(config: dict) -> list:
     """
     feature_list = []
     for group in ("era5", "seviri"):
-        g = (config.get(group) or {})
-        channels_input = ((g.get("channels") or {}).get("input") or {})
+        g = config.get(group) or {}
+        channels_input = (g.get("channels") or {}).get("input") or {}
         use = g.get("use_input") or []
         if isinstance(use, str):
             use = [use]
@@ -87,5 +94,5 @@ def build_feature_list(config: dict) -> list:
             if not names:
                 continue  # None, [], or missing
             feature_list.extend([n for n in names if n])
-            
+
     return feature_list

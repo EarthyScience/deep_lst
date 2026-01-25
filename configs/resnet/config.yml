@@ -1,5 +1,5 @@
 datareader:
-  era5: 
+  era5:
     modality_id: era5
     inputs:
       - stl1
@@ -47,9 +47,9 @@ datareader:
       - LWMASK
       - LANDCOV
     prognostics: []
-    diagnostics: 
+    diagnostics:
       - LST
-    
+
     normalization: zscore
     store_name: seviri.zarr
     row_extent: 3201

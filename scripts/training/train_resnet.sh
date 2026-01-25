@@ -1,15 +1,15 @@
 #!/bin/bash -x
 #SBATCH --partition=gpu # GPU queue
-#SBATCH --gres=gpu:A40:1 # Syntax = gpu:<A40/A100>:<number of gpus>
+#SBATCH --gres=gpu:A100:1 # Syntax = gpu:<A40/A100>:<number of gpus>
 #SBATCH --cpus-per-task=32 # one GPU : 32 threads (1/8 of the total available threads)
 #SBATCH --mem=120GB # Memory per CPU, For A40: 120GB. for A100: 240GB
 #SBATCH --nodes=1
-#SBATCH --time=04:00:00
-#SBATCH --output=scripts/out/train_test.%j
-#SBATCH --job-name=train_test
+#SBATCH --time=08:00:00
+#SBATCH --output=scripts/out/train_resnet.%j
+#SBATCH --job-name=train_resnet
 
 # Parse command line argument for experiment name
-EXPERIMENT_NAME=${1:-test_rollout}
+CONFIGNAME=${1:-resnet}
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -23,4 +23,4 @@ cd $WORKDIR
 source ${WORKDIR}/.venv/bin/activate
 export PYTHONPATH="$WORKDIR"
 
-srun python3 ${WORKDIR}/deep_lst/mlp/train.py --experiment_name ${EXPERIMENT_NAME}
+srun python3 ${WORKDIR}/deep_lst/resnet/train.py --config ${CONFIGNAME}

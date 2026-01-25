@@ -28,4 +28,3 @@ ${WORKDIR}/.venv/bin/python3 ${WORKDIR}/deep_lst/scripts/tools/compute_statistic
     --indices "assets/${MODALITY}/${EXPERIMENT}/indices/indices_5p.npz" \
     --batch_size 1024 \
     --num_workers 26
-

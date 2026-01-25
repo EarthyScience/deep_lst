@@ -1,29 +1,31 @@
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
-import code
 
-from dataclasses import dataclass
-from typing import Union, Optional
 
 @dataclass(frozen=True)
 class TemporalFilter:
-
     time_index: pd.DatetimeIndex
 
     @classmethod
     def from_range(
         cls,
-        start: Union[str, pd.Timestamp],
-        end: Union[str, pd.Timestamp],
+        start: str | pd.Timestamp,
+        end: str | pd.Timestamp,
         freq: str = "h",
     ) -> "TemporalFilter":
-        ti = pd.date_range(start=start, end=end, freq=freq,)
+        ti = pd.date_range(
+            start=start,
+            end=end,
+            freq=freq,
+        )
         return cls(pd.DatetimeIndex(ti))
 
     def filter_by_date(
         self,
-        start_date: Union[str, pd.Timestamp],
-        end_date: Union[str, pd.Timestamp],
+        start_date: str | pd.Timestamp,
+        end_date: str | pd.Timestamp,
         inclusive_left: bool = True,
         inclusive_right: bool = False,
     ) -> np.ndarray:
@@ -40,11 +42,7 @@ class TemporalFilter:
         idx = np.flatnonzero(mask).astype(np.int64)
         return idx
 
-    def stratified_sample(self,
-                      indices: np.ndarray,
-                      frac: float,
-                      by: str = "month",
-                      seed: int = 42) -> np.ndarray:
+    def stratified_sample(self, indices: np.ndarray, frac: float, by: str = "month", seed: int = 42) -> np.ndarray:
         rng = np.random.default_rng(seed)
 
         indices = np.asarray(indices, dtype=np.int64)
@@ -81,9 +79,9 @@ class TemporalFilter:
         out = np.concatenate(out).astype(np.int64)
         rng.shuffle(out)
         return out
-            
-def get_temporal_indices(config, split: str, stratify: bool = False) -> np.ndarray:
 
+
+def get_temporal_indices(config, split: str, stratify: bool = False) -> np.ndarray:
     tf = TemporalFilter.from_range("2017-01-01 00:00", "2017-12-31 23:00")
     temporal_indices = tf.filter_by_date(config[f"{split}_start"], config[f"{split}_end"])
     if stratify:

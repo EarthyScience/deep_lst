@@ -1,5 +1,5 @@
 datareader:
-  era5: 
+  era5:
     modality_id: era5
     inputs:
       - stl1
@@ -27,7 +27,7 @@ datareader:
     col_extent: 1440
     lookback: 1
     horizon: 3
-    patch_size: 32
+    patch_size: 16
 
     train_start: '2017-01-01 01:00' # lookback doesnt treat boundaries yet.
     train_end: '2017-11-30 23:00'
@@ -47,9 +47,9 @@ datareader:
       - LWMASK
       - LANDCOV
     prognostics: []
-    diagnostics: 
+    diagnostics:
       - LST
-    
+
     normalization: zscore
     store_name: seviri.zarr
     row_extent: 3201
