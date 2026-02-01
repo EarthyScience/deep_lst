@@ -8,9 +8,9 @@ from pytorch_lightning import loggers as lgrs
 from pytorch_lightning.profilers import AdvancedProfiler
 from tensordict.nn import TensorDictModule
 
-from deep_lst.modules.lightning_modules import LitDataModule, LitModelModule
+from deep_lst.dataset.data_module import LitDataModule, LitModelModule
 from deep_lst.resnet.model import TinyResNet
-from deep_lst.utils.misc import open_config
+from deep_lst.utils.config import open_config
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", required=True, type=str, help="Name of the experiment.")

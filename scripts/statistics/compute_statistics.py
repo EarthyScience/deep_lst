@@ -1,6 +1,5 @@
 import argparse
 import os
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -13,7 +12,8 @@ from wedata.schemes.torch.base import VariableType
 from wedata.statistics import StandardStatisticsMetric
 
 from deep_lst.dataset.dataset import UnimodalDataset
-from deep_lst.utils.misc import open_config, save_statistics_npz
+from deep_lst.utils.config import open_config
+from deep_lst.utils.io import ExperimentPaths, save_statistics_npz
 
 
 def calculate_statistics(
@@ -95,13 +95,15 @@ def main():
     else:
         raise ValueError(f"Modality {args.modality} not supported.")
 
-    CONFIG = open_config(experiment="test", path="experiments")
+    paths = ExperimentPaths()
+    config = open_config(paths.config_path("mlp_diag"))
 
     store = EOZarrStore(args.store, mode="r")
-    spatial_indices = np.load(args.indices)["mapping"]
+    spatial_indices = np.load(args.indices)[f"{args.modality}_indices"]
 
     temporal_idx = np.arange(
-        start=T1H.date_to_index(CONFIG["train_start"]), stop=T1H.date_to_index(CONFIG["train_end"])
+        start=T1H.date_to_index(config["train_dataset"]["start_time"]),
+        stop=T1H.date_to_index(config["train_dataset"]["end_time"]),
     )
 
     stats = calculate_statistics(
@@ -120,7 +122,7 @@ def main():
             for stat_name, value in var_stats.items():
                 print(f"  {stat_name}: {value}")
 
-        save_statistics_npz(stats, Path(args.statistics))
+        save_statistics_npz(stats, paths.statistics_path(args.modality, args.statistics))
         print(f"Saved statistics to {args.statistics}")
 
 
