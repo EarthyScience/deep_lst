@@ -4,125 +4,127 @@ from tensordict import TensorDict
 
 
 class DiagnosticMSE:
-    def __init__(self):
-        self.predictions = ("predictions", "seviri")
-        self.diagnostics = ("diagnostics", "seviri")
-        self.inputs_era = ("inputs", "era5")
-        self.inputs_seviri = ("inputs", "seviri")
+    def __init__(
+        self,
+        **kwargs,
+    ):
+        self.diagnostic_keys = kwargs["diagnostic_keys"]
+        self.diagnostic_out_keys = kwargs["diagnostic_out_keys"]
 
     def __call__(self, lit_module, batch, stage: str):
-        """
-        Masked mean squared error loss step for PyTorch Lightning modules.
-        """
-
         out = lit_module.model(batch)
 
-        y_hat = out[self.predictions]
-        y = out[self.diagnostics]
+        y_hat = out[self.diagnostic_out_keys[0]]
+        y = batch[self.diagnostic_keys[0]]
 
         valid = torch.isfinite(y) & torch.isfinite(y_hat)
-
-        count = valid.sum()  # tensor
-        # Log count as sum over epoch
+        count = valid.sum()
         lit_module.log(f"{stage}_count", count, on_step=False, on_epoch=True, sync_dist=True, reduce_fx="sum")
 
         if int(count.item()) == 0:
             print("no valid pixels found for loss computation!")
-            loss = y_hat.sum() * 0.0  # keeps grad graph (requires_grad=True)
+            loss = y_hat.sum() * 0.0
             lit_module.log(f"{stage}_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
             return loss
 
         loss = F.mse_loss(y_hat[valid], y[valid])
-
         lit_module.log(f"{stage}_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
-
         return loss
 
 
 class RolloutMSE:
     def __init__(
         self,
-        detach_rollout=False,  # True = truncated rollout, False = full BPTT through rollout
-        min_valid_fraction=0.05,  # Minimum fraction of valid pixels to compute loss
+        detach_rollout=True,
+        min_valid_fraction=0.05,
+        incremental_loss=False,
+        **kwargs,
     ):
-        self.predictions = ("predictions", "seviri")
-        self.diagnostics = ("diagnostics", "seviri")
-        self.prognostics = ("prognostics", "seviri")
-        self.inputs_era = ("inputs", "era5")
-        self.inputs_seviri = ("inputs", "seviri")
+        self.in_keys = kwargs["in_keys"]  # e.g. [("era5", "t2m"), ..., ("seviri", "DEM"), ...]
+        self.prognostic_keys = kwargs["prognostic_keys"]  # e.g. [("seviri", "LST")]
+        self.prognostic_out_keys = kwargs["prognostic_out_keys"]  # e.g. [("seviri", "LST")]
+        self.diagnostic_keys = kwargs["diagnostic_keys"]  # e.g. [("seviri", "LST")]
+        self.diagnostic_out_keys = kwargs["diagnostic_out_keys"]  # e.g. [("seviri", "LST")]
         self.detach_rollout = detach_rollout
-
         self.min_valid_fraction = min_valid_fraction
+        self.incremental_loss = incremental_loss
 
     def __call__(self, lit_module, batch, stage: str):
-        horizon = lit_module.config["horizon"]
-        loss = 0.0
+        horizon = lit_module.config["train_dataset"]["seviri"]["horizon"]  # suboptimal
+        lookback = lit_module.config["train_dataset"]["seviri"]["lookback"]
+
+        loss = torch.tensor(0.0, device=batch.device)
         valid_timesteps = 0
 
-        # Get initial prognostic state (t=0)
-        prog_raw = batch[self.prognostics][:, 0, ...].clone()  # [B, C, H, W]
+        # Compute combined spatial validity mask from initial prognostic state (t=0)
+        # Reduce across channels (all channels must be valid per pixel)
+        spatial_mask = None
+        for key in self.prognostic_keys:
+            state_0 = batch[key][:, 0, ...]  # [B, H, W, C]
+            mask = torch.isfinite(state_0).all(dim=-1)  # [B, H, W]
+            spatial_mask = mask if spatial_mask is None else spatial_mask & mask
 
-        # Create mask of initially valid pixels
-        initial_valid_mask = torch.isfinite(prog_raw)  # [B, C, H, W]
-        num_initially_valid = initial_valid_mask.sum()
+        if spatial_mask is None or spatial_mask.sum() == 0:
+            print("  WARNING: No initially valid pixels!")
+            return torch.tensor(0.0, device=batch.device, requires_grad=True)
 
-        if num_initially_valid == 0:
-            print("  ERROR: No initially valid pixels!")
-            return None
+        # Subset to valid pixels: [B, H, W, ...] -> [N_valid, ...]
+        # Initialize prognostic state at valid pixels only
+        prog = {}
+        for key in self.prognostic_keys:
+            prog[key] = batch[key][:, 0, ...][spatial_mask]  # [N_valid, C]
 
-        # temporarily fill NaNs with mean of valid pixels
-        if initial_valid_mask.any():
-            valid_mean = prog_raw[initial_valid_mask].mean()
-        else:
-            valid_mean = 0.0  # Fallback if no valid pixels at all
-        prog = torch.where(initial_valid_mask, prog_raw, valid_mean)
-
-        # Get full tensors (keep spatial structure)
-        era = batch[self.inputs_era]  # [B, T, C, H, W]
-        seviri = batch[self.inputs_seviri]  # [B, T, C, H, W]
-        targets = batch[self.targets]  # [B, T, C, H, W]
-
-        for timestep in range(1, horizon + 1):
-            # Build input for this timestep - prog now has NO NaNs
-            tstep_td = TensorDict(
-                {
-                    self.inputs_era: era[:, timestep, ...],
-                    self.inputs_seviri: seviri[:, timestep, ...],
-                    self.prognostics: prog,  # Clean, no NaNs
-                },
-                batch_size=[prog.shape[0]],
-            )
+        for t in range(lookback, horizon + 1):
+            # Build input at valid pixels only
+            tstep_td = TensorDict({}, batch_size=[spatial_mask.sum().item()])
+            for key in self.in_keys:
+                tstep_td[key] = batch[key][:, t, ...][spatial_mask]
+            for key in self.prognostic_keys:
+                tstep_td[key] = prog[key]
 
             out = lit_module.model(tstep_td)
-            logits = out[self.predictions]  # Should have fewer NaNs now
 
-            y_hat = prog + logits
+            # Prognostic targets: model predicts increment
+            for key, out_key in zip(self.prognostic_keys, self.prognostic_out_keys):
+                pred_increment = out[out_key]
+                y_hat = prog[key] + pred_increment
+                target = batch[key][:, t, ...][spatial_mask]
+                target_valid = torch.isfinite(target).all(dim=-1)
 
-            y_targ = targets[:, timestep, ...]
+                frac = target_valid.sum().float() / max(target_valid.numel(), 1)
+                if frac >= self.min_valid_fraction:
+                    # State loss
+                    loss += F.mse_loss(y_hat[target_valid], target[target_valid])
 
-            # Valid pixels: initially valid AND have valid target at this timestep
-            valid_at_this_step = initial_valid_mask & torch.isfinite(y_targ)
-            num_valid = valid_at_this_step.sum()
+                    # Increment loss: compare predicted increment to observed increment
+                    if self.incremental_loss:
+                        target_prev = batch[key][:, t - 1, ...][spatial_mask]
+                        target_increment = target - target_prev
+                        inc_valid = target_valid & torch.isfinite(target_increment).all(dim=-1)
+                        if inc_valid.sum() > 0:
+                            loss += F.mse_loss(pred_increment[inc_valid], target_increment[inc_valid])
 
-            pixels_per_sample = lit_module.config["patch_size"] ** 2 * lit_module.config["batch_size"]
-            valid_fraction = num_valid.float() / pixels_per_sample
+                    valid_timesteps += 1
 
-            if valid_fraction >= self.min_valid_fraction:
-                timestep_loss = F.mse_loss(y_hat[valid_at_this_step], y_targ[valid_at_this_step])
-                loss += timestep_loss
-                valid_timesteps += 1
+                # Update prognostic state
+                new_prog = y_hat.detach() if self.detach_rollout else y_hat
+                prog[key] = new_prog
 
-            # Update prognostic: only update initially valid pixels
-            prog = prog.clone()
-            prog[initial_valid_mask] = y_hat[initial_valid_mask]
+            # Diagnostic targets: direct prediction at valid pixels
+            for key, out_key in zip(self.diagnostic_keys, self.diagnostic_out_keys):
+                y_hat = out[out_key]
+                target = batch[key][:, t, ...][spatial_mask]
+                target_valid = torch.isfinite(target).all(dim=-1)
 
-            if self.detach_rollout:
-                prog = prog.detach()
+                frac = target_valid.sum().float() / max(target_valid.numel(), 1)
+                if frac >= self.min_valid_fraction:
+                    loss += F.mse_loss(y_hat[target_valid], target[target_valid])
+                    valid_timesteps += 1
+
+        if valid_timesteps > 0:
+            loss = loss / valid_timesteps
 
         lit_module.log(f"{stage}_loss_step", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         lit_module.log(f"{stage}_valid_timesteps", float(valid_timesteps), sync_dist=True)
-        lit_module.log(f"{stage}_initially_valid_pixels", float(num_initially_valid), sync_dist=True)
-
-        del out, logits, y_hat, y_targ, valid_at_this_step
 
         return loss
