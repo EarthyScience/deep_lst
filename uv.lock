@@ -8,6 +8,9 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'linux'",
 ]
 
+[manifest]
+overrides = [{ name = "zarr", editable = "../zarr-python" }]
+
 [[package]]
 name = "affine"
 version = "2.4.0"
@@ -700,7 +703,7 @@ wheels = [
 [[package]]
 name = "deep-lst"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "fastparquet" },
     { name = "flatdict" },
@@ -750,7 +753,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "wandb", specifier = ">=0.22.3" },
     { name = "wedata", editable = "../wedata" },
-    { name = "xarray", specifier = ">=2025.10.1" },
+    { name = "xarray", specifier = ">=2025.6.1" },
     { name = "zarr", editable = "../zarr-python" },
 ]
 
@@ -3297,8 +3300,8 @@ wheels = [
 
 [[package]]
 name = "stacathome"
-version = "0.0.1"
-source = { editable = "../stacathome" }
+version = "0.0.2"
+source = { git = "https://github.com/EarthyScience/stacathome.git?rev=main#242ec60b506e6ffa6ba911f12e7a08b0b1c4168b" }
 dependencies = [
     { name = "asf-search" },
     { name = "earthaccess" },
@@ -3325,53 +3328,6 @@ dependencies = [
     { name = "tqdm" },
     { name = "ufmt" },
     { name = "xarray" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "asf-search" },
-    { name = "dask", marker = "extra == 'dev'" },
-    { name = "earthaccess", git = "https://github.com/MarkusZehner/earthaccess.git?rev=main" },
-    { name = "eumdac" },
-    { name = "folium", marker = "extra == 'dev'" },
-    { name = "gdal", specifier = "==3.11" },
-    { name = "geopandas" },
-    { name = "h5py", marker = "extra == 'dev'" },
-    { name = "ipykernel", marker = "extra == 'dev'" },
-    { name = "jinja2", marker = "extra == 'dev'" },
-    { name = "jupyter", marker = "extra == 'dev'" },
-    { name = "matplotlib", marker = "extra == 'dev'" },
-    { name = "netcdf4" },
-    { name = "numba", marker = "extra == 'dev'" },
-    { name = "numpy" },
-    { name = "odc-geo" },
-    { name = "odc-stac" },
-    { name = "pandas" },
-    { name = "pdal" },
-    { name = "planetary-computer" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pyproj" },
-    { name = "pystac", extras = ["validation"] },
-    { name = "pystac-client" },
-    { name = "rasterio" },
-    { name = "rio-stac" },
-    { name = "rioxarray" },
-    { name = "scipy", marker = "extra == 'dev'" },
-    { name = "seaborn", marker = "extra == 'dev'" },
-    { name = "shapely" },
-    { name = "tqdm" },
-    { name = "ufmt", specifier = "==2.8.0" },
-    { name = "xarray" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "coverage" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "sphinx" },
 ]
 
 [[package]]
@@ -3907,7 +3863,7 @@ requires-dist = [
     { name = "rasterio", specifier = "==1.4.3" },
     { name = "rio-stac", specifier = "==0.11.0" },
     { name = "shapely" },
-    { name = "stacathome", editable = "../stacathome" },
+    { name = "stacathome", git = "https://github.com/EarthyScience/stacathome.git?rev=main" },
     { name = "streamlit" },
     { name = "tensordict" },
     { name = "tifffile", extras = ["all"] },
@@ -3915,7 +3871,7 @@ requires-dist = [
     { name = "torchmetrics", specifier = "~=1.7" },
     { name = "tqdm" },
     { name = "xarray", specifier = "~=2025.11.0" },
-    { name = "zarr", editable = "../zarr-python" },
+    { name = "zarr", git = "https://github.com/sehoffmann/zarr-python.git?rev=subarray_dtypes" },
 ]
 
 [package.metadata.requires-dev]

@@ -3,7 +3,6 @@ name = "deep_lst"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastparquet>=2024.11.0",
@@ -20,14 +19,23 @@ dependencies = [
     "torch>=2.9.0",
     "tqdm>=4.67.1",
     "wandb>=0.22.3",
-    "xarray>=2025.10.1",
+    "xarray>=2025.6.1",
     "wedata",
-    "zarr~=0.1.dev2719",     #"zarr>=3.1.3",
+    "zarr>=3.0.0", #"zarr~=0.1.dev2719",     #"zarr>=3.1.3",
 ]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [tool.uv.sources]
 wedata = { path = "../wedata", editable = true }
 zarr = { path = "../zarr-python", editable = true}
+
+[tool.uv]
+  override-dependencies = [
+      "zarr @ file:///Net/Groups/BGI/people/mwessel/zarr-python",
+  ]
 
 [dependency-groups]
 dev = [
@@ -44,10 +52,6 @@ wedata = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-exclude = [
-    "deep_lst/inference/verification.py",
-    "deep_lst/inference/inference.py",
-]
 
 [tool.ruff.lint]
 select = [
@@ -63,3 +67,8 @@ ignore = [
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deep_lst*"]
+exclude = ["plots*", "wandb*", "assets*", "configs*", "notebooks*", "checkpoints*", "experiments*"]
