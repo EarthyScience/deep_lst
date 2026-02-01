@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 import wedata
 from tensordict import TensorDict
 from torch.utils.data import Dataset
@@ -7,33 +6,18 @@ from wedata.eo_zarr import EOZarrStore
 from wedata.grids import T1H
 from wedata.util.misc import assemble_statistics_from_npz
 
+from deep_lst.utils.io import ExperimentPaths
 
-def get_sample_indices(config: dict, split: str):
-    spatial_idx = np.load(config["samples_path"])["mapping"]
-    temporal_idx = np.arange(
-        start=T1H.date_to_index(config[f"{split}_start"]), stop=T1H.date_to_index(config[f"{split}_end"])
-    )
+PATHS = ExperimentPaths()
 
-    space, time = np.meshgrid(spatial_idx, temporal_idx, indexing="ij")
-    indices = np.stack([space.ravel(), time.ravel()], axis=1)
 
+def _load_samples(path: str, modality_id: str, start_time: str, end_time: str) -> np.ndarray:
+    data = np.load(path)
+    space_idx = data[f"{modality_id}_indices"]  # , data["time_indices"]
+    time_idx = np.arange(start=T1H.date_to_index(start_time), stop=T1H.date_to_index(end_time))
+    space, time = np.meshgrid(space_idx, time_idx, indexing="ij")
+    indices = np.stack([space.ravel(), time.ravel()], axis=1)  # (N_spatial * N_time, 2)
     return indices
-
-
-def get_reader_from_modality(modality_id, config: dict, split: str):
-    # Load assets
-    statistics = assemble_statistics_from_npz(config["statistics_path"])
-    indices = get_sample_indices(config, split)  # or your way to load indices
-
-    # Opens store
-    store = EOZarrStore(config["store_path"], mode="r+")
-
-    # Instantiate reader
-    reader = wedata.get_data_reader(modality_id, eozarr_store=store, **config)
-    reader.available_indices(indices=indices)
-    reader.set_normalizer(statistics=statistics)
-
-    return reader, indices
 
 
 class UnimodalDataset(Dataset):
@@ -45,7 +29,6 @@ class UnimodalDataset(Dataset):
         """
         self.indices = indices
         self.reader = reader
-
         print(f"Initialized Unimodal dataset with {len(self.indices)} samples.")
 
     def __len__(self):
@@ -61,21 +44,27 @@ class UnimodalDataset(Dataset):
     def from_modality(
         cls,
         modality_id: str,
-        config: dict,
-        split: str,
+        **kwargs: dict,
     ):
-        reader, indices = get_reader_from_modality(modality_id, config, split)
+        indices = _load_samples(
+            PATHS.samples_path(kwargs["split"]), modality_id, kwargs["start_time"], kwargs["end_time"]
+        )
+        statistics = assemble_statistics_from_npz(PATHS.statistics_path(modality_id, kwargs[modality_id]["statistics"]))
 
-        dataset = cls(reader=reader, indices=indices, config=config)
+        store = EOZarrStore(PATHS.store_path(modality_id), mode="r+")
 
-        return dataset
+        # Instantiate reader
+        reader = wedata.get_data_reader(modality_id, eozarr_store=store, **kwargs[modality_id])
+        reader.set_normalizer(statistics=statistics)
+
+        return cls(reader=reader, indices=indices)
 
 
 class MultimodalDataset(Dataset):
     def __init__(self, reader: dict[str], indices: dict[str], **kwargs):
         self.readers = reader
         self.indices = indices
-        self.kwargs = kwargs
+        # self.kwargs = kwargs
         self.samples = len(self.indices[next(iter(self.readers))])
         print(f"Initialized MultimodalDataset with {self.samples} samples.")
 
@@ -87,41 +76,30 @@ class MultimodalDataset(Dataset):
 
         for modality, reader in self.readers.items():
             p_index, t_index = self.indices[modality][idx]
-            data_mod = reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
-
-            # This will change with structured dtype where concatenation isnt needed anymore
-            if self.kwargs[modality]["inputs"]:
-                input_tensors = [data_mod[k] if k in data_mod else data[k] for k in self.kwargs[modality]["inputs"]]
-                data[("inputs", modality)] = torch.cat(input_tensors, dim=-1)
-
-            if self.kwargs[modality]["diagnostics"]:
-                diagnostic_tensors = [
-                    data_mod[k] if k in data_mod else data[k] for k in self.kwargs[modality]["diagnostics"]
-                ]
-                data[("diagnostics", modality)] = torch.cat(diagnostic_tensors, dim=-1)
-
-            if self.kwargs[modality]["prognostics"]:
-                prognostic_tensors = [
-                    data_mod[k] if k in data_mod else data[k] for k in self.kwargs[modality]["prognostics"]
-                ]
-                data[("prognostics", modality)] = torch.cat(prognostic_tensors, dim=-1)
+            data[modality] = reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
 
         return data
 
     @classmethod
-    def from_modalities(cls, config: dict, split: str):
-        readers = {}
-        indices = {}
+    def from_modalities(cls, modality_ids: list[str], **kwargs: dict):
+        indices = {
+            mod: _load_samples(PATHS.samples_path(kwargs["split"]), mod, kwargs["start_time"], kwargs["end_time"])
+            for mod in modality_ids
+        }
 
-        for modality, mod_config in config.items():
-            reader, idxs_mod = get_reader_from_modality(modality, mod_config, split)
-            readers[modality] = reader
-            indices[modality] = idxs_mod
+        readers = {}
+        for mod in modality_ids:
+            store = EOZarrStore(PATHS.store_path(mod), mode="r+")
+            reader = wedata.get_data_reader(mod, eozarr_store=store, **kwargs[mod])
+            reader.set_normalizer(
+                statistics=assemble_statistics_from_npz(PATHS.statistics_path(mod, kwargs[mod]["statistics"]))
+            )
+            readers[mod] = reader
 
         dataset = cls(
             reader=readers,
             indices=indices,
-            **config,
+            **kwargs,
         )
 
         return dataset

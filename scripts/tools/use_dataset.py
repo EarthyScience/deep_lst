@@ -4,12 +4,14 @@ import torch
 from tensordict import stack as td_stack  # tensordict.stack
 from tensordict.nn import TensorDictModule
 
-from deep_lst.dataset.datamodule import DataModule
+from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.dataset.dataset import MultimodalDataset, UnimodalDataset
-from deep_lst.mlp.regression import MultiModalMLP
-from deep_lst.utils.misc import open_config
+from deep_lst.mlp.model import MultiModalMLP
+from deep_lst.utils.config import open_config
+from deep_lst.utils.io import ExperimentPaths
 
-CONFIG = open_config(experiment="test", path="configs")
+paths = ExperimentPaths()
+CONFIG = open_config(paths.config_path("mlp_diag"))
 
 
 def collate_multimodal_tensordict(batch):
@@ -24,34 +26,18 @@ def collate_multimodal_tensordict(batch):
     return td_stack(batch, dim=0)
 
 
-def variable_keys(config, modality, var_type: str) -> list[tuple[str, str]]:
-    keys = []
-    for var in config[modality]["variables"]:
-        ((varname, meta),) = var.items()
-        if meta.get("type") == var_type:
-            keys.append((modality, varname))
-    return keys
+train_dataset = UnimodalDataset.from_modality(modality_id="era5", **CONFIG["train_dataset"])
 
-
-uni_dataset = UnimodalDataset.from_modality(
-    modality_id="era5",
-    config=CONFIG["datareader"]["era5"],
-    split="test",
-)
-
-uniloader = torch.utils.data.DataLoader(
-    uni_dataset,
+train_loader = torch.utils.data.DataLoader(
+    train_dataset,
     batch_size=2,
     shuffle=True,
     collate_fn=collate_multimodal_tensordict,
 )
 
-b1 = next(iter(uniloader))
+b1 = next(iter(train_loader))
 
-multi_dataset = MultimodalDataset.from_modalities(
-    config=CONFIG["datareader"],
-    split="test",
-)
+multi_dataset = MultimodalDataset.from_modalities(modality_ids=["era5", "seviri"], **CONFIG["train_dataset"])
 
 multiloader = torch.utils.data.DataLoader(
     multi_dataset,
@@ -65,7 +51,7 @@ b2 = next(iter(multiloader))
 
 code.interact(local=locals())
 
-data_module = DataModule(config=CONFIG)
+data_module = LitDataModule(config=CONFIG)
 
 in_size = len(
     CONFIG["datareader"]["era5"]["inputs"]
