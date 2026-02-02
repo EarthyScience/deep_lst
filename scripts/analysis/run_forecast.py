@@ -23,16 +23,18 @@ def main():
     config = open_config(paths.config_path(args.config))
     td_keys = get_keys_from_config(config["test_dataset"])
 
-    # --- Model ---
+    # Load Model
     lit_module, device = load_model(config, td_keys, experiment=args.config, version=args.version)
-    # --- DataLoader ---
+
+    # Get Dataset and DataLoader
     test_dataset = MultimodalDataset.from_modalities(
         modality_ids=config["modality_ids"],
         **config["test_dataset"],
     )
     test_loader = DataLoader(
         test_dataset,
-        batch_size=512,
+        batch_size=config["analysis"]["batch_size"],
+        num_workers=config["analysis"]["num_workers"],
         shuffle=False,
         drop_last=False,
         collate_fn=Collator(config["model"]["name"]),
