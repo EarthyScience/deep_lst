@@ -2,7 +2,7 @@ import argparse
 
 from torch.utils.data import DataLoader
 
-from deep_lst.analysis.forecast import ForecastResult
+from deep_lst.analysis.forecast import Forecast
 from deep_lst.dataset.collator import Collator
 from deep_lst.dataset.dataset import MultimodalDataset
 from deep_lst.mlp.model import load_model
@@ -17,7 +17,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
+def run_forecast():
     args = parse_args()
     paths = ExperimentPaths()
     config = open_config(paths.config_path(args.config))
@@ -40,20 +40,19 @@ def main():
         collate_fn=Collator(config["model"]["name"]),
     )
 
-    result = ForecastResult.from_model(
+    forecast = Forecast(
         model=lit_module,
         device=device,
         loader=test_loader,
         td_keys=td_keys,
         config=config["test_dataset"],
-        samples_path=paths.samples_path(config["test_dataset"]["split"]),
-        predict_fn=ForecastResult._predict_diagnostic
-        if config["model"]["step_loss"] == "DiagnosticMSE"
-        else ForecastResult._predict_rollout,  # suboptimal
+        loss=config["model"]["step_loss"],
     )
+
+    result = forecast.predict()
 
     result.save(paths.predictions_path(args.config, args.version))
 
 
 if __name__ == "__main__":
-    main()
+    run_forecast()
