@@ -5,6 +5,8 @@ import xarray as xr
 from deep_lst.analysis.plots import PlotResults
 from deep_lst.utils import ExperimentPaths
 
+PATHS = ExperimentPaths()
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -13,14 +15,17 @@ def parse_args():
     return parser.parse_args()
 
 
-PATHS = ExperimentPaths()
-
-if __name__ == "__main__":
+def run_plots(results):
     args = parse_args()
-
-    results = xr.open_dataset(PATHS.predictions_path(args.config, args.version))
 
     plotter = PlotResults(results, args.config, args.version)
     plotter.regression_parity()
     plotter.prediction_maps(lead_time=0)
     plotter.plume_diagram_lts(n_pixels=10)
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    results = xr.open_dataset(PATHS.predictions_path(args.config, args.version))
+    run_plots(results)

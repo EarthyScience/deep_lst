@@ -104,6 +104,11 @@ training:
   limit_val_batches: 500
   overfit_batches: 0.0  # Use only 5 batches for both train/val
 
+analysis:
+  batch_size: 512
+  num_workers: 8
+  pin_memory: True
+
 experiment: johannesburg
 name: mlp_rollout
 wandb_logger: True

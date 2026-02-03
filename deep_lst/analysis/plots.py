@@ -72,7 +72,7 @@ class PlotResults:
 
         # Plot observations
         self.results["LST_obs"].isel(init_time=0, lead_time=lead_time).plot(
-            ax=axes[0], vmin=-1, vmax=1, cmap="RdBu_r", add_colorbar=False
+            ax=axes[0], cmap="RdBu_r", add_colorbar=False
         )
         axes[0].set_title("SEVIRI")
 
@@ -80,7 +80,7 @@ class PlotResults:
         im = (
             self.results["LST_pred"]
             .isel(init_time=0, lead_time=lead_time)
-            .plot(ax=axes[1], vmin=-1, vmax=1, cmap="RdBu_r", add_colorbar=False)
+            .plot(ax=axes[1], cmap="RdBu_r", add_colorbar=False)
         )
         axes[1].set_title("Forecast")
 
