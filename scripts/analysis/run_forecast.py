@@ -1,4 +1,5 @@
 import argparse
+import copy
 
 from torch.utils.data import DataLoader
 
@@ -14,6 +15,13 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Experiment name (config key)")
     parser.add_argument("--version", type=str, required=True, help="Run version folder")
+    # Optional time range override for parallelization
+    parser.add_argument("--start_time", type=str, default=None, help="Override start time (e.g. '2017-12-15 01:00')")
+    parser.add_argument("--end_time", type=str, default=None, help="Override end time (e.g. '2017-12-16 01:00')")
+    parser.add_argument("--chunk_id", type=str, default=None, help="Chunk identifier for partial output files")
+    parser.add_argument(
+        "--no_consistent_mask", action="store_true", help="Disable consistent cloud mask (show all available data)"
+    )
     return parser.parse_args()
 
 
@@ -21,6 +29,15 @@ def run_forecast():
     args = parse_args()
     paths = ExperimentPaths()
     config = open_config(paths.config_path(args.config))
+
+    # Override time range if provided (for parallelization)
+    if args.start_time or args.end_time:
+        config = copy.deepcopy(config)
+        if args.start_time:
+            config["test_dataset"]["start_time"] = args.start_time
+        if args.end_time:
+            config["test_dataset"]["end_time"] = args.end_time
+
     td_keys = get_keys_from_config(config["test_dataset"])
 
     # Load Model
@@ -38,6 +55,8 @@ def run_forecast():
         shuffle=False,
         drop_last=False,
         collate_fn=Collator(config["model"]["name"]),
+        pin_memory=config["analysis"]["pin_memory"],
+        persistent_workers=True,
     )
 
     forecast = Forecast(
@@ -47,11 +66,18 @@ def run_forecast():
         td_keys=td_keys,
         config=config["test_dataset"],
         prediction_mode=config["model"]["step_loss"],
+        apply_consistent_mask=not args.no_consistent_mask,
     )
 
     result = forecast.predict()
 
-    result.save(paths.predictions_path(args.config, args.version))
+    # Save with chunk suffix if parallelizing, otherwise normal path
+    if args.chunk_id:
+        output_path = paths.predictions_path(args.config, args.version, suffix=f"_chunk{args.chunk_id}")
+    else:
+        output_path = paths.predictions_path(args.config, args.version)
+
+    result.save(output_path)
 
 
 if __name__ == "__main__":

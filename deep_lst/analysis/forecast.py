@@ -131,8 +131,8 @@ class Forecast:
             normaliser=self.normaliser,
             **self.config["seviri"],
         )
-        # Apply consistent cloud mask across all lead times
-        if self.prediction_mode != "DiagnosticMSE":
+        # Apply consistent cloud mask across all lead times (optional)
+        if self.apply_consistent_mask and self.prediction_mode != "DiagnosticMSE":
             preds_flat, obs_flat = self._apply_consistent_mask(preds_flat, obs_flat)
 
         # Infer time horizon from first variable

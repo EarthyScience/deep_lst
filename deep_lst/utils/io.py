@@ -46,8 +46,8 @@ class ExperimentPaths:
     def scenes_path(self, experiment) -> Path:
         return self.config_root / f"{experiment}.yml"
 
-    def predictions_path(self, experiment: str, version: str) -> Path:
-        path = self.predictions_dir(experiment, version) / "forecast.nc"
+    def predictions_path(self, experiment: str, version: str, suffix: str = "") -> Path:
+        path = self.predictions_dir(experiment, version) / f"forecast{suffix}.nc"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 

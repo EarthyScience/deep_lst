@@ -1,3 +1,5 @@
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -7,7 +9,8 @@ from deep_lst.utils import ExperimentPaths
 
 
 class PlotResults:
-    def __init__(self, variable, results: xr.Dataset, experiment: str, version: str):
+    def __init__(self, results: xr.Dataset, variable: str, init_time: int, experiment: str, version: str):
+        self.init_time = init_time
         self.variable = variable
         self.results = results
         self.experiment = experiment
@@ -70,28 +73,58 @@ class PlotResults:
         )
         plt.close()
 
-    def prediction_maps(self, lead_time):
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    def prediction_maps(self, lead_time, apply_shared_mask=True):
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), subplot_kw={"projection": ccrs.PlateCarree()})
+
+        obs = self.results[f"{self.variable}_obs"].isel(init_time=self.init_time, lead_time=lead_time)
+        pred = self.results[f"{self.variable}_pred"].isel(init_time=self.init_time, lead_time=lead_time)
+
+        # Apply shared mask: only show pixels valid in both obs and pred
+        if apply_shared_mask:
+            shared_valid = np.isfinite(obs) & np.isfinite(pred)
+            obs = obs.where(shared_valid)
+            pred = pred.where(shared_valid)
 
         # Plot observations
-        self.results[f"{self.variable}_obs"].isel(init_time=0, lead_time=lead_time).plot(
-            ax=axes[0], cmap="RdBu_r", add_colorbar=False
-        )
+        obs.plot(ax=axes[0], cmap="RdBu_r", add_colorbar=False, transform=ccrs.PlateCarree())
         axes[0].set_title("SEVIRI")
 
         # Plot forecast
-        im = (
-            self.results[f"{self.variable}_pred"]
-            .isel(init_time=0, lead_time=lead_time)
-            .plot(ax=axes[1], cmap="RdBu_r", add_colorbar=False)
-        )
+        im = pred.plot(ax=axes[1], cmap="RdBu_r", add_colorbar=False, transform=ccrs.PlateCarree())
         axes[1].set_title("Forecast")
 
-        for ax in axes:
-            ax.set_xlabel("Longitude")
-            ax.set_ylabel("Latitude")
-            ax.set_aspect("equal")
-            ax.grid(True, alpha=0.3)
+        for i, ax in enumerate(axes):
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+            ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+            ax.add_feature(cfeature.STATES, linewidth=0.3, linestyle="--")
+
+            # Add gridlines with labels
+            gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5, linestyle="--")
+            gl.top_labels = False
+            gl.right_labels = False
+            gl.xlabel_style = {"size": 10}
+            gl.ylabel_style = {"size": 10}
+            # Only show y-labels on left plot
+            # if i > 0:
+            #    gl.left_labels = False
+
+            # Add north arrow to lower right
+            ax.annotate(
+                "N",
+                xy=(0.95, 0.04),
+                xycoords="axes fraction",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+            ax.annotate(
+                "",
+                xy=(0.95, 0.18),
+                xytext=(0.95, 0.08),
+                xycoords="axes fraction",
+                arrowprops=dict(arrowstyle="->", lw=1.5),
+            )
 
         # Add shared colorbar to the right
         fig.subplots_adjust(wspace=0.4, right=0.88)
@@ -101,7 +134,7 @@ class PlotResults:
 
         plt.savefig(
             self.paths.experiment_plots_path(
-                self.experiment, self.version, f"{self.variable}_prediction_maps_lt_{lead_time}"
+                self.experiment, self.version, f"{self.variable}_prediction_maps_it{self.init_time}_lt{lead_time}"
             ),
             dpi=150,
             bbox_inches="tight",
