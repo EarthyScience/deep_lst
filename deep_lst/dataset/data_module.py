@@ -46,7 +46,7 @@ class LitDataModule(pl.LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.kwargs["training"]["batch_size"],
-            shuffle=True,
+            shuffle=False,
             num_workers=self.kwargs["training"]["num_workers"],
             pin_memory=self.kwargs["training"]["pin_memory"],
             prefetch_factor=self.kwargs["training"]["prefetch_factor"],
@@ -59,7 +59,7 @@ class LitDataModule(pl.LightningDataModule):
         return DataLoader(
             self.test_dataset,
             batch_size=self.kwargs["training"]["batch_size"],
-            shuffle=True,
+            shuffle=False,
             num_workers=self.kwargs["training"]["num_workers"],
             pin_memory=self.kwargs["training"]["pin_memory"],
             prefetch_factor=self.kwargs["training"]["prefetch_factor"],
