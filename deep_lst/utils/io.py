@@ -11,6 +11,7 @@ class ExperimentPaths:
     experiment_root: Path = field(default_factory=lambda: Path("./experiments"))
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
+    plots_root: Path = field(default_factory=lambda: Path("./plots"))
     stores_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/wegen-stores/"))
     # --- directories ---
 
@@ -26,7 +27,7 @@ class ExperimentPaths:
     def predictions_dir(self, experiment: str, version: str) -> Path:
         return self.experiment_dir(experiment) / version / "results"
 
-    def plots_dir(self, experiment: str, version: str) -> Path:
+    def experiment_plots_dir(self, experiment: str, version: str) -> Path:
         return self.experiment_dir(experiment) / version / "plots"
 
     # --- file resolutions ---
@@ -42,16 +43,21 @@ class ExperimentPaths:
     def config_path(self, experiment: str) -> Path:
         return self.config_root / experiment / "config.yml"
 
-    def scenes_path(self) -> Path:
-        return self.config_root / "scenes.yml"
+    def scenes_path(self, experiment) -> Path:
+        return self.config_root / f"{experiment}.yml"
 
     def predictions_path(self, experiment: str, version: str) -> Path:
         path = self.predictions_dir(experiment, version) / "forecast.nc"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def plots_path(self, experiment: str, version: str, name: str) -> Path:
-        path = self.plots_dir(experiment, version) / f"{name}.png"
+    def experiment_plots_path(self, experiment: str, version: str, name: str) -> Path:
+        path = self.experiment_plots_dir(experiment, version) / f"{name}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def plots_path(self, subpath: str, name: str) -> Path:
+        path = self.plots_root / subpath / f"{name}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 

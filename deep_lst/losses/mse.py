@@ -6,12 +6,20 @@ from tensordict import TensorDict
 class DiagnosticMSE:
     def __init__(
         self,
+        impute_inputs=True,  # single FVC values missing
         **kwargs,
     ):
         self.diagnostic_keys = kwargs["diagnostic_keys"]
         self.diagnostic_out_keys = kwargs["diagnostic_out_keys"]
+        self.in_keys = kwargs.get("in_keys", [])
+        self.impute_inputs = impute_inputs
 
     def __call__(self, lit_module, batch, stage: str):
+        # Impute missing input values before forward pass
+        if self.impute_inputs and self.in_keys:
+            for key in self.in_keys:
+                batch[key] = torch.nan_to_num(batch[key], nan=0.0)
+
         out = lit_module.model(batch)
 
         y_hat = out[self.diagnostic_out_keys[0]]
@@ -38,6 +46,7 @@ class RolloutMSE:
         detach_rollout=True,
         min_valid_fraction=0.05,
         incremental_loss=False,
+        impute_inputs=True,  # single FVC values missing
         **kwargs,
     ):
         self.in_keys = kwargs["in_keys"]  # e.g. [("era5", "t2m"), ..., ("seviri", "DEM"), ...]
@@ -48,6 +57,7 @@ class RolloutMSE:
         self.detach_rollout = detach_rollout
         self.min_valid_fraction = min_valid_fraction
         self.incremental_loss = incremental_loss
+        self.impute_inputs = impute_inputs
 
     def __call__(self, lit_module, batch, stage: str):
         horizon = lit_module.config["train_dataset"]["seviri"]["horizon"]  # suboptimal
@@ -78,7 +88,10 @@ class RolloutMSE:
             # Build input at valid pixels only
             tstep_td = TensorDict({}, batch_size=[spatial_mask.sum().item()])
             for key in self.in_keys:
-                tstep_td[key] = batch[key][:, t, ...][spatial_mask]
+                inp = batch[key][:, t, ...][spatial_mask]
+                if self.impute_inputs:
+                    inp = torch.nan_to_num(inp, nan=0.0)
+                tstep_td[key] = inp
             for key in self.prognostic_keys:
                 tstep_td[key] = prog[key]
 

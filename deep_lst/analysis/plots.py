@@ -63,7 +63,9 @@ class PlotResults:
 
         plt.tight_layout()
         plt.savefig(
-            self.paths.plots_path(self.experiment, self.version, "regression_parity"), dpi=150, bbox_inches="tight"
+            self.paths.experiment_plots_path(self.experiment, self.version, "regression_parity"),
+            dpi=150,
+            bbox_inches="tight",
         )
         plt.close()
 
@@ -97,7 +99,7 @@ class PlotResults:
         cbar.set_label("Temperature (K)", rotation=270, labelpad=20)
 
         plt.savefig(
-            self.paths.plots_path(self.experiment, self.version, f"prediction_maps_lt_{lead_time}"),
+            self.paths.experiment_plots_path(self.experiment, self.version, f"prediction_maps_lt_{lead_time}"),
             dpi=150,
             bbox_inches="tight",
         )
@@ -201,7 +203,7 @@ class PlotResults:
 
         plt.tight_layout()
         plt.savefig(
-            self.paths.plots_path(self.experiment, self.version, "plume_diagram_lts"),
+            self.paths.experiment_plots_path(self.experiment, self.version, "plume_diagram_lts"),
             dpi=150,
             bbox_inches="tight",
         )

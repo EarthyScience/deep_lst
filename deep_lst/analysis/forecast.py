@@ -63,7 +63,7 @@ class ForecastResult:
 class Forecast:
     """Runs model inference and produces ForecastResult."""
 
-    def __init__(self, model, device: torch.device, loader: DataLoader, td_keys: dict, config: dict, loss: None):
+    def __init__(self, model, device: torch.device, loader: DataLoader, td_keys: dict, config: dict, loss: str):
         self.model = model
         self.device = device
         self.loader = loader
