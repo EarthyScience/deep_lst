@@ -81,6 +81,7 @@ class Forecast:
         td_keys: dict,
         config: dict,
         prediction_mode: str = "diagnostic",
+        apply_consistent_mask: bool = True,  # not used at the moment
     ):
         self.model = model
         self.device = device
@@ -88,6 +89,7 @@ class Forecast:
         self.td_keys = td_keys
         self.config = config
         self.prediction_mode = prediction_mode
+        self.apply_consistent_mask = apply_consistent_mask
 
         # Set up normaliser
         self.normaliser = ZScoringNormalizer(PATHS.statistics_path("seviri", config["seviri"]["statistics"]))
@@ -129,6 +131,9 @@ class Forecast:
             normaliser=self.normaliser,
             **self.config["seviri"],
         )
+        # Apply consistent cloud mask across all lead times
+        if self.prediction_mode != "DiagnosticMSE":
+            preds_flat, obs_flat = self._apply_consistent_mask(preds_flat, obs_flat)
 
         # Infer time horizon from first variable
         first_var = list(preds_flat.keys())[0]
@@ -269,6 +274,33 @@ class Forecast:
         obs = {var: np.concatenate(all_obs[var], axis=0) for var in all_vars}
 
         return preds, obs
+
+    @staticmethod
+    def _apply_consistent_mask(
+        preds: dict[str, np.ndarray], obs: dict[str, np.ndarray]
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        """Mask to pixels valid across all lead times for each variable.
+        Args:
+            preds: {var: (N_samples, T, ...)} predictions
+            obs: {var: (N_samples, T, ...)} observations
+        Returns:
+            Masked preds and obs with NaN where any timestep was invalid.
+        """
+        preds_masked = {}
+        obs_masked = {}
+
+        for var in obs:
+            o = obs[var]
+            p = preds[var]
+
+            # Valid if finite at ALL lead times: (N_samples, ...) -> broadcast to (N_samples, T, ...)
+            # Assumes shape is (N_samples, T) or (N_samples, T, H, W, ...)
+            all_valid = np.all(np.isfinite(o), axis=1, keepdims=True)
+
+            preds_masked[var] = np.where(all_valid, p, np.nan)
+            obs_masked[var] = np.where(all_valid, o, np.nan)
+
+        return preds_masked, obs_masked
 
     @staticmethod
     def _remap_to_grid(all_preds, all_obs, n_spatial, n_time, t, local_rows, local_cols, grid_shape):
