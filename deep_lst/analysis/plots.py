@@ -7,7 +7,8 @@ from deep_lst.utils import ExperimentPaths
 
 
 class PlotResults:
-    def __init__(self, results: xr.Dataset, experiment: str, version: str):
+    def __init__(self, variable, results: xr.Dataset, experiment: str, version: str):
+        self.variable = variable
         self.results = results
         self.experiment = experiment
         self.version = version
@@ -41,8 +42,8 @@ class PlotResults:
         # Scatter plot colored by lead time
         for i, lt in enumerate(lead_times):
             ax.scatter(
-                self.results["LST_obs"].isel(init_time=0, lead_time=i),
-                self.results["LST_pred"].isel(init_time=0, lead_time=i),
+                self.results[f"{self.variable}_obs"].isel(init_time=0, lead_time=i),
+                self.results[f"{self.variable}_pred"].isel(init_time=0, lead_time=i),
                 c=[colors[i]],
                 label=f"Lead Time {i}",
                 alpha=0.6,
@@ -63,7 +64,7 @@ class PlotResults:
 
         plt.tight_layout()
         plt.savefig(
-            self.paths.experiment_plots_path(self.experiment, self.version, "regression_parity"),
+            self.paths.experiment_plots_path(self.experiment, self.version, f"{self.variable}_regression_parity"),
             dpi=150,
             bbox_inches="tight",
         )
@@ -73,14 +74,14 @@ class PlotResults:
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
         # Plot observations
-        self.results["LST_obs"].isel(init_time=0, lead_time=lead_time).plot(
+        self.results[f"{self.variable}_obs"].isel(init_time=0, lead_time=lead_time).plot(
             ax=axes[0], cmap="RdBu_r", add_colorbar=False
         )
         axes[0].set_title("SEVIRI")
 
         # Plot forecast
         im = (
-            self.results["LST_pred"]
+            self.results[f"{self.variable}_pred"]
             .isel(init_time=0, lead_time=lead_time)
             .plot(ax=axes[1], cmap="RdBu_r", add_colorbar=False)
         )
@@ -99,7 +100,9 @@ class PlotResults:
         cbar.set_label("Temperature (K)", rotation=270, labelpad=20)
 
         plt.savefig(
-            self.paths.experiment_plots_path(self.experiment, self.version, f"prediction_maps_lt_{lead_time}"),
+            self.paths.experiment_plots_path(
+                self.experiment, self.version, f"{self.variable}_prediction_maps_lt_{lead_time}"
+            ),
             dpi=150,
             bbox_inches="tight",
         )
@@ -123,9 +126,9 @@ class PlotResults:
         lead_times = pd.TimedeltaIndex(ds.lead_time.values)
 
         # Find pixels that have valid data across all selected init times and lead times
-        valid_mask = np.isfinite(ds["LST_pred"].sel(init_time=init_times)).all(
+        valid_mask = np.isfinite(ds[f"{self.variable}_pred"].sel(init_time=init_times)).all(
             dim=["init_time", "lead_time"]
-        ) & np.isfinite(ds["LST_obs"].sel(init_time=init_times)).all(dim=["init_time", "lead_time"])
+        ) & np.isfinite(ds[f"{self.variable}_obs"].sel(init_time=init_times)).all(dim=["init_time", "lead_time"])
         valid_lats, valid_lons = np.where(valid_mask.values)
         if len(valid_lats) == 0:
             print("No fully valid pixels found for forecast_timeseries plot.")
@@ -146,9 +149,9 @@ class PlotResults:
                     vt = pd.Timestamp(it) + lt
 
                     # Get forecast value
-                    pred_val = float(ds["LST_pred"].sel(init_time=it).isel(lead_time=j, lat=li, lon=lo))
+                    pred_val = float(ds[f"{self.variable}_pred"].sel(init_time=it).isel(lead_time=j, lat=li, lon=lo))
                     # Get observation value
-                    obs_val = float(ds["LST_obs"].sel(init_time=it).isel(lead_time=j, lat=li, lon=lo))
+                    obs_val = float(ds[f"{self.variable}_obs"].sel(init_time=it).isel(lead_time=j, lat=li, lon=lo))
 
                     if np.isfinite(pred_val):
                         if vt not in valid_time_data:
@@ -196,14 +199,14 @@ class PlotResults:
         ax.set_xticklabels([vt.strftime("%Y-%m-%d %H:%M") for vt in sorted_times], rotation=45, ha="right")
 
         ax.set_xlabel("Validation Time")
-        ax.set_ylabel("LST")
+        ax.set_ylabel(f"{self.variable}")
         ax.set_title(f"Forecast distribution : {n_pixels} pixels; {n_init_times} init times; all lead times")
         # ax.grid(True, alpha=0.3, axis='y')
         ax.legend()
 
         plt.tight_layout()
         plt.savefig(
-            self.paths.experiment_plots_path(self.experiment, self.version, "plume_diagram_lts"),
+            self.paths.experiment_plots_path(self.experiment, self.version, f"{self.variable}_plume_diagram_lts"),
             dpi=150,
             bbox_inches="tight",
         )

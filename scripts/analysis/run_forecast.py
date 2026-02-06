@@ -46,7 +46,7 @@ def run_forecast():
         loader=test_loader,
         td_keys=td_keys,
         config=config["test_dataset"],
-        loss=config["model"]["step_loss"],
+        prediction_mode=config["model"]["step_loss"],
     )
 
     result = forecast.predict()

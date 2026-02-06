@@ -7,6 +7,7 @@ import torch
 import xarray as xr
 from tensordict import TensorDict
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from wedata.grids import T1H
 
 from deep_lst.analysis.spatial import build_local_grid
@@ -20,19 +21,21 @@ PATHS = ExperimentPaths()
 class ForecastResult:
     """Gridded forecast predictions and observations with coordinates."""
 
-    predictions: np.ndarray  # (N_time, T, lat, lon)
-    observations: np.ndarray  # (N_time, T, lat, lon)
+    predictions: dict[str, np.ndarray]  # {var: (N_time, T, lat, lon)}
+    observations: dict[str, np.ndarray]  # {var: (N_time, T, lat, lon)}
     init_times: pd.DatetimeIndex
     lead_times: pd.TimedeltaIndex
     lats: np.ndarray
     lons: np.ndarray
 
     def to_xarray(self) -> xr.Dataset:
+        data_vars = {}
+        for var in self.predictions:
+            data_vars[f"{var}_pred"] = (["init_time", "lead_time", "lat", "lon"], self.predictions[var])
+            data_vars[f"{var}_obs"] = (["init_time", "lead_time", "lat", "lon"], self.observations[var])
+
         return xr.Dataset(
-            {
-                "LST_pred": (["init_time", "lead_time", "lat", "lon"], self.predictions),
-                "LST_obs": (["init_time", "lead_time", "lat", "lon"], self.observations),
-            },
+            data_vars,
             coords={
                 "lat": self.lats,
                 "lon": self.lons,
@@ -50,9 +53,16 @@ class ForecastResult:
     @classmethod
     def load(cls, path: Path) -> "ForecastResult":
         ds = xr.open_dataset(path)
+
+        # Extract variable names from data vars (e.g. "LST_pred" -> "LST")
+        pred_vars = [v.replace("_pred", "") for v in ds.data_vars if v.endswith("_pred")]
+
+        predictions = {var: ds[f"{var}_pred"].values for var in pred_vars}
+        observations = {var: ds[f"{var}_obs"].values for var in pred_vars}
+
         return cls(
-            predictions=ds["LST_pred"].values,
-            observations=ds["LST_obs"].values,
+            predictions=predictions,
+            observations=observations,
             init_times=pd.DatetimeIndex(ds["init_time"].values),
             lead_times=pd.TimedeltaIndex(ds["lead_time"].values),
             lats=ds["lat"].values,
@@ -63,16 +73,29 @@ class ForecastResult:
 class Forecast:
     """Runs model inference and produces ForecastResult."""
 
-    def __init__(self, model, device: torch.device, loader: DataLoader, td_keys: dict, config: dict, loss: str):
+    def __init__(
+        self,
+        model,
+        device: torch.device,
+        loader: DataLoader,
+        td_keys: dict,
+        config: dict,
+        prediction_mode: str = "diagnostic",
+    ):
         self.model = model
         self.device = device
         self.loader = loader
         self.td_keys = td_keys
         self.config = config
-        self.loss = loss
+        self.prediction_mode = prediction_mode
 
-        # Set up normaliser if requested
+        # Set up normaliser
         self.normaliser = ZScoringNormalizer(PATHS.statistics_path("seviri", config["seviri"]["statistics"]))
+
+        # All variables we'll predict (prognostic + diagnostic)
+        self.prognostic_vars = [key[1] for key in td_keys.get("prognostic_keys", [])]
+        self.diagnostic_vars = [key[1] for key in td_keys.get("diagnostic_keys", [])]
+        self.all_vars = self.prognostic_vars + self.diagnostic_vars
 
         # Resolve grid once
         indices = _load_samples(
@@ -85,12 +108,19 @@ class Forecast:
         self.unique_time_idx = np.unique(indices[:, 1])
         self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = build_local_grid(
             self.unique_spatial_idx
-        )  # suboptimal
+        )
 
     def predict(self) -> ForecastResult:
         """Run inference and return gridded results."""
+        predict_dispatch = {
+            "DiagnosticMSE": self._predict_diagnostic,
+            "RolloutMSE": self._predict_rollout,
+        }
+        predict_fn = predict_dispatch.get(self.prediction_mode)
+        if predict_fn is None:
+            raise ValueError(f"Unknown prediction_mode: {self.prediction_mode}. Known: {list(predict_dispatch)}")
 
-        predict_fn = self._predict_diagnostic if (self.loss == "DiagnosticMSE") else self._predict_rollout
+        # Returns dict[var, np.ndarray] for preds and obs
         preds_flat, obs_flat = predict_fn(
             self.model,
             self.device,
@@ -100,18 +130,26 @@ class Forecast:
             **self.config["seviri"],
         )
 
-        time_horizon = preds_flat.shape[1]
+        # Infer time horizon from first variable
+        first_var = list(preds_flat.keys())[0]
+        time_horizon = preds_flat[first_var].shape[1]
 
-        predictions, observations = self._remap_to_grid(
-            preds_flat,
-            obs_flat,
-            len(self.unique_spatial_idx),
-            len(self.unique_time_idx),
-            time_horizon,
-            self.local_rows,
-            self.local_cols,
-            self.grid_shape,
-        )
+        # Remap each variable to grid
+        predictions = {}
+        observations = {}
+        for var in preds_flat:
+            pred_grid, obs_grid = self._remap_to_grid(
+                preds_flat[var],
+                obs_flat[var],
+                len(self.unique_spatial_idx),
+                len(self.unique_time_idx),
+                time_horizon,
+                self.local_rows,
+                self.local_cols,
+                self.grid_shape,
+            )
+            predictions[var] = pred_grid
+            observations[var] = obs_grid
 
         init_times = pd.to_datetime([T1H.index_to_startdate(int(t)) for t in self.unique_time_idx]).tz_localize(None)
         lead_times = pd.timedelta_range(start="0h", periods=time_horizon, freq="h")
@@ -127,45 +165,61 @@ class Forecast:
 
     @staticmethod
     def _predict_diagnostic(model, device, loader, td_keys, normaliser=None, **kwargs):
-        """Single-step: read diagnostic output directly, denormalise per batch."""
-        preds, obs = [], []
-        diag_key = td_keys["diagnostic_keys"][0]  # e.g. ("seviri", "LST")
-        diag_out_key = td_keys["diagnostic_out_keys"][0]
-        var = diag_key[1]  # "LST"
+        """Single-step: read all diagnostic outputs, denormalise per batch."""
+        diag_keys = td_keys["diagnostic_keys"]
+        diag_out_keys = td_keys["diagnostic_out_keys"]
+
+        # Accumulators per variable
+        preds = {key[1]: [] for key in diag_keys}
+        obs = {key[1]: [] for key in diag_keys}
 
         with torch.no_grad():
-            for batch in loader:
+            for batch in tqdm(loader, desc="Predicting (diagnostic)"):
                 batch = batch.to(device)
                 out = model.model(batch)
 
-                pred_batch = out[diag_out_key].cpu().numpy().squeeze((-3, -2, -1))
-                obs_batch = batch[diag_key].cpu().numpy().squeeze((-3, -2, -1))
+                for diag_key, diag_out_key in zip(diag_keys, diag_out_keys):
+                    var = diag_key[1]
 
-                if normaliser:
-                    pred_batch = normaliser.denormalise(pred_batch, var)
-                    obs_batch = normaliser.denormalise(obs_batch, var)
+                    pred_batch = out[diag_out_key].cpu().numpy().squeeze((-3, -2, -1))
+                    obs_batch = batch[diag_key].cpu().numpy().squeeze((-3, -2, -1))
 
-                preds.append(pred_batch)
-                obs.append(obs_batch)
+                    if normaliser:
+                        pred_batch = normaliser.denormalise(pred_batch, var)
+                        obs_batch = normaliser.denormalise(obs_batch, var)
 
-        return np.concatenate(preds, axis=0), np.concatenate(obs, axis=0)
+                    preds[var].append(pred_batch)
+                    obs[var].append(obs_batch)
+
+        # Concatenate batches for each variable
+        preds = {var: np.concatenate(preds[var], axis=0) for var in preds}
+        obs = {var: np.concatenate(obs[var], axis=0) for var in obs}
+
+        return preds, obs
 
     @staticmethod
     def _predict_rollout(model, device, loader, td_keys, normaliser=None, **kwargs):
         """Autoregressive rollout with per-batch denormalisation."""
-        all_preds, all_obs = [], []
-
         prog_keys = td_keys["prognostic_keys"]
         prog_out_keys = td_keys["prognostic_out_keys"]
         diag_keys = td_keys.get("diagnostic_keys", [])
         diag_out_keys = td_keys.get("diagnostic_out_keys", [])
 
+        all_vars = [k[1] for k in prog_keys] + [k[1] for k in diag_keys]
+
+        # Accumulators per variable
+        all_preds = {var: [] for var in all_vars}
+        all_obs = {var: [] for var in all_vars}
+
         with torch.no_grad():
-            for batch in loader:
+            for batch in tqdm(loader, desc="Predicting (rollout)"):
                 batch = batch.to(device)
 
                 prog = {key: batch[key][:, 0, ...] for key in prog_keys}
-                step_preds, step_obs = [], []
+
+                # Per-timestep accumulators for this batch
+                batch_preds = {var: [] for var in all_vars}
+                batch_obs = {var: [] for var in all_vars}
 
                 for t in range(kwargs["lookback"], kwargs["horizon"] + 1):
                     tstep_td = TensorDict({}, batch_size=[batch.batch_size[0]])
@@ -176,13 +230,11 @@ class Forecast:
 
                     out = model.model(tstep_td)
 
-                    # Update prognostic state
+                    # Update and collect prognostic state
                     for key, out_key in zip(prog_keys, prog_out_keys):
+                        var = key[1]
                         prog[key] = prog[key] + out[out_key]
 
-                    # Collect prognostic predictions
-                    for key in prog_keys:
-                        var = key[1]
                         pred_t = prog[key].cpu().numpy().squeeze((-3, -2, -1))
                         obs_t = batch[key][:, t, ...].cpu().numpy().squeeze((-3, -2, -1))
 
@@ -190,12 +242,13 @@ class Forecast:
                             pred_t = normaliser.denormalise(pred_t, var)
                             obs_t = normaliser.denormalise(obs_t, var)
 
-                        step_preds.append(pred_t)
-                        step_obs.append(obs_t)
+                        batch_preds[var].append(pred_t)
+                        batch_obs[var].append(obs_t)
 
                     # Collect diagnostic predictions
                     for key, out_key in zip(diag_keys, diag_out_keys):
                         var = key[1]
+
                         pred_t = out[out_key].cpu().numpy().squeeze((-3, -2, -1))
                         obs_t = batch[key][:, t, ...].cpu().numpy().squeeze((-3, -2, -1))
 
@@ -203,13 +256,19 @@ class Forecast:
                             pred_t = normaliser.denormalise(pred_t, var)
                             obs_t = normaliser.denormalise(obs_t, var)
 
-                        step_preds.append(pred_t)
-                        step_obs.append(obs_t)
+                        batch_preds[var].append(pred_t)
+                        batch_obs[var].append(obs_t)
 
-                all_preds.append(np.stack(step_preds, axis=1))
-                all_obs.append(np.stack(step_obs, axis=1))
+                # Stack timesteps for this batch: list of (B,) -> (B, T)
+                for var in all_vars:
+                    all_preds[var].append(np.stack(batch_preds[var], axis=1))
+                    all_obs[var].append(np.stack(batch_obs[var], axis=1))
 
-        return np.concatenate(all_preds, axis=0), np.concatenate(all_obs, axis=0)
+        # Concatenate batches for each variable
+        preds = {var: np.concatenate(all_preds[var], axis=0) for var in all_vars}
+        obs = {var: np.concatenate(all_obs[var], axis=0) for var in all_vars}
+
+        return preds, obs
 
     @staticmethod
     def _remap_to_grid(all_preds, all_obs, n_spatial, n_time, t, local_rows, local_cols, grid_shape):
