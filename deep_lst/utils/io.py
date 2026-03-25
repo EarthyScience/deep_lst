@@ -72,6 +72,18 @@ class ExperimentPaths:
     def store_path(self, name) -> Path:
         return self.stores_root / f"{name}.zarr"
 
+    def temporal_indices_path(self, split: str) -> Path:
+        """Resolve the pre-computed temporal block index file for *split*.
+
+        Expected location: assets/splits/time_indices_{split}.npz
+        Key inside the file: ``time_indices`` (int64 T1H positions).
+        """
+        return self.assets_root / "splits" / f"time_indices_{split}.npz"
+
+    def metadata_path(self, experiment: str, version: str) -> Path:
+        """Resolve the run-metadata JSON written at the start of each training run."""
+        return self.experiment_dir(experiment) / version / "metadata.json"
+
 
 def save_statistics_npz(statistics: dict, path: Path) -> None:
     """
