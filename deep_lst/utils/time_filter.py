@@ -82,6 +82,10 @@ class TemporalFilter:
 
 
 def get_temporal_indices(config, split: str, stratify: bool = False) -> np.ndarray:
+    if "temporal_indices_path" in config:
+        return np.load(config["temporal_indices_path"])["time_indices"].astype(np.int64)
+
+    # ── existing path (unchanged) ──────────────────────────────────────────
     tf = TemporalFilter.from_range("2017-01-01 00:00", "2017-12-31 23:00")
     temporal_indices = tf.filter_by_date(config[f"{split}_start"], config[f"{split}_end"])
     if stratify:

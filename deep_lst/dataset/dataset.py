@@ -11,10 +11,24 @@ from deep_lst.utils.io import ExperimentPaths
 PATHS = ExperimentPaths()
 
 
-def _load_samples(path: str, modality_id: str, start_time: str, end_time: str) -> np.ndarray:
+def _load_samples(
+    path: str,
+    modality_id: str,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    temporal_indices_path: str | None = None,
+) -> np.ndarray:
     data = np.load(path)
-    space_idx = data[f"{modality_id}_indices"]  # , data["time_indices"]
-    time_idx = np.arange(start=T1H.date_to_index(start_time), stop=T1H.date_to_index(end_time))
+    space_idx = data[f"{modality_id}_indices"]
+
+    if temporal_indices_path is not None:
+        time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64)
+    else:
+        time_idx = np.arange(
+            start=T1H.date_to_index(start_time),
+            stop=T1H.date_to_index(end_time),
+        )
+
     space, time = np.meshgrid(space_idx, time_idx, indexing="ij")
     indices = np.stack([space.ravel(), time.ravel()], axis=1)  # (N_spatial * N_time, 2)
     return indices
@@ -46,8 +60,13 @@ class UnimodalDataset(Dataset):
         modality_id: str,
         **kwargs: dict,
     ):
+        temporal_split = kwargs.get("temporal_split")
         indices = _load_samples(
-            PATHS.samples_path(kwargs["split"]), modality_id, kwargs["start_time"], kwargs["end_time"]
+            PATHS.samples_path(kwargs["split"]),
+            modality_id,
+            start_time=kwargs.get("start_time"),
+            end_time=kwargs.get("end_time"),
+            temporal_indices_path=PATHS.temporal_indices_path(temporal_split) if temporal_split is not None else None,
         )
         statistics = assemble_statistics_from_npz(PATHS.statistics_path(modality_id, kwargs[modality_id]["statistics"]))
 
@@ -82,8 +101,17 @@ class MultimodalDataset(Dataset):
 
     @classmethod
     def from_modalities(cls, modality_ids: list[str], **kwargs: dict):
+        temporal_split = kwargs.get("temporal_split")
         indices = {
-            mod: _load_samples(PATHS.samples_path(kwargs["split"]), mod, kwargs["start_time"], kwargs["end_time"])
+            mod: _load_samples(
+                PATHS.samples_path(kwargs["split"]),
+                mod,
+                start_time=kwargs.get("start_time"),
+                end_time=kwargs.get("end_time"),
+                temporal_indices_path=PATHS.temporal_indices_path(temporal_split)
+                if temporal_split is not None
+                else None,
+            )
             for mod in modality_ids
         }
 
