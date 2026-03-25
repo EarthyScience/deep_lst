@@ -18,10 +18,10 @@ def build_parser():
     )
 
     parser.add_argument(
-        "--split",
+        "--scenes_config",
         type=str,
         required=True,
-        help="specify which split (train, val, test)",
+        help='config file specifying scenes (e.g., "scenes.yml") needs training, validation, and test splits specified',
     )
 
     return parser
@@ -31,8 +31,7 @@ def main():
     args = build_parser().parse_args()
 
     paths = ExperimentPaths()
-    scenes_config = open_config(paths.scenes_path())
-    scenes = scenes_config[args.split]
+    scenes_config = open_config(paths.scenes_path(experiment=args.scenes_config))
 
     # change this in the future to dynamically subset with naturalearth mask
     land_mask = get_landmask_from_zarrstore(
@@ -61,28 +60,31 @@ def main():
         seviri, seviri, precise=False, cached=False
     )  # identity mapping
 
-    for scene_id, _ in scenes.items():
-        mapping_era5 = filter_mapping(
-            mapping=mapping_era,
-            land_mask=land_mask,
-            bbox=scenes[scene_id]["bbox"],
-        )
-        mapping_seviri = filter_mapping(
-            mapping=mapping_sev,
-            land_mask=land_mask,
-            bbox=scenes[scene_id]["bbox"],
-        )
+    for split in ["train", "val", "test"]:
+        scenes = scenes_config[split]
+        for scene_id, _ in scenes.items():
+            mapping_era5 = filter_mapping(
+                mapping=mapping_era,
+                land_mask=land_mask,
+                bbox=scenes[scene_id]["bbox"],
+            )
+            mapping_seviri = filter_mapping(
+                mapping=mapping_sev,
+                land_mask=land_mask,
+                bbox=scenes[scene_id]["bbox"],
+            )
 
-        scene = {
-            "era5_indices": mapping_era5.indices,
-            "seviri_indices": mapping_seviri.indices,
-            "scene_bbox": scenes[scene_id]["bbox"],
-            "scene_id": scene_id,
-        }
+            scene = {
+                "era5_indices": mapping_era5.indices,
+                "seviri_indices": mapping_seviri.indices,
+                "scene_bbox": scenes[scene_id]["bbox"],
+                "scene_id": scene_id,
+            }
 
-        np.savez_compressed(
-            f"/Net/Groups/BGI/people/mwessel/deep_lst/assets/samples/{args.split}_{scene_id}.npz", **scene
-        )
+            np.savez_compressed(
+                f"/Net/Groups/BGI/people/mwessel/deep_lst/assets/samples/{args.scenes_config}_{split}_{scene_id}.npz",
+                **scene,
+            )
 
 
 if __name__ == "__main__":
