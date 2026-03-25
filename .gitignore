@@ -4,6 +4,7 @@ wandb/
 
 scripts/out
 scripts/bin
+scripts/**/*.sh
 
 experiments/
 notebooks/
