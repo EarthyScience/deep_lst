@@ -244,3 +244,80 @@ class PlotResults:
             bbox_inches="tight",
         )
         plt.close()
+
+    def error_vs_leadtime(self, n_pixels: int = 500, seed: int = 42, bootstrap_uncertainty=True):
+        """Plot RMSE and MAE as a function of lead time for one init_time.
+        Shows mean +/- std over n randomly sampled pixels.
+        n_pixels : int
+            Number of random pixel locations to sample.
+        seed : int
+            Random seed for reproducibility.
+        Long term this function should go into the Plotter for the verification module.
+        """
+        ds = self.results
+        obs = ds[f"{self.variable}_obs"].isel(init_time=self.init_time)
+        pred = ds[f"{self.variable}_pred"].isel(init_time=self.init_time)
+
+        # Find pixels valid across all lead times
+        valid_mask = (np.isfinite(obs) & np.isfinite(pred)).all(dim="lead_time")
+        valid_lats, valid_lons = np.where(valid_mask.values)
+        if len(valid_lats) == 0:
+            print("No fully valid pixels found for error_vs_leadtime plot.")
+            return
+
+        rng = np.random.default_rng(seed)
+        n_pixels = min(n_pixels, len(valid_lats))
+        chosen = rng.choice(len(valid_lats), size=n_pixels, replace=False)
+        lat_idx = valid_lats[chosen]
+        lon_idx = valid_lons[chosen]
+
+        # Extract values for chosen pixels: shape (lead_time, n_pixels)
+        obs_vals = obs.values[:, lat_idx, lon_idx]
+        pred_vals = pred.values[:, lat_idx, lon_idx]
+
+        # Per-pixel errors at each lead time: shape (lead_time, n_pixels)
+        abs_err = np.abs(pred_vals - obs_vals)
+
+        # Aggregate metrics per lead time
+        # rmse = np.sqrt(sq_err.mean(axis=1))
+        mae = abs_err.mean(axis=1)
+
+        # Bootstrap std for uncertainty bands
+        if bootstrap_uncertainty:
+            n_boot = 1000
+            # rmse_boot = np.zeros((len(ds.lead_time), n_boot))
+            mae_boot = np.zeros((len(ds.lead_time), n_boot))
+            for b in range(n_boot):
+                idx = rng.choice(n_pixels, size=n_pixels, replace=True)
+                # rmse_boot[:, b] = np.sqrt(sq_err[:, idx].mean(axis=1))
+                mae_boot[:, b] = abs_err[:, idx].mean(axis=1)
+        # rmse_std = rmse_boot.std(axis=1)
+        mae_std = mae_boot.std(axis=1)
+
+        lead_times = np.arange(len(ds.lead_time))
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        # ax.plot(lead_times, rmse, "o-", color="tab:red", label="RMSE")
+        # ax.fill_between(lead_times, rmse - 1.96*rmse_std, rmse + 1.96*rmse_std, color="tab:red", alpha=0.2)
+
+        ax.plot(lead_times, mae, "s-", color="tab:blue", label="MAE")
+        ax.fill_between(lead_times, mae - 1.96 * mae_std, mae + 1.96 * mae_std, color="tab:blue", alpha=0.2)
+
+        ax.set_xlabel("Lead Time")
+        ax.set_ylabel("LST Error (K)")
+        init_time_str = pd.Timestamp(ds.init_time.values[self.init_time]).strftime("%Y-%m-%d %H:%M")
+        ax.set_title(f"Initial time: {init_time_str} (n={n_pixels} pixels)")
+        ax.set_xticks(lead_times)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(
+            self.paths.experiment_plots_path(
+                self.experiment, self.version, f"{self.variable}_error_vs_leadtime_it{self.init_time}"
+            ),
+            dpi=150,
+            bbox_inches="tight",
+        )
+        plt.close()

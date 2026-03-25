@@ -29,6 +29,7 @@ def run_plots(results, variable, init_time=0):
     plotter.regression_parity()
     plotter.prediction_maps(lead_time=0)
     plotter.plume_diagram_lts(n_pixels=10)
+    plotter.error_vs_leadtime(n_pixels=500)
 
 
 if __name__ == "__main__":
