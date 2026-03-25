@@ -8,6 +8,10 @@ scripts/bin
 experiments/
 notebooks/
 plots/
+configs/
+
+deep_lst/raw
+deep_lst/exploration
 
 # Python-generated files
 __pycache__/
