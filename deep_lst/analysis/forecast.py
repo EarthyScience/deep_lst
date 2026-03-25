@@ -157,7 +157,8 @@ class Forecast:
             observations[var] = obs_grid
 
         init_times = pd.to_datetime([T1H.index_to_startdate(int(t)) for t in self.unique_time_idx]).tz_localize(None)
-        lead_times = pd.timedelta_range(start="0h", periods=time_horizon, freq="h")
+        lead_start_h = self.config.get("seviri", {}).get("lookback", 0)  # skip lookback hours for lead time indexing
+        lead_times = pd.timedelta_range(start=f"{lead_start_h}h", periods=time_horizon, freq="h")
 
         return ForecastResult(
             predictions=predictions,
