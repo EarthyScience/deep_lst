@@ -14,6 +14,11 @@ from deep_lst.utils.config import get_keys_from_config, open_config
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", required=True, type=str, help="Name of the experiment.")
+parser.add_argument(
+    "--smoke",
+    action="store_true",
+    help="Smoke-test mode: 1 epoch, 3 train/val batches, CSV logger only.",
+)
 args = parser.parse_args()
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
@@ -24,6 +29,15 @@ print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS"))
 def main():
     paths = ExperimentPaths()
     config = open_config(paths.config_path(args.config))
+
+    if args.smoke:
+        print(">>> SMOKE MODE: overriding training limits.")
+        config["training"]["max_epochs"] = 1
+        config["training"]["limit_train_batches"] = 3
+        config["training"]["limit_val_batches"] = 3
+        config["training"]["overfit_batches"] = 0.0
+        config["wandb_logger"] = False
+        config["name"] = config["name"] + "_smoke"
 
     loggers = []
     if config["csv_logger"]:
