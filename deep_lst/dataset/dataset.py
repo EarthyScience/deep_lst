@@ -19,7 +19,9 @@ def _load_samples(
     temporal_indices_path: str | None = None,
 ) -> np.ndarray:
     data = np.load(path)
-    space_idx = data[f"{modality_id}_indices"]
+    space_idx = data.get(f"{modality_id}_indices", data.get("mapping"))
+    if space_idx is None:
+        raise KeyError(f"No spatial index key found in {path}")
 
     if temporal_indices_path is not None:
         time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64)
@@ -62,7 +64,7 @@ class UnimodalDataset(Dataset):
     ):
         temporal_split = kwargs.get("temporal_split")
         indices = _load_samples(
-            PATHS.samples_path(kwargs["split"]),
+            PATHS.spatial_indices_path(kwargs["spatial"]),
             modality_id,
             start_time=kwargs.get("start_time"),
             end_time=kwargs.get("end_time"),
@@ -104,7 +106,7 @@ class MultimodalDataset(Dataset):
         temporal_split = kwargs.get("temporal_split")
         indices = {
             mod: _load_samples(
-                PATHS.samples_path(kwargs["split"]),
+                PATHS.spatial_indices_path(mod, kwargs["spatial"]),
                 mod,
                 start_time=kwargs.get("start_time"),
                 end_time=kwargs.get("end_time"),

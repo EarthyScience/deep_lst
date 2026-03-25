@@ -1,6 +1,10 @@
 import argparse
+import json
 import os
+import shutil
+import subprocess
 import time
+from pathlib import Path
 
 import pytorch_lightning as pl
 import torch
@@ -13,11 +17,17 @@ from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config, open_config
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--config", required=True, type=str, help="Name of the experiment.")
+parser.add_argument("--config", required=True, type=str, help="Name of the experiment config folder.")
+parser.add_argument(
+    "--tag",
+    default=None,
+    type=str,
+    help="Short label appended to the run name (e.g. --tag lr5e5). Useful for within-family sweeps.",
+)
 parser.add_argument(
     "--smoke",
     action="store_true",
-    help="Smoke-test mode: 1 epoch, 3 train/val batches, CSV logger only.",
+    help="Smoke-test mode: 1 epoch, 3 train/val/test batches, CSV logger only.",
 )
 args = parser.parse_args()
 
@@ -26,15 +36,29 @@ print("SLURM_NNODES:", os.environ.get("SLURM_NNODES"))
 print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS"))
 
 
+def _git_hash() -> str:
+    try:
+        return (
+            subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+        )
+    except Exception:
+        return "unknown"
+
+
 def main():
     paths = ExperimentPaths()
     config = open_config(paths.config_path(args.config))
+
+    # --- name: apply tag first, then smoke suffix so order is always name_tag_smoke ---
+    if args.tag:
+        config["name"] = config["name"] + f"_{args.tag}"
 
     if args.smoke:
         print(">>> SMOKE MODE: overriding training limits.")
         config["training"]["max_epochs"] = 1
         config["training"]["limit_train_batches"] = 3
         config["training"]["limit_val_batches"] = 3
+        config["training"]["limit_test_batches"] = 3
         config["training"]["overfit_batches"] = 0.0
         config["wandb_logger"] = False
         config["name"] = config["name"] + "_smoke"
@@ -48,6 +72,23 @@ def main():
         loggers.append(wandb_logger)
     if config["profiler"]:
         AdvancedProfiler(dirpath=f"./experiments/{config['name']}", filename="perf_logs")
+
+    # --- snapshot config + metadata into the experiment run directory ---
+    if config["csv_logger"]:
+        run_dir = Path(csv_logger.log_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(paths.config_path(args.config), run_dir / "config.yml")
+        metadata = {
+            "config": args.config,
+            "tag": args.tag,
+            "smoke": args.smoke,
+            "git_hash": _git_hash(),
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+            "node": os.environ.get("SLURM_NODELIST"),
+        }
+        with open(run_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
 
     torch.set_float32_matmul_precision("medium")
 
@@ -83,10 +124,11 @@ def main():
         overfit_batches=config["training"]["overfit_batches"],
         limit_train_batches=config["training"]["limit_train_batches"],
         limit_val_batches=config["training"]["limit_val_batches"],
+        limit_test_batches=config["training"]["limit_test_batches"],
         precision="bf16-mixed",
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
-        log_every_n_steps=5,  # decrease to reduce logging overhead
+        log_every_n_steps=5,
     )
 
     start_time = time.time()

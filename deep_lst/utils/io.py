@@ -66,8 +66,8 @@ class ExperimentPaths:
     def statistics_path(self, modality, name) -> Path:
         return self.assets_root / modality / "statistics" / f"statistics_{name}.npz"
 
-    def samples_path(self, name) -> Path:
-        return self.assets_root / "samples" / f"{name}.npz"
+    def spatial_indices_path(self, modality: str, name: str) -> Path:
+        return self.assets_root / modality / "spatial" / f"indices_{name}.npz"
 
     def store_path(self, name) -> Path:
         return self.stores_root / f"{name}.zarr"
@@ -78,7 +78,7 @@ class ExperimentPaths:
         Expected location: assets/splits/time_indices_{split}.npz
         Key inside the file: ``time_indices`` (int64 T1H positions).
         """
-        return self.assets_root / "splits" / f"time_indices_{split}.npz"
+        return self.assets_root / "temporal" / f"time_indices_{split}.npz"
 
     def metadata_path(self, experiment: str, version: str) -> Path:
         """Resolve the run-metadata JSON written at the start of each training run."""
