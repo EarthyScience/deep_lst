@@ -1,5 +1,5 @@
+import eodata
 import numpy as np
-import wedata
 from eodata.eo_zarr import EOZarrStore
 from eodata.grids import T1H
 from eodata.util.misc import assemble_statistics_from_npz
@@ -75,7 +75,7 @@ class UnimodalDataset(Dataset):
         store = EOZarrStore(PATHS.store_path(modality_id), mode="r+")
 
         # Instantiate reader
-        reader = wedata.get_data_reader(modality_id, eozarr_store=store, **kwargs[modality_id])
+        reader = eodata.get_data_reader(modality_id, eozarr_store=store, **kwargs[modality_id])
         reader.set_normalizer(statistics=statistics)
 
         return cls(reader=reader, indices=indices)
@@ -120,7 +120,7 @@ class MultimodalDataset(Dataset):
         readers = {}
         for mod in modality_ids:
             store = EOZarrStore(PATHS.store_path(mod), mode="r+")
-            reader = wedata.get_data_reader(mod, eozarr_store=store, **kwargs[mod])
+            reader = eodata.get_data_reader(mod, eozarr_store=store, **kwargs[mod])
             reader.set_normalizer(
                 statistics=assemble_statistics_from_npz(PATHS.statistics_path(mod, kwargs[mod]["statistics"]))
             )

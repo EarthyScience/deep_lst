@@ -80,7 +80,7 @@ def calculate_statistics(
         sampler=sampler,
         num_workers=num_workers,
         drop_last=False,
-        # No collate_fn: default collate handles TensorDict batches correctly.
+        collate_fn=torch.stack,
     )
 
     schema = reader.get_torch_schema()
@@ -171,9 +171,9 @@ def main():
 
     # ── reader class ──────────────────────────────────────────────────────────
     if args.modality == "era5":
-        from wedata.data_reader.era5 import Era5Reader as ReaderCls
+        from eodata.data_reader.era5 import Era5Reader as ReaderCls
     else:
-        from wedata.data_reader.seviri import SeviriReader as ReaderCls
+        from eodata.data_reader.seviri import SeviriReader as ReaderCls
 
     # ── reader kwargs from config ─────────────────────────────────────────────
     # Variable lists come from the training config so statistics always cover
