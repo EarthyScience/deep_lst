@@ -1,4 +1,4 @@
-from wedata.util.misc import assemble_statistics_from_npz
+from eodata.util.misc import assemble_statistics_from_npz
 
 
 class ZScoringNormalizer:

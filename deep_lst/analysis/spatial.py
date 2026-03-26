@@ -1,5 +1,5 @@
 import numpy as np
-from wedata.grids import EquiangularGrid
+from eodata.grids import EquiangularGrid
 
 
 def build_local_grid(spatial_idx: np.ndarray):

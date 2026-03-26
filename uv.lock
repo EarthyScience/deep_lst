@@ -158,6 +158,12 @@ wheels = [
 ]
 
 [[package]]
+name = "antlr4-python3-runtime"
+version = "4.9.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz", hash = "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b", size = 117034, upload-time = "2021-11-06T17:52:23.524Z" }
+
+[[package]]
 name = "appnope"
 version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -308,6 +314,30 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cc/7e/b975b5814bd36faf009faebe22c1072a1fa1168db34d285ef0ba071ad78c/cachetools-6.2.1.tar.gz", hash = "sha256:3f391e4bd8f8bf0931169baf7456cc822705f4e2a31f840d218f445b9a854201", size = 31325, upload-time = "2025-10-12T14:55:30.139Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/c5/1e741d26306c42e2bf6ab740b2202872727e0f606033c9dd713f8b93f5a8/cachetools-6.2.1-py3-none-any.whl", hash = "sha256:09868944b6dde876dfd44e1d47e18484541eaf12f26f29b7af91b26cc892d701", size = 11280, upload-time = "2025-10-12T14:55:28.382Z" },
+]
+
+[[package]]
+name = "cartopy"
+version = "0.25.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pyproj" },
+    { name = "pyshp" },
+    { name = "shapely" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3c/3f/ec3dee34237b696a486d566a6d3ae6550ae821836e0412bafdcbbec2cfd2/cartopy-0.25.0.tar.gz", hash = "sha256:55f1a390e5f3f075b221c7d91fb10258ad978db786c7930eba06eb45d28753fe", size = 10767728, upload-time = "2025-08-01T12:44:16.573Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/e1/6a52ee21424da0ed30860f4e94d1657ade8d4436f0718485badf0e63011e/cartopy-0.25.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:0e41d52160548a7ab7774423911db3bfb5a8bc0929580958b1945d3a004da872", size = 11006320, upload-time = "2025-08-01T12:43:48.13Z" },
+    { url = "https://files.pythonhosted.org/packages/68/06/38bcfeab9822acffc86474659d33c4dc3c5dec4e61e9927fb8cc8617f651/cartopy-0.25.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:432e2a2688fc58af43b9b6bf1d343bb08e2d6ef298efa91e55445f1d308b5ef3", size = 10995635, upload-time = "2025-08-01T12:43:50.855Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/b6/f39407d27d641a949496a52ab00220fe0635758e3cb7afb4b7328abe17e7/cartopy-0.25.0-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:999e44021db07dcf895b115934fb0816aef39985fbaca6ded61d2536355531de", size = 11808214, upload-time = "2025-08-01T12:43:53.218Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/c0/b33ac1f586608e80a5e10f3924e16c117da333fcb5e5240839e6681ac3d5/cartopy-0.25.0-cp311-cp311-win_amd64.whl", hash = "sha256:4139e5ca9faaa037e0576cdcf625b9461a0b404d60e9d20ea24c4d8dbe6f689d", size = 10983301, upload-time = "2025-08-01T12:43:55.427Z" },
+    { url = "https://files.pythonhosted.org/packages/63/35/b19901cbe7f1b118dccbb9e655cda7d01a31ee1ecd67e5d2d8afe119f6d3/cartopy-0.25.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:060a7b835c0c4222c1067b6ffb2f9c18458abaa35b6624573a3aa37ecf55f4bf", size = 11006900, upload-time = "2025-08-01T12:43:57.708Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/4f/09e824f86be09152ec0f1fa1fe69affbd34eac7a13b545e2e08b9b6bc8ff/cartopy-0.25.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:57717cb603aecff03ecfee1bc153bb4022c054fcd51a4214a1bb53e5a6f74465", size = 10994813, upload-time = "2025-08-01T12:44:00.069Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/30/7465b650110514fc5c9c3b59935264c35ab56f876322de34efa55367ee4e/cartopy-0.25.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:53c256351433155ef51dde976557212f4e230b8cca4e5d0d9b9a2737ad92959d", size = 11799069, upload-time = "2025-08-01T12:44:02.287Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/52/3a57ecb4598c33ee06b512d3686e46b3983e65abd6ec94c5262d01930ed9/cartopy-0.25.0-cp312-cp312-win_amd64.whl", hash = "sha256:efedb82f38409b72becdfee02231126952816d33a68b1c584bd2136713036bfb", size = 10983127, upload-time = "2025-08-01T12:44:04.441Z" },
 ]
 
 [[package]]
@@ -705,6 +735,8 @@ name = "deep-lst"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cartopy" },
+    { name = "eodata" },
     { name = "fastparquet" },
     { name = "flatdict" },
     { name = "geopandas" },
@@ -713,13 +745,13 @@ dependencies = [
     { name = "netcdf4" },
     { name = "odc" },
     { name = "odc-geo" },
+    { name = "omegaconf" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pytorch-lightning" },
     { name = "torch" },
     { name = "tqdm" },
     { name = "wandb" },
-    { name = "wedata" },
     { name = "xarray" },
     { name = "zarr" },
 ]
@@ -729,7 +761,7 @@ dev = [
     { name = "pre-commit" },
     { name = "ruff" },
 ]
-wedata = [
+eodata = [
     { name = "geopandas" },
     { name = "odc" },
     { name = "odc-geo" },
@@ -738,6 +770,8 @@ wedata = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cartopy", specifier = ">=0.25.0" },
+    { name = "eodata", editable = "../eodata_slim" },
     { name = "fastparquet", specifier = ">=2024.11.0" },
     { name = "flatdict", specifier = ">=4.0.1" },
     { name = "geopandas", specifier = ">=1.1.1" },
@@ -746,13 +780,13 @@ requires-dist = [
     { name = "netcdf4", specifier = ">=1.7.3" },
     { name = "odc", specifier = ">=0.1.2" },
     { name = "odc-geo", specifier = ">=0.4.10" },
+    { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pytorch-lightning", specifier = ">=2.5.5" },
     { name = "torch", specifier = ">=2.9.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "wandb", specifier = ">=0.22.3" },
-    { name = "wedata", editable = "../wedata" },
     { name = "xarray", specifier = ">=2025.6.1" },
     { name = "zarr", editable = "../zarr-python" },
 ]
@@ -762,7 +796,7 @@ dev = [
     { name = "pre-commit", specifier = ">=4.5.1" },
     { name = "ruff", specifier = ">=0.14.14" },
 ]
-wedata = [
+eodata = [
     { name = "geopandas", specifier = ">=1.1.1" },
     { name = "odc", specifier = ">=0.1.2" },
     { name = "odc-geo", specifier = ">=0.4.10" },
@@ -814,6 +848,80 @@ dependencies = [
     { name = "tenacity" },
     { name = "tinynetrc" },
     { name = "typing-extensions" },
+]
+
+[[package]]
+name = "eodata"
+version = "0.0.1"
+source = { editable = "../eodata_slim" }
+dependencies = [
+    { name = "bson" },
+    { name = "cartopy" },
+    { name = "celery", extra = ["redis"] },
+    { name = "certifi" },
+    { name = "flower" },
+    { name = "folium" },
+    { name = "gdal" },
+    { name = "geopandas" },
+    { name = "matplotlib" },
+    { name = "netcdf4" },
+    { name = "numcodecs", extra = ["msgpack", "pcodec", "zfpy"] },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pandera", extra = ["pandas"] },
+    { name = "pyarrow" },
+    { name = "rasterio" },
+    { name = "rio-stac" },
+    { name = "shapely" },
+    { name = "stacathome" },
+    { name = "streamlit" },
+    { name = "tensordict" },
+    { name = "tifffile", extra = ["all"] },
+    { name = "torch" },
+    { name = "torchmetrics" },
+    { name = "tqdm" },
+    { name = "xarray" },
+    { name = "zarr" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bson" },
+    { name = "cartopy", specifier = ">=0.25.0" },
+    { name = "celery", extras = ["redis"] },
+    { name = "certifi" },
+    { name = "flower" },
+    { name = "folium" },
+    { name = "gdal", specifier = "==3.11" },
+    { name = "geopandas" },
+    { name = "matplotlib" },
+    { name = "netcdf4" },
+    { name = "numcodecs", extras = ["msgpack", "zfpy", "pcodec"] },
+    { name = "numpy", specifier = "~=2.2" },
+    { name = "pandas", specifier = "~=2.2" },
+    { name = "pandera", extras = ["pandas"] },
+    { name = "pyarrow" },
+    { name = "rasterio", specifier = "==1.4.3" },
+    { name = "rio-stac", specifier = "==0.11.0" },
+    { name = "shapely" },
+    { name = "stacathome", git = "https://github.com/EarthyScience/stacathome.git?rev=main" },
+    { name = "streamlit" },
+    { name = "tensordict" },
+    { name = "tifffile", extras = ["all"] },
+    { name = "torch", specifier = "~=2.6" },
+    { name = "torchmetrics", specifier = "~=1.7" },
+    { name = "tqdm" },
+    { name = "xarray", specifier = "~=2025.11.0" },
+    { name = "zarr", git = "https://github.com/sehoffmann/zarr-python.git?rev=subarray_dtypes" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "coverage" },
+    { name = "ipykernel" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "sphinx" },
 ]
 
 [[package]]
@@ -2092,6 +2200,19 @@ wheels = [
 ]
 
 [[package]]
+name = "omegaconf"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/09/48/6388f1bb9da707110532cb70ec4d2822858ddfb44f1cdf1233c20a80ea4b/omegaconf-2.3.0.tar.gz", hash = "sha256:d5d4b6d29955cc50ad50c46dc269bcd92c6e00f5f90d23ab5fee7bfca4ba4cc7", size = 3298120, upload-time = "2022-12-08T20:59:22.753Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/94/1843518e420fa3ed6919835845df698c7e27e183cb997394e4a670973a65/omegaconf-2.3.0-py3-none-any.whl", hash = "sha256:7b4df175cdb08ba400f45cae3bdcae7ba8365db4d165fc65fd04b050ab63b46b", size = 79500, upload-time = "2022-12-08T20:59:19.686Z" },
+]
+
+[[package]]
 name = "orjson"
 version = "3.11.5"
 source = { registry = "https://pypi.org/simple" }
@@ -2722,6 +2843,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/69/a1/dc250e3cf83eb4b3b9a2cf86fdb5e25288bd40037ae449695550f9e96b2f/pyproj-3.7.2-cp312-cp312-win32.whl", hash = "sha256:b3d99ed57d319da042f175f4554fc7038aa4bcecc4ac89e217e350346b742c9d", size = 5898872, upload-time = "2025-08-14T12:04:22.485Z" },
     { url = "https://files.pythonhosted.org/packages/4a/a6/6fe724b72b70f2b00152d77282e14964d60ab092ec225e67c196c9b463e5/pyproj-3.7.2-cp312-cp312-win_amd64.whl", hash = "sha256:11614a054cd86a2ed968a657d00987a86eeb91fdcbd9ad3310478685dc14a128", size = 6312176, upload-time = "2025-08-14T12:04:24.736Z" },
     { url = "https://files.pythonhosted.org/packages/5d/68/915cc32c02a91e76d02c8f55d5a138d6ef9e47a0d96d259df98f4842e558/pyproj-3.7.2-cp312-cp312-win_arm64.whl", hash = "sha256:509a146d1398bafe4f53273398c3bb0b4732535065fa995270e52a9d3676bca3", size = 6233452, upload-time = "2025-08-14T12:04:27.287Z" },
+]
+
+[[package]]
+name = "pyshp"
+version = "3.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/20/8b07bae73aaa0c3f5a2683ba6e23b46e977e2d33a88126d56bbcc2d135cd/pyshp-3.0.3.tar.gz", hash = "sha256:bf4678b13dd53578ed87669676a2fffeccbcded1ec8ff9cafb36d1b660f4b305", size = 2192568, upload-time = "2025-11-28T17:47:31.616Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/06/cad54e8ce758bd836ee5411691cbd49efeb9cc611b374670fce299519334/pyshp-3.0.3-py3-none-any.whl", hash = "sha256:28c8fac8c0c25bb0fecbbfd10ead7f319c2ff2f3b0b44a94f22bd2c93510ad42", size = 58465, upload-time = "2025-11-28T17:47:30.328Z" },
 ]
 
 [[package]]
@@ -3809,78 +3939,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/24/30/6b0809f4510673dc723187aeaf24c7f5459922d01e2f794277a3dfb90345/wcwidth-0.2.14.tar.gz", hash = "sha256:4d478375d31bc5395a3c55c40ccdf3354688364cd61c4f6adacaa9215d0b3605", size = 102293, upload-time = "2025-09-22T16:29:53.023Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/af/b5/123f13c975e9f27ab9c0770f514345bd406d0e8d3b7a0723af9d43f710af/wcwidth-0.2.14-py2.py3-none-any.whl", hash = "sha256:a7bb560c8aee30f9957e5f9895805edd20602f2d7f720186dfd906e82b4982e1", size = 37286, upload-time = "2025-09-22T16:29:51.641Z" },
-]
-
-[[package]]
-name = "wedata"
-version = "0.0.1"
-source = { editable = "../wedata" }
-dependencies = [
-    { name = "bson" },
-    { name = "celery", extra = ["redis"] },
-    { name = "certifi" },
-    { name = "flower" },
-    { name = "folium" },
-    { name = "gdal" },
-    { name = "geopandas" },
-    { name = "matplotlib" },
-    { name = "netcdf4" },
-    { name = "numcodecs", extra = ["msgpack", "pcodec", "zfpy"] },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pandera", extra = ["pandas"] },
-    { name = "pyarrow" },
-    { name = "rasterio" },
-    { name = "rio-stac" },
-    { name = "shapely" },
-    { name = "stacathome" },
-    { name = "streamlit" },
-    { name = "tensordict" },
-    { name = "tifffile", extra = ["all"] },
-    { name = "torch" },
-    { name = "torchmetrics" },
-    { name = "tqdm" },
-    { name = "xarray" },
-    { name = "zarr" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bson" },
-    { name = "celery", extras = ["redis"] },
-    { name = "certifi" },
-    { name = "flower" },
-    { name = "folium" },
-    { name = "gdal", specifier = "==3.11" },
-    { name = "geopandas" },
-    { name = "matplotlib" },
-    { name = "netcdf4" },
-    { name = "numcodecs", extras = ["msgpack", "zfpy", "pcodec"] },
-    { name = "numpy", specifier = "~=2.2" },
-    { name = "pandas", specifier = "~=2.2" },
-    { name = "pandera", extras = ["pandas"] },
-    { name = "pyarrow" },
-    { name = "rasterio", specifier = "==1.4.3" },
-    { name = "rio-stac", specifier = "==0.11.0" },
-    { name = "shapely" },
-    { name = "stacathome", git = "https://github.com/EarthyScience/stacathome.git?rev=main" },
-    { name = "streamlit" },
-    { name = "tensordict" },
-    { name = "tifffile", extras = ["all"] },
-    { name = "torch", specifier = "~=2.6" },
-    { name = "torchmetrics", specifier = "~=1.7" },
-    { name = "tqdm" },
-    { name = "xarray", specifier = "~=2025.11.0" },
-    { name = "zarr", git = "https://github.com/sehoffmann/zarr-python.git?rev=subarray_dtypes" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "coverage" },
-    { name = "ipykernel" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "sphinx" },
 ]
 
 [[package]]

@@ -5,10 +5,10 @@ import numpy as np
 import pandas as pd
 import torch
 import xarray as xr
+from eodata.grids import T1H
 from tensordict import TensorDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from wedata.grids import T1H
 
 from deep_lst.analysis.spatial import build_local_grid
 from deep_lst.dataset.dataset import _load_samples

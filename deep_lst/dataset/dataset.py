@@ -1,10 +1,10 @@
 import numpy as np
 import wedata
+from eodata.eo_zarr import EOZarrStore
+from eodata.grids import T1H
+from eodata.util.misc import assemble_statistics_from_npz
 from tensordict import TensorDict
 from torch.utils.data import Dataset
-from wedata.eo_zarr import EOZarrStore
-from wedata.grids import T1H
-from wedata.util.misc import assemble_statistics_from_npz
 
 from deep_lst.utils.io import ExperimentPaths
 
