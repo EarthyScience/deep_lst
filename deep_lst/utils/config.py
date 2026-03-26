@@ -1,11 +1,21 @@
 from pathlib import Path
 
-import yaml
+from omegaconf import OmegaConf
 
 
 def open_config(path: Path) -> dict:
-    with open(path) as stream:
-        return yaml.safe_load(stream)
+    """Load a YAML config and return a plain dict with all interpolations resolved."""
+    cfg = OmegaConf.load(path)
+    return OmegaConf.to_container(cfg, resolve=True)
+
+
+def merge_configs(base_path: Path, override_paths: list[Path]) -> dict:
+    """Load base config, apply overrides in order, return plain dict.
+    Later overrides win on conflicting keys. All interpolations resolved."""
+    merged = OmegaConf.load(base_path)
+    for p in override_paths:
+        merged = OmegaConf.merge(merged, OmegaConf.load(p))
+    return OmegaConf.to_container(merged, resolve=True)
 
 
 def build_feature_list(config: dict) -> list:

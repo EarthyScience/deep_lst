@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -14,7 +13,7 @@ from pytorch_lightning.profilers import AdvancedProfiler
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.config import get_keys_from_config, open_config
+from deep_lst.utils.config import get_keys_from_config, merge_configs, open_config
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", required=True, type=str, help="Name of the experiment config folder.")
@@ -28,6 +27,15 @@ parser.add_argument(
     "--smoke",
     action="store_true",
     help="Smoke-test mode: 1 epoch, 3 train/val/test batches, CSV logger only.",
+)
+parser.add_argument(
+    "--override",
+    nargs="+",
+    default=None,
+    metavar="OVERRIDE",
+    help="One or more override file names (without .yml) applied in order. "
+    "Files are looked up under configs/<config>/overrides/<name>.yml. "
+    "Example: --override madagaskar blocked",
 )
 args = parser.parse_args()
 
@@ -47,7 +55,17 @@ def _git_hash() -> str:
 
 def main():
     paths = ExperimentPaths()
-    config = open_config(paths.config_path(args.config))
+    if args.override:
+        override_paths = [paths.config_root / args.config / "overrides" / f"{o}.yml" for o in args.override]
+        config = merge_configs(paths.config_path(args.config), override_paths)
+    else:
+        config = open_config(paths.config_path(args.config))
+
+    # Derive run name from CLI args — do not read name from config YAML
+    name = args.config
+    if args.override:
+        name = args.config + "_" + "_".join(args.override)
+    config["name"] = name
 
     # --- name: apply tag first, then smoke suffix so order is always name_tag_smoke ---
     if args.tag:
@@ -77,11 +95,14 @@ def main():
     if config["csv_logger"]:
         run_dir = Path(csv_logger.log_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(paths.config_path(args.config), run_dir / "config.yml")
+        from omegaconf import OmegaConf as _OC
+
+        _OC.save(_OC.create(config), run_dir / "config.yml")
         metadata = {
             "config": args.config,
             "tag": args.tag,
             "smoke": args.smoke,
+            "overrides": args.override or [],
             "git_hash": _git_hash(),
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
