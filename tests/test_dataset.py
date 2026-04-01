@@ -6,9 +6,11 @@ that the correct (spatial_idx, time_idx) pairs are forwarded.
 """
 
 import numpy as np
+import pytest
 import torch
 from tensordict import TensorDict
 
+pytest.importorskip("eodata", reason="eodata not installed — skipping dataset tests")
 from deep_lst.dataset.dataset import MultimodalDataset, UnimodalDataset
 
 # ── mock reader ───────────────────────────────────────────────────────────────
