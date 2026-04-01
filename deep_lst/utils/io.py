@@ -72,6 +72,12 @@ class ExperimentPaths:
     def store_path(self, name) -> Path:
         return self.stores_root / f"{name}.zarr"
 
+    def eval_indices_path(self, modality: str, name: str) -> Path:
+        """
+        Resolve the dense evaluation pixel index file for *modality* and *eval name*.
+        """
+        return self.assets_root / modality / "eval" / f"indices_{name}.npz"
+
     def temporal_indices_path(self, split: str) -> Path:
         """Resolve the pre-computed temporal block index file for *split*.
 

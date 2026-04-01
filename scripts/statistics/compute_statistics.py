@@ -15,7 +15,7 @@ from deep_lst.utils.config import open_config
 from deep_lst.utils.io import ExperimentPaths, save_statistics_npz
 
 
-def _load_indices(spatial_path: str, modality: str, temporal_path: str) -> np.ndarray:
+def _load_indices(modality: str, spatial_path, temporal_path) -> np.ndarray:
     """Load spatial and temporal indices and return a meshed (N_space * N_time, 2) array.
 
     Supports both key conventions for spatial .npz files:
@@ -70,9 +70,9 @@ def calculate_statistics(
     dataset = UnimodalDataset(reader=reader, indices=indices)
 
     if torch.distributed.is_initialized():
-        sampler = DistributedSampler(dataset, shuffle=True, drop_last=False, seed=0)
+        sampler = DistributedSampler(dataset, shuffle=False, drop_last=False, seed=0)
     else:
-        sampler = DistributedSampler(dataset, shuffle=True, drop_last=False, seed=0, rank=0, num_replicas=1)
+        sampler = DistributedSampler(dataset, shuffle=False, drop_last=False, seed=0, rank=0, num_replicas=1)
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -81,6 +81,7 @@ def calculate_statistics(
         num_workers=num_workers,
         drop_last=False,
         collate_fn=torch.stack,
+        pin_memory=True,
     )
 
     schema = reader.get_torch_schema()
@@ -109,7 +110,7 @@ def calculate_statistics(
 
 def main():
     if "RANK" in os.environ and "LOCAL_RANK" in os.environ:
-        torch.distributed.init_process_group(device_id=int(os.environ["LOCAL_RANK"]))
+        torch.distributed.init_process_group(device_id=torch.device("cuda", int(os.environ["LOCAL_RANK"])))
 
     parser = argparse.ArgumentParser(
         description="Compute normalisation statistics for an EOZarr store.",
@@ -120,24 +121,6 @@ def main():
         "--store",
         required=True,
         help="Path to the EOZarr store (.zarr directory).",
-    )
-    parser.add_argument(
-        "-i",
-        "--spatial_indices",
-        required=True,
-        help=(
-            "Path to spatial indices (.npz). "
-            "Accepted keys: '{modality}_indices' (scene files) or 'mapping' (global files)."
-        ),
-    )
-    parser.add_argument(
-        "-t",
-        "--temporal_indices",
-        required=True,
-        help=(
-            "Path to temporal block indices (.npz, key: 'time_indices', dtype int64). "
-            "Use assets/temporal/time_indices_train.npz for the standard training blocks."
-        ),
     )
     parser.add_argument(
         "-m",
@@ -196,15 +179,19 @@ def main():
 
     # ── indices ───────────────────────────────────────────────────────────────
     store = EOZarrStore(args.store, mode="r")
-    indices = _load_indices(args.spatial_indices, args.modality, args.temporal_indices)
+    indices = _load_indices(
+        args.modality,
+        spatial_path=paths.spatial_indices_path(args.modality, config["spatial"]),
+        temporal_path=paths.temporal_indices_path(config["temporal"]),
+    )
 
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     if rank == 0:
         print(f"Modality     : {args.modality}")
         print(
-            f"Spatial file : {args.spatial_indices}  ({indices[:, 0].nunique() if hasattr(indices[:, 0], 'nunique') else len(np.unique(indices[:, 0]))} unique pixels)"
+            f"Spatial file : {config['spatial']}  ({indices[:, 0].nunique() if hasattr(indices[:, 0], 'nunique') else len(np.unique(indices[:, 0]))} unique pixels)"
         )
-        print(f"Temporal file: {args.temporal_indices}  ({len(np.unique(indices[:, 1]))} unique timesteps)")
+        print(f"Temporal file: {config['temporal']}  ({len(np.unique(indices[:, 1]))} unique timesteps)")
         print(f"Total samples: {len(indices):,}")
 
     # ── compute ───────────────────────────────────────────────────────────────
