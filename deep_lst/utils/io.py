@@ -12,7 +12,7 @@ class ExperimentPaths:
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
     plots_root: Path = field(default_factory=lambda: Path("./plots"))
-    stores_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/wegen-stores/"))
+    stores_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/wegen-stores-new/"))
     # --- directories ---
 
     def experiment_dir(self, experiment: str) -> Path:
@@ -33,12 +33,19 @@ class ExperimentPaths:
     # --- file resolutions ---
 
     def latest_checkpoint(self, experiment: str, version: str) -> Path:
-        """Return the most recent .ckpt file by experiment sort."""
+        """Return the most recent .ckpt file by alphabetical sort (last.ckpt wins)."""
         ckpt_dir = self.checkpoint_dir(experiment, version)
         ckpts = sorted(ckpt_dir.glob("*.ckpt"))
         if not ckpts:
             raise FileNotFoundError(f"No checkpoints found in {ckpt_dir}")
         return ckpts[-1]
+
+    def best_checkpoint(self, experiment: str, version: str) -> Path:
+        """Return best.ckpt if it exists, otherwise fall back to latest_checkpoint."""
+        best = self.checkpoint_dir(experiment, version) / "best.ckpt"
+        if best.exists():
+            return best
+        return self.latest_checkpoint(experiment, version)
 
     def config_path(self, experiment: str) -> Path:
         return self.config_root / experiment / "config.yml"
@@ -70,13 +77,18 @@ class ExperimentPaths:
         return self.assets_root / modality / "spatial" / f"indices_{name}.npz"
 
     def store_path(self, name) -> Path:
-        return self.stores_root / f"{name}.zarr"
+        return self.stores_root / f"{name}_long.zarr"
 
     def eval_indices_path(self, modality: str, name: str) -> Path:
-        """
-        Resolve the dense evaluation pixel index file for *modality* and *eval name*.
-        """
+        """Resolve the dense evaluation pixel index file for *modality* and *eval name*."""
         return self.assets_root / modality / "eval" / f"indices_{name}.npz"
+
+    def baseline_path(self, eval_name: str) -> Path:
+        """Resolve the ERA5 SKT baseline NetCDF for an eval region.
+
+        Saved under assets/era5/baselines/ and shared across all experiments.
+        """
+        return self.assets_root / "era5" / "baselines" / f"baseline_{eval_name}.nc"
 
     def temporal_indices_path(self, split: str) -> Path:
         """Resolve the pre-computed temporal block index file for *split*.
@@ -89,6 +101,29 @@ class ExperimentPaths:
     def metadata_path(self, experiment: str, version: str) -> Path:
         """Resolve the run-metadata JSON written at the start of each training run."""
         return self.experiment_dir(experiment) / version / "metadata.json"
+
+    # --- results paths (separate from experiment dir, keyed by eval name) ---
+
+    results_root: Path = field(default_factory=lambda: Path("./results"))
+
+    def results_dir(self, experiment: str, version: str, eval_name: str) -> Path:
+        return self.results_root / experiment / version / eval_name
+
+    def forecast_path(self, experiment: str, version: str, eval_name: str, suffix: str = "") -> Path:
+        path = self.results_dir(experiment, version, eval_name) / f"forecast{suffix}.nc"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def metrics_path(self, experiment: str, version: str, eval_name: str, aggregation: str = "total") -> Path:
+        """Aggregation: total | region_time | region_space | diurnal."""
+        path = self.results_dir(experiment, version, eval_name) / f"metrics_{aggregation}.nc"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def results_plots_dir(self, experiment: str, version: str, eval_name: str) -> Path:
+        d = self.results_dir(experiment, version, eval_name) / "plots"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
 
 def save_statistics_npz(statistics: dict, path: Path) -> None:

@@ -95,7 +95,7 @@ class LitModelModule(LightningModule):
         torch.cuda.empty_cache()
 
 
-def load_model(config: dict, td_keys: dict, experiment: str, version: str):
+def load_model(config: dict, td_keys: dict, experiment: str, version: str, prefer_best: bool = False):
     """Instantiate model and load from checkpoint.
 
     Args:
@@ -115,7 +115,7 @@ def load_model(config: dict, td_keys: dict, experiment: str, version: str):
     )
 
     paths = ExperimentPaths()
-    ckpt_path = paths.latest_checkpoint(experiment, version)
+    ckpt_path = paths.best_checkpoint(experiment, version) if prefer_best else paths.latest_checkpoint(experiment, version)
 
     lit_module = LitModelModule.load_from_checkpoint(
         ckpt_path,

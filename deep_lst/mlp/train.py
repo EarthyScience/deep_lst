@@ -8,6 +8,7 @@ from pathlib import Path
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning import loggers as lgrs
+from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.profilers import AdvancedProfiler
 
 from deep_lst.dataset.data_module import LitDataModule
@@ -35,7 +36,7 @@ parser.add_argument(
     metavar="OVERRIDE",
     help="One or more override file names (without .yml) applied in order. "
     "Files are looked up under configs/<config>/overrides/<name>.yml. "
-    "Example: --override madagaskar blocked",
+    "Example: --override mlp_diag mlp_diag_L_KG_v1",
 )
 args = parser.parse_args()
 
@@ -61,10 +62,11 @@ def main():
     else:
         config = open_config(paths.config_path(args.config))
 
-    # Derive run name from CLI args — do not read name from config YAML
-    name = args.config
+    # Derive run name: base config + _experiment key set by the spatial override
     if args.override:
-        name = args.config + "_" + "_".join(args.override)
+        name = f"{args.config}_{config['_experiment']}"
+    else:
+        name = args.config
     config["name"] = name
 
     # --- name: apply tag first, then smoke suffix so order is always name_tag_smoke ---
@@ -113,6 +115,23 @@ def main():
 
     torch.set_float32_matmul_precision("medium")
 
+    # --- checkpointing: best (by val metric) + last ---
+    callbacks = []
+    if not args.smoke and config["csv_logger"]:
+        monitor = config["model"].get("checkpoint_monitor", "val_loss")
+        ckpt_dir = run_dir / "checkpoints"
+        callbacks = [
+            ModelCheckpoint(
+                dirpath=ckpt_dir,
+                filename="best",
+                monitor=monitor,
+                mode="min",
+                save_top_k=1,
+                save_last=True,
+                verbose=True,
+            ),
+        ]
+
     data_module = LitDataModule(**config)
     data_module.setup()
 
@@ -138,6 +157,7 @@ def main():
     trainer = pl.Trainer(
         max_epochs=config["training"]["max_epochs"],
         logger=loggers,
+        callbacks=callbacks if callbacks else None,
         accelerator=accelarator,
         devices=devices,
         num_nodes=1,

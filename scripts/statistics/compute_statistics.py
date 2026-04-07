@@ -205,6 +205,10 @@ def main():
         **reader_kwargs,
     )
 
+    # ── sync all ranks before save so destroy_process_group is called together ──
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
     # ── save (rank 0 only) ────────────────────────────────────────────────────
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         for var_name, var_stats in stats.items():
@@ -217,6 +221,7 @@ def main():
         print(f"Saved statistics to {out_path}")
 
     if torch.distributed.is_initialized():
+        torch.distributed.barrier()  # wait for rank 0 to finish saving
         torch.distributed.destroy_process_group()
 
 

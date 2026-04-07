@@ -84,7 +84,7 @@ class RolloutMSE:
         for key in self.prognostic_keys:
             prog[key] = batch[key][:, 0, ...][spatial_mask]  # [N_valid, C]
 
-        for t in range(lookback, horizon + 1):
+        for t in range(1, horizon + 1):
             # Build input at valid pixels only
             tstep_td = TensorDict({}, batch_size=[spatial_mask.sum().item()])
             for key in self.in_keys:

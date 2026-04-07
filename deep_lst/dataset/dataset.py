@@ -62,7 +62,7 @@ class UnimodalDataset(Dataset):
         modality_id: str,
         **kwargs: dict,
     ):
-        temporal_split = kwargs.get("temporal_split")
+        temporal_split = kwargs["temporal"]
         indices = _load_samples(
             PATHS.spatial_indices_path(kwargs["spatial"]),
             modality_id,
@@ -103,7 +103,7 @@ class MultimodalDataset(Dataset):
 
     @classmethod
     def from_modalities(cls, modality_ids: list[str], **kwargs: dict):
-        temporal_split = kwargs.get("temporal_split")
+        temporal_split = kwargs["temporal"]
         indices = {
             mod: _load_samples(
                 PATHS.spatial_indices_path(mod, kwargs["spatial"]),
