@@ -1,4 +1,5 @@
 """Merge partial forecast chunks from parallel inference runs into a single NetCDF."""
+
 import argparse
 
 import xarray as xr

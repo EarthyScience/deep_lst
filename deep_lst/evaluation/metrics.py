@@ -17,6 +17,7 @@ Controlled by the ``dims`` argument to ``compute_scores()``:
 ERA5 baseline (case C) uses ``valid_time`` directly; model forecasts (A, B)
 must be converted first with ``to_valid_time()``.
 """
+
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -32,6 +33,7 @@ def _register(name):
     def decorator(fn):
         METRIC_REGISTRY[name] = fn
         return fn
+
     return decorator
 
 
@@ -61,6 +63,7 @@ def _r2(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
 # ---------------------------------------------------------------------------
 # Coordinate conversion
 # ---------------------------------------------------------------------------
+
 
 def to_valid_time(
     ds: xr.Dataset,
@@ -96,9 +99,7 @@ def to_valid_time(
             obs = obs.isel(lead_time=0)
             lt_delta = ds["lead_time"].values[0]
         else:
-            raise ValueError(
-                "lead_time must be specified when the dataset has multiple lead times."
-            )
+            raise ValueError("lead_time must be specified when the dataset has multiple lead times.")
     else:
         pred = pred.sel(lead_time=lead_time)
         obs = obs.sel(lead_time=lead_time)
@@ -117,10 +118,10 @@ def to_valid_time(
 # ---------------------------------------------------------------------------
 
 _AGGREGATION_DIMS = {
-    "total":        ["valid_time", "lat", "lon"],
-    "region_time":  ["lat", "lon"],
+    "total": ["valid_time", "lat", "lon"],
+    "region_time": ["lat", "lon"],
     "region_space": ["valid_time"],
-    "none":         [],
+    "none": [],
 }
 
 
@@ -182,6 +183,7 @@ def compute_scores(
 # Validity report
 # ---------------------------------------------------------------------------
 
+
 def compute_validity_report(
     pred: xr.DataArray,
     obs: xr.DataArray,
@@ -223,6 +225,7 @@ def compute_validity_report(
 # Diurnal cycle (kept from original, refactored to use valid_time dim)
 # ---------------------------------------------------------------------------
 
+
 def compute_diurnal_scores(
     pred: xr.DataArray,
     obs: xr.DataArray,
@@ -254,7 +257,7 @@ def compute_diurnal_scores(
 
     for h in range(24):
         h_mask = hours == h  # (n_valid_time,)
-        p_h = pred_vals[h_mask]   # (n_h, lat, lon) or (n_h,)
+        p_h = pred_vals[h_mask]  # (n_h, lat, lon) or (n_h,)
         o_h = obs_vals[h_mask]
         valid = np.isfinite(p_h) & np.isfinite(o_h)
         n = int(valid.sum())

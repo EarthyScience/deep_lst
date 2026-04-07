@@ -27,16 +27,16 @@ FAIL = "\033[91mFAIL\033[0m"
 WARN = "\033[93mWARN\033[0m"
 
 SCENARIOS = [
-    ("mlp_diag",    ["mlp_diag_L_KG_v1"]),
-    ("mlp_diag",    ["mlp_diag_M_KG_v1"]),
-    ("mlp_diag",    ["mlp_diag_S_KG_v1"]),
-    ("mlp_diag",    ["mlp_diag_L_KG_v1", "eval_antananarivo"]),
-    ("mlp_diag",    ["mlp_diag_L_KG_v1", "eval_dahra"]),
-    ("mlp_diag",    ["mlp_diag_L_KG_v1", "eval_east_africa"]),
-    ("mlp_diag",    ["mlp_diag_L_KG_v1", "eval_gobabeb"]),
-    ("mlp_diag",    ["mlp_diag_L_KG_v1", "eval_johannesburg"]),
-    ("mlp_diag",    ["mlp_diag_L_KG_v1", "eval_sahel_niger"]),
-    ("mlp_diag",    ["mlp_diag_L_KG_v1", "eval_w_africa"]),
+    ("mlp_diag", ["mlp_diag_L_KG_v1"]),
+    ("mlp_diag", ["mlp_diag_M_KG_v1"]),
+    ("mlp_diag", ["mlp_diag_S_KG_v1"]),
+    ("mlp_diag", ["mlp_diag_L_KG_v1", "eval_antananarivo"]),
+    ("mlp_diag", ["mlp_diag_L_KG_v1", "eval_dahra"]),
+    ("mlp_diag", ["mlp_diag_L_KG_v1", "eval_east_africa"]),
+    ("mlp_diag", ["mlp_diag_L_KG_v1", "eval_gobabeb"]),
+    ("mlp_diag", ["mlp_diag_L_KG_v1", "eval_johannesburg"]),
+    ("mlp_diag", ["mlp_diag_L_KG_v1", "eval_sahel_niger"]),
+    ("mlp_diag", ["mlp_diag_L_KG_v1", "eval_w_africa"]),
     ("mlp_rollout", ["mlp_rollout_L_KG_v1"]),
     ("mlp_rollout", ["mlp_rollout_M_KG_v1"]),
     ("mlp_rollout", ["mlp_rollout_S_KG_v1"]),
@@ -72,9 +72,9 @@ def validate_scenario(config_name, overrides):
     label = config_name
     if overrides:
         label += " --override " + " ".join(overrides)
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     failures = 0
 
@@ -140,18 +140,14 @@ def validate_scenario(config_name, overrides):
             for mod in modality_ids:
                 for name in names:
                     failures += check_file(
-                        PATHS.spatial_indices_path(mod, name),
-                        f"  {split}: spatial indices [{mod}] '{name}'"
+                        PATHS.spatial_indices_path(mod, name), f"  {split}: spatial indices [{mod}] '{name}'"
                     )
 
         # Temporal indices
         if temporal is not None:
             periods = temporal if isinstance(temporal, list) else [temporal]
             for period in periods:
-                failures += check_file(
-                    PATHS.temporal_indices_path(period),
-                    f"  {split}: temporal indices '{period}'"
-                )
+                failures += check_file(PATHS.temporal_indices_path(period), f"  {split}: temporal indices '{period}'")
 
         # Statistics (warn only — may not be up to date)
         for mod in modality_ids:
@@ -159,9 +155,7 @@ def validate_scenario(config_name, overrides):
             if stats_name:
                 path = PATHS.statistics_path(mod, stats_name)
                 check_warn(
-                    f"  {split}: statistics [{mod}] '{stats_name}'  (warn — may be stale)",
-                    path.exists(),
-                    str(path)
+                    f"  {split}: statistics [{mod}] '{stats_name}'  (warn — may be stale)", path.exists(), str(path)
                 )
 
     # ── 4. Zarr store accessibility ──────────────────────────────
@@ -179,8 +173,8 @@ def validate_scenario(config_name, overrides):
             check(
                 f"  Store openable  [{mod}]",
                 False,
-                f"zarr.json missing at store root — store was never initialized "
-                f"(chunks may exist but metadata was not written)",
+                "zarr.json missing at store root — store was never initialized "
+                "(chunks may exist but metadata was not written)",
             )
             failures += 1
             continue
@@ -205,9 +199,9 @@ def main():
         label = config_name + (" --override " + " ".join(overrides) if overrides else "")
         results.append((label, failures == 0))
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for label, passed in results:
         status = PASS if passed else FAIL
         print(f"  [{status}] {label}")

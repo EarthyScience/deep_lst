@@ -49,9 +49,9 @@ from deep_lst.evaluation.inference import Forecast, ForecastResult
 
 # ── shared constants ──────────────────────────────────────────────────────────
 
-B = 4            # batch size
-HORIZON = 3      # forecast horizon steps
-LOOKBACK = 0     # must remain 0 after the lookback fix
+B = 4  # batch size
+HORIZON = 3  # forecast horizon steps
+LOOKBACK = 0  # must remain 0 after the lookback fix
 T = HORIZON + 1  # total time steps in a batch window (lookback=0 → 4)
 
 IN_KEYS = [("era5", "t2m"), ("era5", "u10")]
@@ -204,7 +204,7 @@ def test_lead_times_are_sequential_hourly(sample_result):
     ds = sample_result.to_xarray()
     leads = pd.TimedeltaIndex(ds["lead_time"].values)
     for i, lt in enumerate(leads):
-        assert lt == pd.Timedelta(f"{i + 1}h"), f"Lead time at index {i} should be {i+1}h"
+        assert lt == pd.Timedelta(f"{i + 1}h"), f"Lead time at index {i} should be {i + 1}h"
 
 
 def test_roundtrip_values(tmp_path, sample_result):
@@ -315,9 +315,7 @@ def test_remap_values_preserved():
 
 def test_predict_diagnostic_output_keys():
     loader = [_diag_batch() for _ in range(2)]
-    preds, obs = Forecast._predict_diagnostic(
-        _ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS
-    )
+    preds, obs = Forecast._predict_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS)
     var = DIAG_KEYS[0][1]
     assert var in preds
     assert var in obs
@@ -326,9 +324,7 @@ def test_predict_diagnostic_output_keys():
 def test_predict_diagnostic_output_shape():
     n_batches = 3
     loader = [_diag_batch() for _ in range(n_batches)]
-    preds, obs = Forecast._predict_diagnostic(
-        _ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS
-    )
+    preds, obs = Forecast._predict_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS)
     var = DIAG_KEYS[0][1]
     assert preds[var].shape[0] == n_batches * B
 
@@ -336,9 +332,7 @@ def test_predict_diagnostic_output_shape():
 def test_predict_diagnostic_constant_model_output():
     """Model output of constant 2.5 should be reflected in predictions after denorm."""
     loader = [_diag_batch() for _ in range(2)]
-    preds, _ = Forecast._predict_diagnostic(
-        _ConstantDiagModel(value=2.5), torch.device("cpu"), loader, DIAG_TD_KEYS
-    )
+    preds, _ = Forecast._predict_diagnostic(_ConstantDiagModel(value=2.5), torch.device("cpu"), loader, DIAG_TD_KEYS)
     var = DIAG_KEYS[0][1]
     assert np.allclose(preds[var], 2.5), "Constant model output should be preserved exactly"
 
@@ -348,9 +342,7 @@ def test_predict_diagnostic_normaliser_called():
     n_batches = 3
     loader = [_diag_batch() for _ in range(n_batches)]
     norm = _MockNormaliser()
-    Forecast._predict_diagnostic(
-        _ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS, normaliser=norm
-    )
+    Forecast._predict_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS, normaliser=norm)
     # denormalise called for preds AND obs for 1 variable × n_batches × 2 sides
     assert norm.calls == n_batches * 2
 
@@ -371,7 +363,10 @@ def test_rollout_output_shape_is_N_by_horizon():
     model = _ZeroIncrementModel()
 
     preds, obs = Forecast._predict_rollout(
-        model, torch.device("cpu"), loader, ROLLOUT_TD_KEYS,
+        model,
+        torch.device("cpu"),
+        loader,
+        ROLLOUT_TD_KEYS,
         normaliser=None,
         lookback=LOOKBACK,
         horizon=HORIZON,
@@ -393,8 +388,13 @@ def test_rollout_model_called_horizon_times_per_batch():
     model = _ZeroIncrementModel()
 
     Forecast._predict_rollout(
-        model, torch.device("cpu"), loader, ROLLOUT_TD_KEYS,
-        normaliser=None, lookback=LOOKBACK, horizon=HORIZON,
+        model,
+        torch.device("cpu"),
+        loader,
+        ROLLOUT_TD_KEYS,
+        normaliser=None,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
     )
 
     expected_calls = n_batches * HORIZON
@@ -417,15 +417,21 @@ def test_rollout_init_state_is_t0_observed():
     model = _ZeroIncrementModel()
 
     Forecast._predict_rollout(
-        model, torch.device("cpu"), loader, ROLLOUT_TD_KEYS,
-        normaliser=None, lookback=LOOKBACK, horizon=HORIZON,
+        model,
+        torch.device("cpu"),
+        loader,
+        ROLLOUT_TD_KEYS,
+        normaliser=None,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
     )
 
     init_state = batch[PROG_KEYS[0]][:, 0, ...].numpy()
     first_call_state = model.prog_states_at_call[0].numpy()
 
     np.testing.assert_array_equal(
-        first_call_state, init_state,
+        first_call_state,
+        init_state,
         err_msg="First model call did not receive the observed t=0 state.",
     )
 
@@ -441,14 +447,19 @@ def test_rollout_t0_not_a_forecast_target():
     batch[:,2,...], batch[:,3,...] — none of which are 99.0.
     """
     b = _rollout_batch()
-    b[PROG_KEYS[0]][:, 0, ...] = 99.0    # sentinel at t=0 (init, not a target)
-    b[PROG_KEYS[0]][:, 1:, ...] = 0.0    # targets t=1..horizon = 0.0
+    b[PROG_KEYS[0]][:, 0, ...] = 99.0  # sentinel at t=0 (init, not a target)
+    b[PROG_KEYS[0]][:, 1:, ...] = 0.0  # targets t=1..horizon = 0.0
     loader = [b]
     model = _ZeroIncrementModel()
 
     preds, obs = Forecast._predict_rollout(
-        model, torch.device("cpu"), loader, ROLLOUT_TD_KEYS,
-        normaliser=None, lookback=LOOKBACK, horizon=HORIZON,
+        model,
+        torch.device("cpu"),
+        loader,
+        ROLLOUT_TD_KEYS,
+        normaliser=None,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
     )
 
     var = PROG_KEYS[0][1]
@@ -472,8 +483,13 @@ def test_rollout_autoregressive_state_update():
     model = _ConstantIncrementModel()
 
     preds, _ = Forecast._predict_rollout(
-        model, torch.device("cpu"), loader, ROLLOUT_TD_KEYS,
-        normaliser=None, lookback=LOOKBACK, horizon=HORIZON,
+        model,
+        torch.device("cpu"),
+        loader,
+        ROLLOUT_TD_KEYS,
+        normaliser=None,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
     )
 
     var = PROG_KEYS[0][1]
@@ -490,15 +506,18 @@ def test_rollout_nan_init_state_propagates():
     model = _ZeroIncrementModel()
 
     preds, _ = Forecast._predict_rollout(
-        model, torch.device("cpu"), loader, ROLLOUT_TD_KEYS,
-        normaliser=None, lookback=LOOKBACK, horizon=HORIZON,
+        model,
+        torch.device("cpu"),
+        loader,
+        ROLLOUT_TD_KEYS,
+        normaliser=None,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
     )
 
     var = PROG_KEYS[0][1]
     # With NaN init and any increment, outputs will be NaN
-    assert np.all(np.isnan(preds[var])), (
-        "Expected all-NaN predictions when init state is NaN."
-    )
+    assert np.all(np.isnan(preds[var])), "Expected all-NaN predictions when init state is NaN."
 
 
 def test_rollout_nan_init_correct_output_shape():
@@ -507,8 +526,13 @@ def test_rollout_nan_init_correct_output_shape():
     b[PROG_KEYS[0]][:, 0, ...] = float("nan")
     loader = [b]
     preds, obs = Forecast._predict_rollout(
-        _ZeroIncrementModel(), torch.device("cpu"), loader, ROLLOUT_TD_KEYS,
-        normaliser=None, lookback=LOOKBACK, horizon=HORIZON,
+        _ZeroIncrementModel(),
+        torch.device("cpu"),
+        loader,
+        ROLLOUT_TD_KEYS,
+        normaliser=None,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
     )
     var = PROG_KEYS[0][1]
     assert preds[var].shape == (B, HORIZON)
@@ -521,8 +545,13 @@ def test_rollout_normaliser_called_per_step():
     norm = _MockNormaliser()
 
     Forecast._predict_rollout(
-        _ZeroIncrementModel(), torch.device("cpu"), loader, ROLLOUT_TD_KEYS,
-        normaliser=norm, lookback=LOOKBACK, horizon=HORIZON,
+        _ZeroIncrementModel(),
+        torch.device("cpu"),
+        loader,
+        ROLLOUT_TD_KEYS,
+        normaliser=norm,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
     )
 
     # 1 prognostic var × 2 sides (pred + obs) × horizon steps × n_batches
@@ -550,19 +579,22 @@ def tiny_spatial_indices():
     n_rows, n_cols = grid.get_shape()
     # Pick a 2×2 patch in the centre
     r0, c0 = n_rows // 2, n_cols // 2
-    indices = np.array([
-        r0 * n_cols + c0,
-        r0 * n_cols + c0 + 1,
-        (r0 + 1) * n_cols + c0,
-        (r0 + 1) * n_cols + c0 + 1,
-    ], dtype=np.int64)
+    indices = np.array(
+        [
+            r0 * n_cols + c0,
+            r0 * n_cols + c0 + 1,
+            (r0 + 1) * n_cols + c0,
+            (r0 + 1) * n_cols + c0 + 1,
+        ],
+        dtype=np.int64,
+    )
     return indices
 
 
 @pytest.fixture
 def forecast_instance(monkeypatch, tiny_spatial_indices):
     """Forecast with mocked normaliser and a fake loader (no zarr/GPU needed)."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     config = {
         "seviri": {"statistics": "global", "lookback": LOOKBACK, "horizon": HORIZON},
@@ -572,13 +604,10 @@ def forecast_instance(monkeypatch, tiny_spatial_indices):
     mock_norm = _MockNormaliser()
     with patch("deep_lst.evaluation.inference.ZScoringNormalizer", return_value=mock_norm):
         n_spatial = len(tiny_spatial_indices)  # 4 pixels
-        n_time = 3                              # 3 init times
+        n_time = 3  # 3 init times
 
         # Build a loader whose samples cover n_spatial × n_time = 12 items
-        loader = [
-            _rollout_batch(b=n_spatial, t=T)
-            for _ in range(n_time)
-        ]
+        loader = [_rollout_batch(b=n_spatial, t=T) for _ in range(n_time)]
         model = _ZeroIncrementModel()
 
         fc = Forecast(
@@ -601,8 +630,7 @@ def test_predict_lead_times_start_at_1h(forecast_instance):
     ds = result.to_xarray()
     first_lead = pd.Timedelta(ds["lead_time"].values[0])
     assert first_lead == pd.Timedelta("1h"), (
-        f"lead_times[0] = {first_lead}. Expected 1h. "
-        "If 0h, the lead_start_h computation still uses lookback."
+        f"lead_times[0] = {first_lead}. Expected 1h. If 0h, the lead_start_h computation still uses lookback."
     )
 
 

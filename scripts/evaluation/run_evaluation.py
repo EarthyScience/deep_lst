@@ -27,14 +27,12 @@ Note: bias_maps and improvement_map are only produced when an ERA5 baseline
 exists. diurnal is produced for the single experiment case (no ERA5 comparison)
 if --no_baseline is passed.
 """
-import argparse
-from pathlib import Path
 
-import numpy as np
+import argparse
+
 import xarray as xr
 
 from deep_lst.evaluation.metrics import (
-    TIME_INDEX_ORIGIN,
     compute_diurnal_scores,
     compute_scores,
     compute_validity_report,
@@ -54,25 +52,30 @@ def parse_args():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--experiment", required=True,
-                   help="Experiment name, e.g. mlp_diag_L_KG_v1")
-    p.add_argument("--version", required=True,
-                   help="Version folder, e.g. version_0")
-    p.add_argument("--eval", required=True,
-                   help="Eval region name (without eval_ prefix), e.g. antananarivo")
-    p.add_argument("--variable", default="LST",
-                   help="Variable to evaluate (default: LST)")
-    p.add_argument("--lead_time", default="1h",
-                   help="Lead time to use for valid_time conversion and plots, e.g. 3h (default: 1h)")
-    p.add_argument("--metrics", nargs="+", default=["rmse"],
-                   help="Metrics to compute. Choose from: rmse bias mae r2 (default: rmse)")
-    p.add_argument("--plots", nargs="+", default=ALL_PLOTS,
-                   metavar="PLOT",
-                   help=f"Plots to generate. Choose from: {ALL_PLOTS} (default: all)")
-    p.add_argument("--no_baseline", action="store_true",
-                   help="Skip ERA5 baseline loading (only model metrics/diurnal produced)")
-    p.add_argument("--overwrite", action="store_true",
-                   help="Recompute and overwrite existing metric files")
+    p.add_argument("--experiment", required=True, help="Experiment name, e.g. mlp_diag_L_KG_v1")
+    p.add_argument("--version", required=True, help="Version folder, e.g. version_0")
+    p.add_argument("--eval", required=True, help="Eval region name (without eval_ prefix), e.g. antananarivo")
+    p.add_argument("--variable", default="LST", help="Variable to evaluate (default: LST)")
+    p.add_argument(
+        "--lead_time", default="1h", help="Lead time to use for valid_time conversion and plots, e.g. 3h (default: 1h)"
+    )
+    p.add_argument(
+        "--metrics",
+        nargs="+",
+        default=["rmse"],
+        help="Metrics to compute. Choose from: rmse bias mae r2 (default: rmse)",
+    )
+    p.add_argument(
+        "--plots",
+        nargs="+",
+        default=ALL_PLOTS,
+        metavar="PLOT",
+        help=f"Plots to generate. Choose from: {ALL_PLOTS} (default: all)",
+    )
+    p.add_argument(
+        "--no_baseline", action="store_true", help="Skip ERA5 baseline loading (only model metrics/diurnal produced)"
+    )
+    p.add_argument("--overwrite", action="store_true", help="Recompute and overwrite existing metric files")
     return p.parse_args()
 
 
@@ -80,13 +83,11 @@ def parse_args():
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_forecast(experiment, version, eval_name):
     path = PATHS.forecast_path(experiment, version, eval_name)
     if not path.exists():
-        raise FileNotFoundError(
-            f"Forecast not found: {path}\n"
-            "Run scripts/inference/run_inference.py first."
-        )
+        raise FileNotFoundError(f"Forecast not found: {path}\nRun scripts/inference/run_inference.py first.")
     return xr.open_dataset(path)
 
 
@@ -94,8 +95,7 @@ def _load_baseline(eval_name):
     path = PATHS.baseline_path(eval_name)
     if not path.exists():
         raise FileNotFoundError(
-            f"ERA5 baseline not found: {path}\n"
-            "Run scripts/evaluation/extract_era5_baseline.py first."
+            f"ERA5 baseline not found: {path}\nRun scripts/evaluation/extract_era5_baseline.py first."
         )
     return xr.open_dataset(path)
 
@@ -121,6 +121,7 @@ def _save_metrics(ds_metrics, experiment, version, eval_name, aggregation, overw
 # Main
 # ---------------------------------------------------------------------------
 
+
 def run_evaluation():
     args = parse_args()
     var = args.variable
@@ -134,9 +135,11 @@ def run_evaluation():
 
     # --- Load forecast ---
     ds = _load_forecast(args.experiment, args.version, args.eval)
-    print(f"\nForecast dims: init_time={ds.sizes['init_time']}, "
-          f"lead_time={ds.sizes['lead_time']}, "
-          f"lat={ds.sizes['lat']}, lon={ds.sizes['lon']}")
+    print(
+        f"\nForecast dims: init_time={ds.sizes['init_time']}, "
+        f"lead_time={ds.sizes['lead_time']}, "
+        f"lat={ds.sizes['lat']}, lon={ds.sizes['lon']}"
+    )
 
     # --- Convert to valid_time space ---
     pred, obs = to_valid_time(ds, var, lead_time=args.lead_time)
@@ -154,7 +157,7 @@ def run_evaluation():
         scores = compute_scores(pred, obs, metrics=args.metrics, aggregation=agg)
         _save_metrics(scores, args.experiment, args.version, args.eval, agg, args.overwrite)
         if agg == "total":
-            print(f"  Total scores:")
+            print("  Total scores:")
             for m in args.metrics:
                 val = float(scores[m].values)
                 print(f"    {m.upper():<8}: {val:.4f} K")
@@ -169,9 +172,7 @@ def run_evaluation():
         try:
             ds_baseline = _load_baseline(args.eval)
             # Align ERA5 valid_time to model valid_time
-            era5_pred = ds_baseline["skt"].sel(
-                valid_time=pred["valid_time"], method="nearest"
-            )
+            era5_pred = ds_baseline["skt"].sel(valid_time=pred["valid_time"], method="nearest")
             print(f"\nERA5 baseline loaded: {len(era5_pred.valid_time)} timesteps")
         except FileNotFoundError as e:
             print(f"\nWarning: {e}\nSkipping ERA5 comparison plots.")

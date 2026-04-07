@@ -61,7 +61,7 @@ class RolloutMSE:
 
     def __call__(self, lit_module, batch, stage: str):
         horizon = lit_module.config["train_dataset"]["seviri"]["horizon"]  # suboptimal
-        lookback = lit_module.config["train_dataset"]["seviri"]["lookback"]
+        #lookback = lit_module.config["train_dataset"]["seviri"]["lookback"]
 
         loss = torch.tensor(0.0, device=batch.device)
         valid_timesteps = 0

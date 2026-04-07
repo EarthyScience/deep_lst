@@ -9,13 +9,12 @@ Usage:
 The script reads metadata.json to recover the base config and spatial/temporal
 overrides used during training, then adds the eval override on top.
 """
+
 import argparse
 import copy
 import json
 
 import numpy as np
-import pandas as pd
-import torch
 from torch.utils.data import DataLoader
 
 from deep_lst.dataset.collator import Collator
@@ -28,31 +27,27 @@ from deep_lst.utils.config import get_keys_from_config, merge_configs
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--experiment", type=str, required=True,
-                        help="Experiment name, e.g. mlp_diag_L_KG_v1")
-    parser.add_argument("--version", type=str, required=True,
-                        help="Version folder, e.g. version_0")
-    parser.add_argument("--eval", type=str, required=True,
-                        help="Eval site name (without eval_ prefix), e.g. antananarivo")
-    parser.add_argument("--start_time", type=str, default=None,
-                        help="Override start time for parallelisation")
-    parser.add_argument("--end_time", type=str, default=None,
-                        help="Override end time for parallelisation")
-    parser.add_argument("--chunk_id", type=str, default=None,
-                        help="Chunk identifier for partial output files")
-    parser.add_argument("--no_consistent_mask", action="store_true",
-                        help="Disable consistent cloud mask")
-    parser.add_argument("--best", action="store_true",
-                        help="Load best.ckpt instead of last.ckpt")
-    parser.add_argument("--batch_size", type=int, default=None,
-                        help="Override batch size from config")
-    parser.add_argument("--num_workers", type=int, default=None,
-                        help="Override num_workers from config")
-    parser.add_argument("--temporal", nargs="+", default=None,
-                        metavar="PERIOD",
-                        help="One or more temporal period names to run inference over, "
-                             "e.g. --temporal test_period_00 test_period_03. "
-                             "Overrides temporal setting in config.")
+    parser.add_argument("--experiment", type=str, required=True, help="Experiment name, e.g. mlp_diag_L_KG_v1")
+    parser.add_argument("--version", type=str, required=True, help="Version folder, e.g. version_0")
+    parser.add_argument(
+        "--eval", type=str, required=True, help="Eval site name (without eval_ prefix), e.g. antananarivo"
+    )
+    parser.add_argument("--start_time", type=str, default=None, help="Override start time for parallelisation")
+    parser.add_argument("--end_time", type=str, default=None, help="Override end time for parallelisation")
+    parser.add_argument("--chunk_id", type=str, default=None, help="Chunk identifier for partial output files")
+    parser.add_argument("--no_consistent_mask", action="store_true", help="Disable consistent cloud mask")
+    parser.add_argument("--best", action="store_true", help="Load best.ckpt instead of last.ckpt")
+    parser.add_argument("--batch_size", type=int, default=None, help="Override batch size from config")
+    parser.add_argument("--num_workers", type=int, default=None, help="Override num_workers from config")
+    parser.add_argument(
+        "--temporal",
+        nargs="+",
+        default=None,
+        metavar="PERIOD",
+        help="One or more temporal period names to run inference over, "
+        "e.g. --temporal test_period_00 test_period_03. "
+        "Overrides temporal setting in config.",
+    )
     return parser.parse_args()
 
 
@@ -64,21 +59,17 @@ def run_inference():
     metadata_file = paths.metadata_path(args.experiment, args.version)
     if not metadata_file.exists():
         raise FileNotFoundError(
-            f"metadata.json not found at {metadata_file}. "
-            "Pass --experiment as the exact experiment directory name."
+            f"metadata.json not found at {metadata_file}. Pass --experiment as the exact experiment directory name."
         )
     with open(metadata_file) as f:
         metadata = json.load(f)
 
-    config_name = metadata["config"]          # e.g. "mlp_diag"
-    train_overrides = metadata["overrides"]   # e.g. ["L_KG_v1"]
+    config_name = metadata["config"]  # e.g. "mlp_diag"
+    train_overrides = metadata["overrides"]  # e.g. ["L_KG_v1"]
     eval_override = f"eval_{args.eval}"
 
     all_overrides = train_overrides + [eval_override]
-    override_paths = [
-        paths.config_root / config_name / "overrides" / f"{o}.yml"
-        for o in all_overrides
-    ]
+    override_paths = [paths.config_root / config_name / "overrides" / f"{o}.yml" for o in all_overrides]
     config = merge_configs(paths.config_path(config_name), override_paths)
 
     eval_name = config.get("_eval_name", args.eval)
@@ -102,7 +93,9 @@ def run_inference():
     spatial_indices = np.load(spatial_path)["indices"]
 
     # --- Load model ---
-    lit_module, device = load_model(config, td_keys, experiment=args.experiment, version=args.version, prefer_best=args.best)
+    lit_module, device = load_model(
+        config, td_keys, experiment=args.experiment, version=args.version, prefer_best=args.best
+    )
 
     # --- Build dataset and loader ---
     test_dataset = MultimodalDataset.from_modalities(
@@ -128,10 +121,9 @@ def run_inference():
     if temporal is None:
         raise ValueError("No temporal period specified. Pass --temporal or set 'temporal' in the eval config.")
     periods = [temporal] if isinstance(temporal, str) else list(temporal)
-    time_idx = np.concatenate([
-        np.load(paths.temporal_indices_path(p))["time_indices"].astype(np.int64)
-        for p in periods
-    ])
+    time_idx = np.concatenate(
+        [np.load(paths.temporal_indices_path(p))["time_indices"].astype(np.int64) for p in periods]
+    )
     time_idx = np.sort(np.unique(time_idx))
 
     # --- Run inference ---

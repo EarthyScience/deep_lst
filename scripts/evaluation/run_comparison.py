@@ -33,6 +33,7 @@ python scripts/evaluation/run_comparison.py \\
     --metric rmse \\
     --lead_time 1h
 """
+
 import argparse
 import re
 from pathlib import Path
@@ -45,8 +46,8 @@ from deep_lst.utils import ExperimentPaths
 PATHS = ExperimentPaths()
 
 # Regex patterns to extract group labels from experiment names
-_SAMPLE_SIZE_RE = re.compile(r'_([SML])_')
-_STRAT_RE = re.compile(r'_(KG(?:LC)?)_')
+_SAMPLE_SIZE_RE = re.compile(r"_([SML])_")
+_STRAT_RE = re.compile(r"_(KG(?:LC)?)_")
 
 
 def parse_args():
@@ -54,29 +55,35 @@ def parse_args():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--eval", required=True,
-                   help="Eval region name, e.g. antananarivo")
-    p.add_argument("--version", default="version_0",
-                   help="Version folder (same for all experiments)")
-    p.add_argument("--diag", nargs="*", default=[],
-                   metavar="EXPERIMENT",
-                   help="MLP-Diag experiment names (in group order)")
-    p.add_argument("--rollout", nargs="*", default=[],
-                   metavar="EXPERIMENT",
-                   help="MLP-Rollout experiment names (in group order)")
-    p.add_argument("--group_by", choices=["sample_size", "stratification"],
-                   default="sample_size",
-                   help="How to label x-axis groups (default: sample_size)")
-    p.add_argument("--group_labels", nargs="*", default=None,
-                   metavar="LABEL",
-                   help="Override auto-detected group labels (must match number of experiments)")
-    p.add_argument("--metric", default="rmse",
-                   help="Metric to plot (must exist in metric files, default: rmse)")
-    p.add_argument("--lead_time", default="1h",
-                   help="Lead time used in run_evaluation.py (affects which metric file is matched)")
+    p.add_argument("--eval", required=True, help="Eval region name, e.g. antananarivo")
+    p.add_argument("--version", default="version_0", help="Version folder (same for all experiments)")
+    p.add_argument(
+        "--diag", nargs="*", default=[], metavar="EXPERIMENT", help="MLP-Diag experiment names (in group order)"
+    )
+    p.add_argument(
+        "--rollout", nargs="*", default=[], metavar="EXPERIMENT", help="MLP-Rollout experiment names (in group order)"
+    )
+    p.add_argument(
+        "--group_by",
+        choices=["sample_size", "stratification"],
+        default="sample_size",
+        help="How to label x-axis groups (default: sample_size)",
+    )
+    p.add_argument(
+        "--group_labels",
+        nargs="*",
+        default=None,
+        metavar="LABEL",
+        help="Override auto-detected group labels (must match number of experiments)",
+    )
+    p.add_argument("--metric", default="rmse", help="Metric to plot (must exist in metric files, default: rmse)")
+    p.add_argument(
+        "--lead_time", default="1h", help="Lead time used in run_evaluation.py (affects which metric file is matched)"
+    )
     p.add_argument("--variable", default="LST")
-    p.add_argument("--output_dir", type=Path, default=None,
-                   help="Override output directory (default: results/comparison/{eval})")
+    p.add_argument(
+        "--output_dir", type=Path, default=None, help="Override output directory (default: results/comparison/{eval})"
+    )
     return p.parse_args()
 
 
@@ -93,15 +100,11 @@ def _load_metric(experiment, version, eval_name, metric):
     path = PATHS.metrics_path(experiment, version, eval_name, aggregation="region_time")
     if not path.exists():
         raise FileNotFoundError(
-            f"Metric file not found: {path}\n"
-            f"Run run_evaluation.py for experiment '{experiment}' first."
+            f"Metric file not found: {path}\nRun run_evaluation.py for experiment '{experiment}' first."
         )
     ds = xr.open_dataset(path)
     if metric not in ds:
-        raise KeyError(
-            f"Metric '{metric}' not found in {path}. "
-            f"Available: {list(ds.data_vars)}"
-        )
+        raise KeyError(f"Metric '{metric}' not found in {path}. Available: {list(ds.data_vars)}")
     return ds
 
 
@@ -118,8 +121,7 @@ def run_comparison():
     if args.group_labels is not None:
         if len(args.group_labels) != n_groups:
             raise ValueError(
-                f"--group_labels has {len(args.group_labels)} entries but "
-                f"{n_groups} experiment groups were given."
+                f"--group_labels has {len(args.group_labels)} entries but {n_groups} experiment groups were given."
             )
         group_labels = args.group_labels
     else:
