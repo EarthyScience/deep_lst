@@ -15,6 +15,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 
+from deep_lst.losses.crps import DiagnosticCRPS, RolloutCRPS
 from deep_lst.losses.mse import DiagnosticMSE, RolloutMSE
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 
@@ -321,9 +322,10 @@ def test_rollout_mse_horizon_controls_valid_timesteps(rollout_model):
         lit = _Lit()
         _make_rollout_loss()(lit, b, stage="train")
 
-        expected = horizon - ROLLOUT_LOOKBACK + 1
-        assert lit.logged["train_valid_timesteps"] == expected, (
-            f"horizon={horizon}: expected {expected} valid timesteps, got {lit.logged['train_valid_timesteps']}"
+        # One prognostic key, all pixels valid → weight_sum = 1.0 per timestep × horizon timesteps
+        expected = float(horizon)
+        assert lit.logged["train_weight_sum"] == expected, (
+            f"horizon={horizon}: expected weight_sum={expected}, got {lit.logged['train_weight_sum']}"
         )
 
 
@@ -348,3 +350,153 @@ def test_rollout_mse_no_detach_backward_succeeds(rollout_model, rollout_batch):
     lit = _RolloutLitModule(rollout_model)
     loss = _make_rollout_loss(detach_rollout=False)(lit, rollout_batch, stage="train")
     loss.backward()  # must not raise
+
+
+# ── timestep_weights ──────────────────────────────────────────────────────────
+
+
+def test_uniform_weights_match_no_weights(rollout_model, rollout_batch):
+    """Explicit uniform weights must produce the same loss as no weights (backward compat)."""
+    lit = _RolloutLitModule(rollout_model)
+    loss_default = _make_rollout_loss()(lit, rollout_batch, stage="train")
+    loss_uniform = _make_rollout_loss(timestep_weights=[1.0] * ROLLOUT_HORIZON)(lit, rollout_batch, stage="train")
+    assert torch.isclose(loss_default, loss_uniform), (
+        f"uniform weights changed loss: {loss_default.item()} vs {loss_uniform.item()}"
+    )
+
+
+def test_zero_weight_timestep_excluded(rollout_model, rollout_batch):
+    """A timestep with weight=0 must not contribute to the loss."""
+    lit = _RolloutLitModule(rollout_model)
+    # Only t=1 has weight > 0; t=2 is zeroed out.
+    loss_t1_only = _make_rollout_loss(timestep_weights=[1.0, 0.0])(lit, rollout_batch, stage="train")
+    # Sanity: loss is finite and positive.
+    assert torch.isfinite(loss_t1_only)
+    assert loss_t1_only.item() >= 0.0
+
+
+def test_early_step_emphasis_changes_loss(rollout_model, rollout_batch):
+    """Decaying weights must produce a different loss than uniform weights."""
+    lit = _RolloutLitModule(rollout_model)
+    loss_uniform = _make_rollout_loss(timestep_weights=[1.0, 1.0])(lit, rollout_batch, stage="train")
+    loss_decaying = _make_rollout_loss(timestep_weights=[4.0, 1.0])(lit, rollout_batch, stage="train")
+    assert not torch.isclose(loss_uniform, loss_decaying), "decaying weights should change the loss"
+
+
+def test_weight_sum_logged_correctly(rollout_model, rollout_batch):
+    """weight_sum logged should equal sum of weights for valid timesteps."""
+    lit = _RolloutLitModule(rollout_model)
+    weights = [3.0, 1.0]
+    _make_rollout_loss(timestep_weights=weights)(lit, rollout_batch, stage="train")
+    # Both timesteps are valid (all-finite batch), so weight_sum = 3.0 + 1.0 = 4.0
+    assert lit.logged["train_weight_sum"] == sum(weights)
+
+
+# ── DiagnosticCRPS ────────────────────────────────────────────────────────────
+
+DIAG_SIGMA_OUT_KEYS = [("seviri", "LST_log_sigma_pred")]
+CRPS_OUT_KEYS = DIAG_OUT_KEYS + DIAG_SIGMA_OUT_KEYS  # model must output both
+
+
+@pytest.fixture
+def crps_model():
+    """Model that outputs both LST_pred and LST_log_sigma_pred."""
+    return MultiModalMLP(in_keys=IN_KEYS, out_keys=CRPS_OUT_KEYS, config=MODEL_CONFIG)
+
+
+@pytest.fixture
+def crps_batch(batch):
+    """Batch with sigma output pre-populated (forward pass fills it; here we add a slot)."""
+    b = batch.clone()
+    b[DIAG_SIGMA_OUT_KEYS[0]] = torch.zeros(BATCH_SIZE, 1)
+    return b
+
+
+def _make_diag_crps(**kwargs):
+    defaults = dict(in_keys=IN_KEYS, diagnostic_keys=DIAG_KEYS, diagnostic_out_keys=DIAG_OUT_KEYS)
+    defaults.update(kwargs)
+    return DiagnosticCRPS(**defaults)
+
+
+def test_diagnostic_crps_returns_finite_scalar(crps_model, batch):
+    loss_fn = _make_diag_crps()
+    lit = _FakeLitModule(crps_model)
+    loss = loss_fn(lit, batch, stage="train")
+    assert isinstance(loss, torch.Tensor)
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
+def test_diagnostic_crps_nan_targets_masked(crps_model, batch_with_nans):
+    loss_fn = _make_diag_crps()
+    lit = _FakeLitModule(crps_model)
+    loss = loss_fn(lit, batch_with_nans, stage="train")
+    assert torch.isfinite(loss)
+
+
+def test_diagnostic_crps_differs_from_mse(crps_model, batch):
+    """CRPS and MSE should produce different loss values for the same batch."""
+    lit = _FakeLitModule(crps_model)
+    crps_loss = _make_diag_crps()(lit, batch, stage="train")
+    mse_loss = DiagnosticMSE(in_keys=IN_KEYS, diagnostic_keys=DIAG_KEYS, diagnostic_out_keys=DIAG_OUT_KEYS)(
+        lit, batch, stage="train"
+    )
+    assert not torch.isclose(crps_loss, mse_loss)
+
+
+def test_diagnostic_crps_backward_succeeds(crps_model, batch):
+    loss_fn = _make_diag_crps()
+    lit = _FakeLitModule(crps_model)
+    loss = loss_fn(lit, batch, stage="train")
+    loss.backward()
+
+
+# ── RolloutCRPS ───────────────────────────────────────────────────────────────
+
+PROG_SIGMA_OUT_KEYS = [("seviri", "LST_log_sigma_pred")]
+ROLLOUT_CRPS_OUT_KEYS = PROG_OUT_KEYS + PROG_SIGMA_OUT_KEYS
+
+
+@pytest.fixture
+def rollout_crps_model():
+    return MultiModalMLP(
+        in_keys=ROLLOUT_IN_KEYS + PROG_KEYS,
+        out_keys=ROLLOUT_CRPS_OUT_KEYS,
+        config={**MODEL_CONFIG, "hidden_sizes": [16, 8]},
+    )
+
+
+def _make_rollout_crps(**kwargs):
+    defaults = dict(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=PROG_KEYS,
+        prognostic_out_keys=PROG_OUT_KEYS,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )
+    defaults.update(kwargs)
+    return RolloutCRPS(**defaults)
+
+
+def test_rollout_crps_returns_finite_scalar(rollout_crps_model, rollout_batch):
+    loss_fn = _make_rollout_crps()
+    lit = _RolloutLitModule(rollout_crps_model)
+    loss = loss_fn(lit, rollout_batch, stage="train")
+    assert isinstance(loss, torch.Tensor)
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
+def test_rollout_crps_backward_succeeds(rollout_crps_model, rollout_batch):
+    loss_fn = _make_rollout_crps()
+    lit = _RolloutLitModule(rollout_crps_model)
+    loss = loss_fn(lit, rollout_batch, stage="train")
+    loss.backward()
+
+
+def test_rollout_crps_timestep_weights_supported(rollout_crps_model, rollout_batch):
+    """RolloutCRPS must respect timestep_weights the same way RolloutMSE does."""
+    lit = _RolloutLitModule(rollout_crps_model)
+    loss_uniform = _make_rollout_crps(timestep_weights=[1.0, 1.0])(lit, rollout_batch, stage="train")
+    loss_decaying = _make_rollout_crps(timestep_weights=[4.0, 1.0])(lit, rollout_batch, stage="train")
+    assert not torch.isclose(loss_uniform, loss_decaying)

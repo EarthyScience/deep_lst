@@ -47,6 +47,7 @@ class RolloutMSE:
         min_valid_fraction=0.05,
         incremental_loss=False,
         impute_inputs=True,  # single FVC values missing
+        timestep_weights: list[float] | None = None,
         **kwargs,
     ):
         self.in_keys = kwargs["in_keys"]  # e.g. [("era5", "t2m"), ..., ("seviri", "DEM"), ...]
@@ -58,13 +59,17 @@ class RolloutMSE:
         self.min_valid_fraction = min_valid_fraction
         self.incremental_loss = incremental_loss
         self.impute_inputs = impute_inputs
+        # Per-timestep loss weights (length must equal horizon when provided).
+        # None = uniform weights, equivalent to [1.0, 1.0, ...].
+        # Example: [4.0, 2.0, 1.0] emphasises early steps during long-horizon finetuning.
+        self.timestep_weights = timestep_weights
 
     def __call__(self, lit_module, batch, stage: str):
         horizon = lit_module.config["train_dataset"]["seviri"]["horizon"]  # suboptimal
         # lookback = lit_module.config["train_dataset"]["seviri"]["lookback"]
 
         loss = torch.tensor(0.0, device=batch.device)
-        valid_timesteps = 0
+        weight_sum = 0.0
 
         # Compute combined spatial validity mask from initial prognostic state (t=0)
         # Reduce across channels (all channels must be valid per pixel)
@@ -85,6 +90,8 @@ class RolloutMSE:
             prog[key] = batch[key][:, 0, ...][spatial_mask]  # [N_valid, C]
 
         for t in range(1, horizon + 1):
+            w = self.timestep_weights[t - 1] if self.timestep_weights is not None else 1.0
+
             # Build input at valid pixels only
             tstep_td = TensorDict({}, batch_size=[spatial_mask.sum().item()])
             for key in self.in_keys:
@@ -107,7 +114,7 @@ class RolloutMSE:
                 frac = target_valid.sum().float() / max(target_valid.numel(), 1)
                 if frac >= self.min_valid_fraction:
                     # State loss
-                    loss += F.mse_loss(y_hat[target_valid], target[target_valid])
+                    loss += w * F.mse_loss(y_hat[target_valid], target[target_valid])
 
                     # Increment loss: compare predicted increment to observed increment
                     if self.incremental_loss:
@@ -115,9 +122,9 @@ class RolloutMSE:
                         target_increment = target - target_prev
                         inc_valid = target_valid & torch.isfinite(target_increment).all(dim=-1)
                         if inc_valid.sum() > 0:
-                            loss += F.mse_loss(pred_increment[inc_valid], target_increment[inc_valid])
+                            loss += w * F.mse_loss(pred_increment[inc_valid], target_increment[inc_valid])
 
-                    valid_timesteps += 1
+                    weight_sum += w
 
                 # Update prognostic state
                 new_prog = y_hat.detach() if self.detach_rollout else y_hat
@@ -131,13 +138,13 @@ class RolloutMSE:
 
                 frac = target_valid.sum().float() / max(target_valid.numel(), 1)
                 if frac >= self.min_valid_fraction:
-                    loss += F.mse_loss(y_hat[target_valid], target[target_valid])
-                    valid_timesteps += 1
+                    loss += w * F.mse_loss(y_hat[target_valid], target[target_valid])
+                    weight_sum += w
 
-        if valid_timesteps > 0:
-            loss = loss / valid_timesteps
+        if weight_sum > 0:
+            loss = loss / weight_sum
 
         lit_module.log(f"{stage}_loss_step", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        lit_module.log(f"{stage}_valid_timesteps", float(valid_timesteps), sync_dist=True)
+        lit_module.log(f"{stage}_weight_sum", weight_sum, sync_dist=True)
 
         return loss

@@ -59,6 +59,12 @@ def get_keys_from_config(dataset_config):
         for var in mod_cfg.get("diagnostics", []):
             diagnostic_keys.append((modality, var))
             diagnostic_out_keys.append((modality, f"{var}_pred"))
+        # Probabilistic outputs: model predicts log-sigma alongside mean.
+        # These go to out_keys only — no target lookup in data.
+        for var in mod_cfg.get("sigma_prognostics", []):
+            prognostic_out_keys.append((modality, f"{var}_log_sigma_pred"))
+        for var in mod_cfg.get("sigma_diagnostics", []):
+            diagnostic_out_keys.append((modality, f"{var}_log_sigma_pred"))
     td_keys = {
         "in_keys": in_keys,
         "out_keys": prognostic_out_keys + diagnostic_out_keys,
