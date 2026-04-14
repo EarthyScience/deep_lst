@@ -145,9 +145,17 @@ class Forecast:
             predictions[var] = pred_grid
             observations[var] = obs_grid
 
-        # Reconstruct init times from the dataset's time indices
-        # The loader iterates in order; we recover unique time steps from the batch count
-        lead_times = pd.timedelta_range(start="1h", periods=time_horizon, freq="h")
+        # Align lead_time axis: both models use [0h, 1h, 2h, 3h].
+        # Diagnostic already produces t=0 (nowcast); rollout starts at t=1, so we
+        # prepend a NaN slice at lead_time=0 to give it the same shape.
+        if self.prediction_mode == "RolloutMSE":
+            nan_slice = np.full((n_time, 1, *self.grid_shape), np.nan)
+            for var in predictions:
+                predictions[var] = np.concatenate([nan_slice, predictions[var]], axis=1)
+                observations[var] = np.concatenate([nan_slice.copy(), observations[var]], axis=1)
+            time_horizon += 1
+
+        lead_times = pd.timedelta_range(start="0h", periods=time_horizon, freq="h")
 
         # Use a placeholder index; proper init times require the dataset's time_idx
         init_times = pd.date_range(start="2000-01-01", periods=n_time, freq="h")
@@ -205,8 +213,18 @@ class Forecast:
             predictions[var] = pred_grid
             observations[var] = obs_grid
 
+        # Align lead_time axis: both models use [0h, 1h, 2h, 3h].
+        # Diagnostic already produces t=0 (nowcast); rollout starts at t=1, so we
+        # prepend a NaN slice at lead_time=0 to give it the same shape.
+        if self.prediction_mode == "RolloutMSE":
+            nan_slice = np.full((n_time, 1, *self.grid_shape), np.nan)
+            for var in predictions:
+                predictions[var] = np.concatenate([nan_slice, predictions[var]], axis=1)
+                observations[var] = np.concatenate([nan_slice.copy(), observations[var]], axis=1)
+            time_horizon += 1
+
         init_times = TIME_INDEX_ORIGIN + pd.to_timedelta(unique_time_idx.astype(np.int64), unit="h")
-        lead_times = pd.timedelta_range(start="1h", periods=time_horizon, freq="h")
+        lead_times = pd.timedelta_range(start="0h", periods=time_horizon, freq="h")
 
         return ForecastResult(
             predictions=predictions,
@@ -315,7 +333,11 @@ class Forecast:
         for var in obs:
             o = obs[var]
             p = preds[var]
-            all_valid = np.all(np.isfinite(o), axis=1, keepdims=True)
+            # Require both obs and pred to be finite at ALL lead times.
+            # Checking obs alone misses rollout pixels where a NaN init state
+            # (cloud at t=0) propagates through the autoregressive loop,
+            # producing NaN predictions even when obs clears later.
+            all_valid = np.all(np.isfinite(o), axis=1, keepdims=True) & np.all(np.isfinite(p), axis=1, keepdims=True)
             preds_masked[var] = np.where(all_valid, p, np.nan)
             obs_masked[var] = np.where(all_valid, o, np.nan)
         return preds_masked, obs_masked

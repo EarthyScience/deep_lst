@@ -1,3 +1,58 @@
+"""
+Compute per-variable normalisation statistics for a sampled EOZarr store.
+
+Statistics (mean, std, min, max) are computed via Welford's online algorithm
+over a spatial × temporal index mesh, then written to two places:
+  1. assets/{modality}/statistics/statistics_{spatial}.npz  — for legacy loaders
+  2. zarr array attributes (or root group for computed vars) — for training
+
+Which indices are used
+----------------------
+--spatial   Name of the spatial index file, e.g. KGLC_L.
+            Resolves to: assets/{modality}/spatial/indices_{spatial}.npz
+            The spatial key read from the file is '{modality}_indices', with
+            'mapping' as fallback (older files).
+
+--temporal  Name of the temporal index file (default: train).
+            Resolves to: assets/temporal/time_indices_{temporal}.npz
+
+The statistics label stored in the zarr store equals --spatial, so training
+configs that reference label='KGLC_L' will load the right statistics.
+
+Which variables are included
+-----------------------------
+Controlled by configs/statistics/config.yml (--config flag).
+The config lists inputs/diagnostics/prognostics per modality.
+Only CONTINUOUS variables (per the reader's torch schema) receive statistics;
+CATEGORICAL variables (lsm, LWMASK, LANDCOV) are loaded but skipped.
+Computed variables (solar_zenith, doy_sin, doy_cos) have no backing zarr
+array — their statistics are stored on the root group of the store instead.
+
+Typical usage
+-------------
+Single GPU (development / small stores):
+    python scripts/statistics/compute_statistics.py \\
+        -s /path/to/seviri_sampled_KGLC_L.zarr \\
+        -m seviri \\
+        --spatial KGLC_L \\
+        --temporal train \\
+        --preload
+
+Multi-GPU via torchrun (recommended for large stores):
+    torchrun --nproc_per_node=4 scripts/statistics/compute_statistics.py \\
+        -s /path/to/seviri_sampled_KGLC_L.zarr \\
+        -m seviri \\
+        --spatial KGLC_L \\
+        --temporal train \\
+        --preload
+
+Nested sampling strategy
+------------------------
+For nested splits (S ⊂ M ⊂ L), compute statistics once on the largest set (L)
+and use that label for all levels — the distribution is representative for all.
+Run once per modality × spatial strategy, not once per size level.
+"""
+
 import argparse
 import os
 
@@ -16,15 +71,7 @@ from deep_lst.utils.io import ExperimentPaths, save_statistics_npz
 
 
 def _load_indices(modality: str, spatial_path, temporal_path) -> np.ndarray:
-    """Load spatial and temporal indices and return a meshed (N_space * N_time, 2) array.
-
-    Supports both key conventions for spatial .npz files:
-      - '{modality}_indices'  used by scene files
-      - 'mapping'             used by global coverage files (e.g. indices_1p_global.npz)
-
-    Temporal file must contain key 'time_indices' (int64 T1H positions), as written
-    by eodata.grids.temporal_filter.TemporalFilter.save().
-    """
+    """Load spatial and temporal indices and return a meshed (N_space * N_time, 2) array."""
     spatial_data = np.load(spatial_path)
     spatial_idx = spatial_data.get(f"{modality}_indices", spatial_data.get("mapping"))
     if spatial_idx is None:
@@ -50,23 +97,12 @@ def calculate_statistics(
     num_workers: int = 0,
     **reader_kwargs,
 ) -> dict:
-    """Compute per-variable mean, std, min, max over the given (spatial, temporal) index pairs.
-
-    reader_cls is instantiated here without calling set_normalizer(), so data is
-    returned in physical units. Only CONTINUOUS variables (per the reader's torch
-    schema) receive statistics; CATEGORICAL variables (lsm, LWMASK, LANDCOV) are
-    skipped automatically.
-
-    dim convention: reduced_dimensions_indices is 0-based within the variable's own
-    dims; +1 shifts each index to account for the batch dimension prepended by the
-    DataLoader, so dim=(0, 1, 2, 3) reduces over (batch, time, lat, lon) and leaves
-    the trailing channel dim (size 1) unreduced. save_statistics_npz calls .item()
-    to flatten that to a scalar.
-    """
+    """Compute per-variable mean, std, min, max over the given (spatial, temporal) index pairs."""
     device = torch.device(device)
 
-    # Instantiate reader without set_normalizer() — data stays in physical units.
     reader = reader_cls(eozarr_store=store, **reader_kwargs)
+    if reader_kwargs.get("preload", False):
+        reader.preload()
     dataset = UnimodalDataset(reader=reader, indices=indices)
 
     if torch.distributed.is_initialized():
@@ -88,8 +124,6 @@ def calculate_statistics(
     metrics: dict[str, StandardStatisticsMetric] = {}
     for name, var in schema.variables.items():
         if var.var_type == VariableType.CONTINUOUS:
-            # reduced_dimensions_indices: 0-based positions in the variable's own dims.
-            # +1 shifts each index past the batch dim prepended by DataLoader.
             dim = (0,) + tuple(idx + 1 for idx in var.reduced_dimensions_indices)
             metrics[name] = StandardStatisticsMetric(dim=dim).to(device=device)
 
@@ -130,19 +164,35 @@ def main():
         help="Modality to compute statistics for.",
     )
     parser.add_argument(
+        "--spatial",
+        required=True,
+        help="Spatial index name (e.g. KGLC_L). Resolves to assets/{modality}/spatial/indices_{name}.npz. "
+        "Also used as the statistics label and output filename suffix.",
+    )
+    parser.add_argument(
+        "--temporal",
+        default="train",
+        help="Temporal split name (default: train). Resolves to assets/temporal/time_indices_{name}.npz.",
+    )
+    parser.add_argument(
         "-c",
         "--config",
         default="statistics",
         help="Config name under configs/ — used to read variable lists (default: statistics).",
     )
-    parser.add_argument(
-        "--statistics",
-        default="global",
-        help="Output label; statistics are saved to assets/{modality}/statistics/statistics_{label}.npz.",
-    )
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=1)
+    parser.add_argument(
+        "--preload",
+        action="store_true",
+        default=False,
+        help="Preload all zarr arrays into RAM before computing statistics. "
+        "Recommended for sampled stores (~9 GB total).",
+    )
     args = parser.parse_args()
+
+    # Label and output name derived from the spatial index name
+    label = args.spatial  # e.g. 'KGLC_L'
 
     # ── device ────────────────────────────────────────────────────────────────
     if torch.cuda.is_available() and torch.distributed.is_initialized():
@@ -159,10 +209,6 @@ def main():
         from eodata.data_reader.seviri import SeviriReader as ReaderCls
 
     # ── reader kwargs from config ─────────────────────────────────────────────
-    # Variable lists come from the training config so statistics always cover
-    # exactly the variables the model uses. patch_size, lookback, and horizon
-    # are overridden to point-wise single-step to avoid redundant overlap between
-    # adjacent time windows and to minimise memory.
     paths = ExperimentPaths()
     config = open_config(paths.config_path(args.config))
     modality_cfg = config[args.modality]
@@ -172,27 +218,27 @@ def main():
         "prognostics": modality_cfg["prognostics"],
         "row_extent": modality_cfg["row_extent"],
         "col_extent": modality_cfg["col_extent"],
-        "patch_size": 1,  # always point-wise for statistics
-        "lookback": 0,  # single timestep — no window overlap
+        "lookback": 0,
         "horizon": 0,
+        "preload": args.preload,
     }
 
     # ── indices ───────────────────────────────────────────────────────────────
-    store = EOZarrStore(args.store, mode="r")
+    store = EOZarrStore(args.store, mode="r+")
     indices = _load_indices(
         args.modality,
-        spatial_path=paths.spatial_indices_path(args.modality, config["spatial"]),
-        temporal_path=paths.temporal_indices_path(config["temporal"]),
+        spatial_path=paths.spatial_indices_path(args.modality, args.spatial),
+        temporal_path=paths.temporal_indices_path(args.temporal),
     )
 
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     if rank == 0:
         print(f"Modality     : {args.modality}")
-        print(
-            f"Spatial file : {config['spatial']}  ({indices[:, 0].nunique() if hasattr(indices[:, 0], 'nunique') else len(np.unique(indices[:, 0]))} unique pixels)"
-        )
-        print(f"Temporal file: {config['temporal']}  ({len(np.unique(indices[:, 1]))} unique timesteps)")
+        print(f"Store        : {args.store}")
+        print(f"Spatial      : {args.spatial}  ({len(np.unique(indices[:, 0]))} unique pixels)")
+        print(f"Temporal     : {args.temporal}  ({len(np.unique(indices[:, 1]))} unique timesteps)")
         print(f"Total samples: {len(indices):,}")
+        print(f"Label        : {label}")
 
     # ── compute ───────────────────────────────────────────────────────────────
     stats = calculate_statistics(
@@ -205,23 +251,28 @@ def main():
         **reader_kwargs,
     )
 
-    # ── sync all ranks before save so destroy_process_group is called together ──
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
 
     # ── save (rank 0 only) ────────────────────────────────────────────────────
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         for var_name, var_stats in stats.items():
-            print(f"Variable: {var_name}")
-            for stat_name, value in var_stats.items():
-                print(f"  {stat_name}: {value}")
+            print(f"  {var_name}: mean={var_stats['mean']:.4f}  std={var_stats['std']:.4f}")
 
-        out_path = paths.statistics_path(args.modality, args.statistics)
+        # Save to npz (for compatibility with existing training configs)
+        out_path = paths.statistics_path(args.modality, label)
         save_statistics_npz(stats, out_path)
-        print(f"Saved statistics to {out_path}")
+        print(f"\nSaved statistics npz → {out_path}")
+
+        # Embed statistics in the zarr store under the experiment label.
+        # Computed variables (solar_zenith, doy_sin, doy_cos) have no backing
+        # zarr array — set_statistics stores them on the root group automatically.
+        for var_name, var_stats in stats.items():
+            store.set_statistics(args.modality, var_name, var_stats, label=label, overwrite=True)
+        print(f"Embedded statistics in zarr store (label='{label}')")
 
     if torch.distributed.is_initialized():
-        torch.distributed.barrier()  # wait for rank 0 to finish saving
+        torch.distributed.barrier()
         torch.distributed.destroy_process_group()
 
 

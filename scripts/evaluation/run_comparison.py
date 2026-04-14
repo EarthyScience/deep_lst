@@ -14,24 +14,24 @@ overridden with --group_labels.
 Usage
 -----
 # Group by sample size (S / M / L):
-python scripts/evaluation/run_comparison.py \\
-    --eval antananarivo \\
-    --version version_0 \\
-    --diag    mlp_diag_S_KG_v1    mlp_diag_M_KG_v1    mlp_diag_L_KG_v1 \\
-    --rollout mlp_rollout_S_KG_v1 mlp_rollout_M_KG_v1 mlp_rollout_L_KG_v1 \\
-    --group_by sample_size \\
-    --metric rmse \\
-    --lead_time 1h
+uv run scripts/evaluation/run_comparison.py
+    --eval dahra
+    --version version_1
+    --diag    mlp_diag_S_KG_v1    mlp_diag_M_KG_v1    mlp_diag_L_KG_v1
+    --rollout mlp_rollout_S_KG_v1 mlp_rollout_M_KG_v1 mlp_rollout_L_KG_v1
+    --group_by sample_size
+    --metric rmse
+    --lead_time 3h
 
 # Group by stratification (KG / KGLC):
-python scripts/evaluation/run_comparison.py \\
-    --eval antananarivo \\
-    --version version_0 \\
-    --diag    mlp_diag_L_KG_v1    mlp_diag_L_KGLC_v1 \\
-    --rollout mlp_rollout_L_KG_v1 mlp_rollout_L_KGLC_v1 \\
-    --group_by stratification \\
-    --metric rmse \\
-    --lead_time 1h
+uv run scripts/evaluation/run_comparison.py
+    --eval dahra
+    --version version_1
+    --diag    mlp_diag_L_KG_v1    mlp_diag_L_KGLC_v1
+    --rollout mlp_rollout_L_KG_v1 mlp_rollout_L_KGLC_v1
+    --group_by stratification
+    --metric rmse
+    --lead_time 3h
 """
 
 import argparse
@@ -40,7 +40,9 @@ from pathlib import Path
 
 import xarray as xr
 
+from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison
 from deep_lst.evaluation.plots.scores import score_boxplots
+from deep_lst.evaluation.plots.spectra import power_spectrum_from_forecasts
 from deep_lst.utils import ExperimentPaths
 
 PATHS = ExperimentPaths()
@@ -82,6 +84,13 @@ def parse_args():
     )
     p.add_argument("--variable", default="LST")
     p.add_argument(
+        "--plots",
+        nargs="+",
+        default=["boxplot", "diurnal_delta", "power_spectrum"],
+        metavar="PLOT",
+        help="Plots to generate. Choose from: boxplot diurnal_delta power_spectrum (default: all)",
+    )
+    p.add_argument(
         "--output_dir", type=Path, default=None, help="Override output directory (default: results/comparison/{eval})"
     )
     return p.parse_args()
@@ -106,6 +115,15 @@ def _load_metric(experiment, version, eval_name, metric):
     if metric not in ds:
         raise KeyError(f"Metric '{metric}' not found in {path}. Available: {list(ds.data_vars)}")
     return ds
+
+
+def _load_diurnal_mean(experiment, version, eval_name):
+    path = PATHS.metrics_path(experiment, version, eval_name, aggregation="diurnal_mean")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Diurnal mean file not found: {path}\nRun run_evaluation.py for experiment '{experiment}' first."
+        )
+    return xr.open_dataset(path)
 
 
 def run_comparison():
@@ -158,7 +176,6 @@ def run_comparison():
         # Look for ERA5 metrics in any rollout experiment (region_time, rmse)
         era5_ds = None
         for exp in args.rollout or args.diag:
-            era5_metrics = PATHS.metrics_path(exp, args.version, args.eval, "region_time")
             # ERA5 scores are stored separately — convention: results/era5_baseline/{eval}/metrics_region_time.nc
             era5_path = PATHS.results_root / "era5_baseline" / args.eval / "metrics_region_time.nc"
             if era5_path.exists():
@@ -183,14 +200,67 @@ def run_comparison():
 
     save_path = out_dir / f"{args.variable}_{args.metric}_{args.group_by}_lt{args.lead_time}.png"
 
-    score_boxplots(
-        scores_by_group=scores_by_group,
-        metric=args.metric,
-        xlabel=xlabel,
-        save_path=save_path,
-        title=title,
-    )
-    print(f"\nSaved comparison plot: {save_path}")
+    requested_plots = set(args.plots)
+
+    if "boxplot" in requested_plots:
+        score_boxplots(
+            scores_by_group=scores_by_group,
+            metric=args.metric,
+            xlabel=xlabel,
+            save_path=save_path,
+            title=title,
+        )
+        print(f"Saved: {save_path}")
+
+    if "diurnal_delta" in requested_plots:
+        # Load diurnal_mean for the first diag + first rollout experiment only
+        # (one representative per model type, typically the L experiment)
+        diurnal_by_case = {}
+        if args.diag:
+            try:
+                diurnal_by_case["MLP-Diag"] = _load_diurnal_mean(args.diag[-1], args.version, args.eval)
+            except FileNotFoundError as e:
+                print(f"Warning: {e}")
+        if args.rollout:
+            try:
+                diurnal_by_case["MLP-Rollout"] = _load_diurnal_mean(args.rollout[-1], args.version, args.eval)
+            except FileNotFoundError as e:
+                print(f"Warning: {e}")
+        if diurnal_by_case:
+            dd_path = out_dir / f"{args.variable}_diurnal_delta_comparison_lt{args.lead_time}.png"
+            diurnal_delta_comparison(
+                diurnal_mean_by_case=diurnal_by_case,
+                var=args.variable,
+                save_path=dd_path,
+                eval_region=args.eval,
+            )
+            print(f"Saved: {dd_path}")
+
+    if "power_spectrum" in requested_plots:
+        # Load forecast files for the last (largest / most representative) experiment
+        # per model type and compute spatial power spectra.
+        forecast_by_case = {}
+        for case_label, experiments in [("MLP-Diag", args.diag), ("MLP-Rollout", args.rollout)]:
+            if not experiments:
+                continue
+            exp = experiments[-1]
+            fc_path = PATHS.forecast_path(exp, args.version, args.eval)
+            if not fc_path.exists():
+                print(f"Warning: forecast not found for {exp} — skipping power spectrum")
+                continue
+            forecast_by_case[case_label] = xr.open_dataset(fc_path)
+
+        if forecast_by_case:
+            ps_path = out_dir / f"{args.variable}_power_spectrum_lt{args.lead_time}.png"
+            power_spectrum_from_forecasts(
+                forecast_by_case=forecast_by_case,
+                var=args.variable,
+                lead_time=args.lead_time,
+                save_path=ps_path,
+                eval_region=args.eval,
+            )
+            for ds in forecast_by_case.values():
+                ds.close()
 
 
 if __name__ == "__main__":

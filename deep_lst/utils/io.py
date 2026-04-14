@@ -79,9 +79,17 @@ class ExperimentPaths:
     def store_path(self, name) -> Path:
         return self.stores_root / f"{name}_long.zarr"
 
+    def sampled_store_path(self, modality: str, spatial: str) -> Path:
+        """Resolve the sampled zarr store for *modality* and *spatial* experiment name.
+
+        e.g. sampled_store_path('seviri', 'KGLC_L') →
+             .../seviri_sampled_KGLC_L.zarr
+        """
+        return self.stores_root / f"{modality}_sampled_{spatial}.zarr"
+
     def eval_indices_path(self, modality: str, name: str) -> Path:
         """Resolve the dense evaluation pixel index file for *modality* and *eval name*."""
-        return self.assets_root / modality / "eval" / f"indices_{name}.npz"
+        return self.assets_root / modality / "spatial" / f"indices_eval_{name}.npz"
 
     def baseline_path(self, eval_name: str) -> Path:
         """Resolve the ERA5 SKT baseline NetCDF for an eval region.
@@ -89,6 +97,14 @@ class ExperimentPaths:
         Saved under assets/era5/baselines/ and shared across all experiments.
         """
         return self.assets_root / "era5" / "baselines" / f"baseline_{eval_name}.nc"
+
+    def climatology_path(self, eval_name: str, variant: str) -> Path:
+        """Resolve the SEVIRI climatology NetCDF for an eval region.
+
+        variant : "hourly" | "smoothed_hourly"
+        Saved under assets/climatology/{variant}/ and shared across experiments.
+        """
+        return self.assets_root / "climatology" / variant / f"climatology_{eval_name}.nc"
 
     def temporal_indices_path(self, split: str) -> Path:
         """Resolve the pre-computed temporal block index file for *split*.

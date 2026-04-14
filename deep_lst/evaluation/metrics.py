@@ -283,3 +283,123 @@ def compute_diurnal_scores(
     data_vars["n_valid"] = ("hour", n_valid)
 
     return xr.Dataset(data_vars, coords={"hour": np.arange(24)})
+
+
+def compute_diurnal_mean(
+    pred: xr.DataArray,
+    obs: xr.DataArray,
+) -> xr.Dataset:
+    """Compute per-hour-of-day mean and std of raw pred and obs values.
+
+    Used for diurnal mean and diurnal delta (ΔT) plots. Unlike
+    compute_diurnal_scores, this operates on raw values rather than errors.
+
+    Parameters
+    ----------
+    pred, obs : xr.DataArray
+        On dims (valid_time, lat, lon). Produced by to_valid_time().
+
+    Returns
+    -------
+    xr.Dataset with dim hour (0–23) and variables:
+        pred_mean, obs_mean       : mean LST per hour
+        pred_std,  obs_std        : spatial+temporal std per hour
+        pred_delta, obs_delta     : hour-to-hour change (circular, K/h)
+        n_valid                   : number of finite pixel-timestep pairs
+    """
+    hours = pred["valid_time"].dt.hour.values
+    pred_mean = np.full(24, np.nan)
+    obs_mean = np.full(24, np.nan)
+    pred_std = np.full(24, np.nan)
+    obs_std = np.full(24, np.nan)
+    n_valid = np.zeros(24, dtype=np.int64)
+
+    pred_vals = pred.values
+    obs_vals = obs.values
+
+    for h in range(24):
+        h_mask = hours == h
+        p_h = pred_vals[h_mask]
+        o_h = obs_vals[h_mask]
+        valid = np.isfinite(p_h) & np.isfinite(o_h)
+        n = int(valid.sum())
+        n_valid[h] = n
+        if n == 0:
+            continue
+        pred_mean[h] = float(np.mean(p_h[valid]))
+        obs_mean[h] = float(np.mean(o_h[valid]))
+        pred_std[h] = float(np.std(p_h[valid]))
+        obs_std[h] = float(np.std(o_h[valid]))
+
+    # Hour-to-hour change: delta[h] = mean[h] - mean[h-1] (circular)
+    pred_delta = np.roll(pred_mean, -1) - pred_mean  # delta[h] = mean[h+1] - mean[h]
+    obs_delta = np.roll(obs_mean, -1) - obs_mean
+    # Where either neighbour is NaN the diff is meaningless
+    for arr in (pred_delta, obs_delta):
+        for h in range(24):
+            if np.isnan(pred_mean[h]) or np.isnan(pred_mean[(h + 1) % 24]):
+                arr[h] = np.nan
+
+    return xr.Dataset(
+        {
+            "pred_mean": ("hour", pred_mean),
+            "obs_mean": ("hour", obs_mean),
+            "pred_std": ("hour", pred_std),
+            "obs_std": ("hour", obs_std),
+            "pred_delta": ("hour", pred_delta),
+            "obs_delta": ("hour", obs_delta),
+            "n_valid": ("hour", n_valid),
+        },
+        coords={"hour": np.arange(24)},
+    )
+
+
+def compute_scores_by_lead_time(
+    ds: xr.Dataset,
+    var: str = "LST",
+    metrics: list[str] | None = None,
+) -> xr.Dataset:
+    """Compute metrics at every lead_time, aggregated over all (init_time, lat, lon).
+
+    Returns a Dataset with dim ``lead_time`` suitable for error-growth plots
+    and for saving as ``metrics_by_lead_time.nc``.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        ForecastResult with dims (init_time, lead_time, lat, lon).
+    var : str
+        Variable name, e.g. "LST".
+    metrics : list of str, optional
+        Default: ["rmse", "bias"].
+
+    Returns
+    -------
+    xr.Dataset with dim ``lead_time`` and one variable per metric + ``n_valid``.
+    """
+    if metrics is None:
+        metrics = ["rmse", "bias"]
+
+    lead_times = ds["lead_time"].values
+    results = {m: [] for m in metrics}
+    n_valid_list = []
+
+    for lt in lead_times:
+        lt_h = int(pd.Timedelta(lt).total_seconds() // 3600)
+        try:
+            pred, obs = to_valid_time(ds, var, lead_time=f"{lt_h}h")
+        except Exception:
+            for m in metrics:
+                results[m].append(np.nan)
+            n_valid_list.append(0)
+            continue
+
+        scores = compute_scores(pred, obs, metrics=metrics, aggregation="total")
+        for m in metrics:
+            results[m].append(float(scores[m].values))
+        n_valid_list.append(int(scores["n_valid"].values))
+
+    return xr.Dataset(
+        {m: ("lead_time", results[m]) for m in metrics} | {"n_valid": ("lead_time", n_valid_list)},
+        coords={"lead_time": lead_times},
+    )

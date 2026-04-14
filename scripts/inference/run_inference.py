@@ -1,10 +1,10 @@
 """Run model inference for a trained experiment on an evaluation site.
 
 Usage:
-    python scripts/inference/run_inference.py \
+    uv run scripts/inference/run_inference.py \
         --experiment mlp_diag_L_KG_v1 \
         --version version_0 \
-        --eval antananarivo
+        --eval dahra
 
 The script reads metadata.json to recover the base config and spatial/temporal
 overrides used during training, then adds the eval override on top.
@@ -40,6 +40,13 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=None, help="Override batch size from config")
     parser.add_argument("--num_workers", type=int, default=None, help="Override num_workers from config")
     parser.add_argument(
+        "--inference_horizon",
+        type=int,
+        default=None,
+        help="Override rollout horizon for inference (steps beyond training horizon). "
+        "Only valid for rollout models. E.g. --inference_horizon 12 to forecast 12h ahead.",
+    )
+    parser.add_argument(
         "--temporal",
         nargs="+",
         default=None,
@@ -55,27 +62,31 @@ def run_inference():
     args = parse_args()
     paths = ExperimentPaths()
 
-    # --- Recover base config + overrides from training metadata ---
-    metadata_file = paths.metadata_path(args.experiment, args.version)
-    if not metadata_file.exists():
+    # --- Load config from the saved checkpoint config (ground truth of what was trained) ---
+    # Apply only the eval override on top so that input features, normalization, etc.
+    # exactly match what the model saw during training, even if override files have changed.
+    saved_config_path = paths.experiment_dir(args.experiment) / args.version / "config.yml"
+    if not saved_config_path.exists():
         raise FileNotFoundError(
-            f"metadata.json not found at {metadata_file}. Pass --experiment as the exact experiment directory name."
+            f"Saved config not found at {saved_config_path}. "
+            "Ensure the experiment version directory contains config.yml."
         )
-    with open(metadata_file) as f:
-        metadata = json.load(f)
+    metadata_file = paths.metadata_path(args.experiment, args.version)
+    if metadata_file.exists():
+        with open(metadata_file) as f:
+            metadata = json.load(f)
+        config_name = metadata["config"]  # e.g. "mlp_diag"
+    else:
+        config_name = args.experiment.split("_")[0]  # best-effort fallback
 
-    config_name = metadata["config"]  # e.g. "mlp_diag"
-    train_overrides = metadata["overrides"]  # e.g. ["L_KG_v1"]
     eval_override = f"eval_{args.eval}"
-
-    all_overrides = train_overrides + [eval_override]
-    override_paths = [paths.config_root / config_name / "overrides" / f"{o}.yml" for o in all_overrides]
-    config = merge_configs(paths.config_path(config_name), override_paths)
+    eval_override_path = paths.config_root / config_name / "overrides" / f"{eval_override}.yml"
+    config = merge_configs(saved_config_path, [eval_override_path] if eval_override_path.exists() else [])
 
     eval_name = config.get("_eval_name", args.eval)
 
-    # --- Optional time range override for parallelisation ---
-    if args.start_time or args.end_time or args.temporal:
+    # --- Optional overrides ---
+    if args.start_time or args.end_time or args.temporal or args.inference_horizon:
         config = copy.deepcopy(config)
         if args.start_time:
             config["test_dataset"]["start_time"] = args.start_time
@@ -83,6 +94,14 @@ def run_inference():
             config["test_dataset"]["end_time"] = args.end_time
         if args.temporal:
             config["test_dataset"]["temporal"] = args.temporal[0] if len(args.temporal) == 1 else args.temporal
+        if args.inference_horizon:
+            trained_horizon = config["test_dataset"]["era5"]["horizon"]
+            if args.inference_horizon < trained_horizon:
+                raise ValueError(
+                    f"--inference_horizon ({args.inference_horizon}) must be >= trained horizon ({trained_horizon})."
+                )
+            for mod in config["modality_ids"]:
+                config["test_dataset"][mod]["horizon"] = args.inference_horizon
 
     td_keys = get_keys_from_config(config["test_dataset"])
 
@@ -90,7 +109,7 @@ def run_inference():
     spatial_path = paths.eval_indices_path("seviri", eval_name)
     if not spatial_path.exists():
         raise FileNotFoundError(f"Eval spatial indices not found: {spatial_path}")
-    spatial_indices = np.load(spatial_path)["indices"]
+    spatial_indices = np.load(spatial_path)["src_indices"]
 
     # --- Load model ---
     lit_module, device = load_model(

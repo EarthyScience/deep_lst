@@ -63,7 +63,9 @@ def test_store_path(paths, tmp_path):
 
 
 def test_eval_indices_path(paths, tmp_path):
-    assert paths.eval_indices_path("seviri", "dahra") == (tmp_path / "assets" / "seviri" / "eval" / "indices_dahra.npz")
+    assert paths.eval_indices_path("seviri", "dahra") == (
+        tmp_path / "assets" / "seviri" / "spatial" / "indices_eval_dahra.npz"
+    )
 
 
 def test_temporal_indices_path(paths, tmp_path):
