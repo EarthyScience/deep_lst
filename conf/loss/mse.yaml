@@ -1,0 +1,4 @@
+# @package _global_
+
+# MSE is the default loss — model.step_loss is already ${_step_loss_mse} from the model group.
+_loss: mse

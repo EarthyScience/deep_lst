@@ -1,0 +1,14 @@
+# @package _global_
+_size: L
+
+train_dataset:
+  era5:
+    preload: true
+  seviri:
+    preload: true
+
+val_dataset:
+  era5:
+    preload: true
+  seviri:
+    preload: true

@@ -18,10 +18,6 @@ from omegaconf import OmegaConf
 ROOT = Path(__file__).resolve().parents[1]
 CONF_DIR = ROOT / "conf"
 
-# Skip the whole module until conf/ exists — remove this guard on Thursday.
-if not CONF_DIR.exists():
-    pytest.skip("conf/ not yet created — Hydra migration pending", allow_module_level=True)
-
 from hydra import compose, initialize_config_dir  # noqa: E402
 from hydra.core.global_hydra import GlobalHydra  # noqa: E402
 
@@ -60,12 +56,12 @@ def _new_config(overrides: list[str]) -> dict:
         (
             "mlp_rollout",
             ["mlp_rollout_L_KG_v1"],
-            ["model=mlp_rollout", "spatial=L_KG"],
+            ["model=mlp_rollout", "stratification=KG", "size=L", "horizon=h3"],
         ),
         (
             "mlp_diag",
             ["mlp_diag_L_KG_v1"],
-            ["model=mlp_diag", "spatial=L_KG"],
+            ["model=mlp_diag", "stratification=KG", "size=L", "horizon=h3"],
         ),
     ],
 )
@@ -74,6 +70,8 @@ def test_top_level_keys_match(config_name, old_overrides, hydra_overrides):
     old = _old_config(config_name, old_overrides)
     new = _new_config(hydra_overrides)
 
+    # New config has additional group-helper keys (_model_name, _step_loss_*, _loss, etc.)
+    # We only require that old keys are present in the new config.
     missing = set(old.keys()) - set(new.keys())
     assert not missing, f"Keys in old config missing from Hydra config: {missing}"
 
@@ -84,12 +82,12 @@ def test_top_level_keys_match(config_name, old_overrides, hydra_overrides):
         (
             "mlp_rollout",
             ["mlp_rollout_L_KG_v1"],
-            ["model=mlp_rollout", "spatial=L_KG"],
+            ["model=mlp_rollout", "stratification=KG", "size=L", "horizon=h3"],
         ),
         (
             "mlp_diag",
             ["mlp_diag_L_KG_v1"],
-            ["model=mlp_diag", "spatial=L_KG"],
+            ["model=mlp_diag", "stratification=KG", "size=L", "horizon=h3"],
         ),
     ],
 )
@@ -105,7 +103,7 @@ def test_model_config_matches(config_name, old_overrides, hydra_overrides):
         (
             "mlp_rollout",
             ["mlp_rollout_L_KG_v1"],
-            ["model=mlp_rollout", "spatial=L_KG"],
+            ["model=mlp_rollout", "stratification=KG", "size=L", "horizon=h3"],
         ),
     ],
 )
@@ -121,7 +119,7 @@ def test_training_config_matches(config_name, old_overrides, hydra_overrides):
         (
             "mlp_rollout",
             ["mlp_rollout_L_KG_v1"],
-            ["model=mlp_rollout", "spatial=L_KG"],
+            ["model=mlp_rollout", "stratification=KG", "size=L", "horizon=h3"],
         ),
     ],
 )

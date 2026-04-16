@@ -3,6 +3,7 @@ import importlib
 import torch
 import torch.nn as nn
 from pytorch_lightning import LightningModule
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from deep_lst.utils.io import ExperimentPaths
 
@@ -57,7 +58,6 @@ class LitModelModule(LightningModule):
         self.model = model
         self.config = config
         self.learning_rate = config["model"]["learning_rate"]
-        self.max_epochs = config["training"]["max_epochs"]
 
         self.step_loss = self._get_loss(model_id=config["model"]["name"], loss_name=config["model"]["step_loss"])(
             **kwargs
@@ -86,9 +86,14 @@ class LitModelModule(LightningModule):
             eps=1e-8,  # Numerical stability
             weight_decay=0.0,
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.max_epochs)
+        warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=20000)  # ~5 epochs
+        cosine = CosineAnnealingLR(optimizer, T_max=220000, eta_min=1e-6)
+        scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[20000])
 
-        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
 
     def on_train_epoch_end(self):
         """Clear any accumulated state at epoch end"""

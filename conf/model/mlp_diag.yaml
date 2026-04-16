@@ -1,0 +1,35 @@
+# @package _global_
+
+# Helper keys for loss-group forward references
+_model_name: mlp_diag
+_step_loss_mse: DiagnosticMSE
+_step_loss_crps: DiagnosticCRPS
+_sigma_prognostics: []
+_sigma_diagnostics: [LST]
+
+train_dataset:
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
+    prognostics: []
+    diagnostics: [LST]
+
+val_dataset:
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
+    prognostics: []
+    diagnostics: [LST]
+
+test_dataset:
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
+    prognostics: []
+    diagnostics: [LST]
+
+model:
+  name: mlp
+  hidden_sizes: [256, 128, 128, 64, 128]
+  learning_rate: 0.0001
+  dropout: 0.2
+  activation: relu
+  step_loss: ${_step_loss_mse}
+  checkpoint_monitor: val_loss
