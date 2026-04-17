@@ -142,6 +142,28 @@ class ExperimentPaths:
         return d
 
 
+def load_inc_variances(path: Path) -> dict[str, float]:
+    """Return {var: sigma_inc_norm^2} extracted from a statistics .npz file.
+
+    For each "{var}_increment" entry in the file, computes the normalised
+    increment variance: (std_increment / std_var)^2. This is the increment
+    variance in z-score space, used to reweight per-variable loss contributions.
+
+    Returns an empty dict if the file does not exist or contains no increment
+    entries — old statistics files (pre-increment) fall through gracefully.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    data = np.load(path, allow_pickle=True)
+    stds = dict(zip(data["variables"], data["std"]))
+    return {
+        var[: -len("_increment")]: float((stds[var] / stds[var[: -len("_increment")]]) ** 2)
+        for var in stds
+        if var.endswith("_increment") and var[: -len("_increment")] in stds and stds[var[: -len("_increment")]] > 0
+    }
+
+
 def save_statistics_npz(statistics: dict, path: Path) -> None:
     """
     statistics: {var: {stat_name: scalar}}

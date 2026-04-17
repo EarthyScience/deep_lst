@@ -214,8 +214,9 @@ def main():
     start = time.time()
     test_out = trainer.test(lit_module, datamodule=data_module)
     if config["wandb_logger"]:
-        test_loss = float(test_out[0]["test_loss_epoch"]) / float(test_out[0]["test_valid_count"])
-        wandb_logger.experiment.summary["test_loss"] = test_loss
+        test_loss = test_out[0].get("test_loss_step", test_out[0].get("test_loss"))
+        if test_loss is not None:
+            wandb_logger.experiment.summary["test_loss"] = float(test_loss)
     print(f"Evaluation completed in {time.time() - start:.2f} seconds.")
 
 

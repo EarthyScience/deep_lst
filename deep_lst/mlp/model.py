@@ -3,7 +3,7 @@ import importlib
 import torch
 import torch.nn as nn
 from pytorch_lightning import LightningModule
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
 
 from deep_lst.utils.io import ExperimentPaths
 
@@ -14,41 +14,65 @@ class MultiModalMLP(nn.Module):
 
         self.in_keys = in_keys
         self.out_keys = out_keys
-
         self.input_size = len(in_keys)
         self.target_size = len(out_keys)
-
-        self.activation = nn.ReLU() if config["activation"] == "relu" else None
         self.hidden_sizes = config["hidden_sizes"]
-        self.dropout = config["dropout"]
+        self.dropout_p = config["dropout"]
+        self.use_residual = config.get("use_residual", False)
 
-        self.net = self.dense()
+        self.pre, self.res_block, self.post, self.out_layer = self._build()
 
     def name(self):
         return "mlp"
 
+    def _layer(self, in_dim, out_dim):
+        return nn.Sequential(
+            nn.Linear(in_dim, out_dim),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+        )
+
+    def _build(self):
+        sizes = [self.input_size] + self.hidden_sizes
+
+        # Find first consecutive same-dimension pair for the residual skip
+        res_idx = None
+        if self.use_residual:
+            for i in range(len(self.hidden_sizes) - 1):
+                if self.hidden_sizes[i] == self.hidden_sizes[i + 1]:
+                    res_idx = i + 1
+                    break
+
+        pre, res, post = [], None, []
+        for i in range(len(self.hidden_sizes)):
+            layer = self._layer(sizes[i], sizes[i + 1])
+            if res_idx is None or i < res_idx:
+                pre.append(layer)
+            elif i == res_idx:
+                res = layer
+            else:
+                post.append(layer)
+
+        return (
+            nn.Sequential(*pre),
+            res,
+            nn.Sequential(*post) if post else nn.Identity(),
+            nn.Linear(self.hidden_sizes[-1], self.target_size),
+        )
+
     def forward(self, td):
         inputs = [td[k] for k in self.in_keys]
         x = torch.cat(inputs, dim=-1)
-        out = self.net(x)
+        x = self.pre(x)
+        if self.res_block is not None:
+            x = x + self.res_block(x)
+        x = self.post(x)
+        out = self.out_layer(x)
 
         result = td.clone()
         for key, chunk in zip(self.out_keys, out.split(1, dim=-1)):
             result[key] = chunk
         return result
-
-    def dense(self):
-        layers = nn.Sequential()
-        layers.add_module("input", nn.Linear(self.input_size, self.hidden_sizes[0]))
-        layers.add_module("activation0", self.activation)
-        layers.add_module("dropout0", nn.Dropout(self.dropout))
-        if len(self.hidden_sizes) > 1:
-            for i in range(len(self.hidden_sizes) - 1):
-                layers.add_module(f"hidden{i}", nn.Linear(self.hidden_sizes[i], self.hidden_sizes[i + 1]))
-                layers.add_module(f"activation{i}", self.activation)
-                layers.add_module(f"dropout{i}", nn.Dropout(self.dropout))
-        layers.add_module("output", nn.Linear(self.hidden_sizes[-1], self.target_size))
-        return layers
 
 
 class LitModelModule(LightningModule):
@@ -83,11 +107,11 @@ class LitModelModule(LightningModule):
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.learning_rate,
-            eps=1e-8,  # Numerical stability
-            weight_decay=0.0,
+            eps=1e-8,
+            weight_decay=1e-4,
         )
         warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=20000)  # ~5 epochs
-        cosine = CosineAnnealingLR(optimizer, T_max=220000, eta_min=1e-6)
+        cosine = CosineAnnealingWarmRestarts(optimizer, T_0=80000, T_mult=1, eta_min=1e-6)
         scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[20000])
 
         return {

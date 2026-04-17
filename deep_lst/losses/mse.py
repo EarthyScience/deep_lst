@@ -59,10 +59,13 @@ class RolloutMSE:
         self.min_valid_fraction = min_valid_fraction
         self.incremental_loss = incremental_loss
         self.impute_inputs = impute_inputs
-        # Per-timestep loss weights (length must equal horizon when provided).
-        # None = uniform weights, equivalent to [1.0, 1.0, ...].
-        # Example: [4.0, 2.0, 1.0] emphasises early steps during long-horizon finetuning.
         self.timestep_weights = timestep_weights
+        # Normalised increment variances: {var_name: (sigma_inc / sigma_var)^2}.
+        # Divides each prognostic variable's loss by its increment variance so
+        # gradient magnitude is comparable across variables regardless of how
+        # slowly or quickly they change. Defaults to 1.0 (no scaling) when a
+        # variable is absent — old statistics files fall through gracefully.
+        self.inc_variances: dict[str, float] = kwargs.get("inc_variances") or {}
 
     def __call__(self, lit_module, batch, stage: str):
         horizon = lit_module.config["train_dataset"]["seviri"]["horizon"]  # suboptimal
@@ -113,16 +116,15 @@ class RolloutMSE:
 
                 frac = target_valid.sum().float() / max(target_valid.numel(), 1)
                 if frac >= self.min_valid_fraction:
-                    # State loss
-                    loss += w * F.mse_loss(y_hat[target_valid], target[target_valid])
+                    sigma2_inc = self.inc_variances.get(key[1], 1.0)
+                    loss += w * F.mse_loss(y_hat[target_valid], target[target_valid]) / sigma2_inc
 
-                    # Increment loss: compare predicted increment to observed increment
                     if self.incremental_loss:
                         target_prev = batch[key][:, t - 1, ...][spatial_mask]
                         target_increment = target - target_prev
                         inc_valid = target_valid & torch.isfinite(target_increment).all(dim=-1)
                         if inc_valid.sum() > 0:
-                            loss += w * F.mse_loss(pred_increment[inc_valid], target_increment[inc_valid])
+                            loss += w * F.mse_loss(pred_increment[inc_valid], target_increment[inc_valid]) / sigma2_inc
 
                     weight_sum += w
 

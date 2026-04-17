@@ -27,9 +27,10 @@ test_dataset:
 
 model:
   name: mlp
-  hidden_sizes: [256, 128, 128, 64, 128]
+  hidden_sizes: [512, 256, 256, 128, 256]
   learning_rate: 0.0001
   dropout: 0.2
   activation: relu
+  use_residual: true
   step_loss: ${_step_loss_mse}
   checkpoint_monitor: val_loss

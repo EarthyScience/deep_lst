@@ -15,6 +15,7 @@ from pytorch_lightning.profilers import AdvancedProfiler  # noqa: F401
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 from deep_lst.utils.config import get_keys_from_config
+from deep_lst.utils.io import ExperimentPaths, load_inc_variances
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
 print("SLURM_NNODES:", os.environ.get("SLURM_NNODES"))
@@ -102,12 +103,18 @@ def main(cfg: DictConfig) -> None:
 
     td_keys = get_keys_from_config(config["train_dataset"])
 
+    paths = ExperimentPaths()
+    inc_variances: dict[str, float] = {}
+    for modality, mod_cfg in config["train_dataset"].items():
+        if isinstance(mod_cfg, dict) and "statistics" in mod_cfg:
+            inc_variances.update(load_inc_variances(paths.statistics_path(modality, mod_cfg["statistics"])))
+
     model = MultiModalMLP(
         in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
         out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
         config=config["model"],
     )
-    model_module = LitModelModule(model, config, **td_keys)
+    model_module = LitModelModule(model, config, **td_keys, inc_variances=inc_variances)
 
     ngpu = torch.cuda.device_count()
     print("number of GPUs:", ngpu)
@@ -144,8 +151,9 @@ def main(cfg: DictConfig) -> None:
     start_time = time.time()
     test_out = trainer.test(model_module, datamodule=data_module)
     if config["wandb_logger"]:
-        test_loss = float(test_out[0]["test_loss_epoch"]) / float(test_out[0]["test_valid_count"])
-        wandb_logger.experiment.summary["test_loss"] = test_loss
+        test_loss = test_out[0].get("test_loss_step", test_out[0].get("test_loss"))
+        if test_loss is not None:
+            wandb_logger.experiment.summary["test_loss"] = float(test_loss)
     print(f"Evaluation completed in {time.time() - start_time:.2f} seconds.")
 
 

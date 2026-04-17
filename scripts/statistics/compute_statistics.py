@@ -88,22 +88,51 @@ def _load_indices(modality: str, spatial_path, temporal_path) -> np.ndarray:
     return indices
 
 
-def calculate_statistics(
+def calculate_all_statistics(
     store: EOZarrStore,
     reader_cls,
     indices: np.ndarray,
+    increment_variables: list[str] | None = None,
     device: str | torch.device = "cpu",
     batch_size: int = 32,
     num_workers: int = 0,
     **reader_kwargs,
 ) -> dict:
-    """Compute per-variable mean, std, min, max over the given (spatial, temporal) index pairs."""
-    device = torch.device(device)
+    """Compute per-variable mean, std, min, max, and optionally increment statistics.
 
-    reader = reader_cls(eozarr_store=store, **reader_kwargs)
-    if reader_kwargs.get("preload", False):
+    When increment_variables is non-empty, uses horizon=1 so each sample
+    contains two consecutive timesteps, enabling both regular and increment stats
+    (Y_{t+1} - Y_t) in a single pass with one preload. The last temporal index
+    is excluded so horizon=1 never reads past the store end. Increment variables
+    are moved from inputs to diagnostics to preserve NaN masking (avoiding
+    nan_to_num bias on cloud-masked pixels). Increment stats are keyed as
+    "{var}_increment".
+
+    When increment_variables is empty or None, behaves as a plain statistics
+    pass with horizon=0 over the full index set (the ERA5 path).
+    """
+    device = torch.device(device)
+    increment_variables = increment_variables or []
+
+    if increment_variables:
+        # Exclude last timestep — horizon=1 needs t+1 to be valid.
+        max_time = indices[:, 1].max()
+        safe_indices = indices[indices[:, 1] < max_time]
+
+        # horizon=1; move increment variables from inputs → diagnostics (NaN preservation).
+        unified_kwargs = dict(reader_kwargs)
+        unified_kwargs["horizon"] = 1
+        unified_kwargs["inputs"] = [v for v in reader_kwargs.get("inputs", []) if v not in increment_variables]
+        existing_diag = list(reader_kwargs.get("diagnostics", []))
+        unified_kwargs["diagnostics"] = existing_diag + [v for v in increment_variables if v not in existing_diag]
+    else:
+        safe_indices = indices
+        unified_kwargs = reader_kwargs
+
+    reader = reader_cls(eozarr_store=store, **unified_kwargs)
+    if unified_kwargs.get("preload", False):
         reader.preload()
-    dataset = UnimodalDataset(reader=reader, indices=indices)
+    dataset = UnimodalDataset(reader=reader, indices=safe_indices)
 
     if torch.distributed.is_initialized():
         sampler = DistributedSampler(dataset, shuffle=False, drop_last=False, seed=0)
@@ -127,19 +156,35 @@ def calculate_statistics(
             dim = (0,) + tuple(idx + 1 for idx in var.reduced_dimensions_indices)
             metrics[name] = StandardStatisticsMetric(dim=dim).to(device=device)
 
+    inc_metrics: dict[str, StandardStatisticsMetric] = {
+        var: StandardStatisticsMetric(dim=(0, 1, 2, 3)).to(device=device) for var in increment_variables
+    }
+
     use_tqdm = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
     for batch in tqdm(dataloader, disable=not use_tqdm, smoothing=0.005):
         batch = deep_to(batch, device=device, non_blocking=True)
         for key in metrics:
             if key in batch:
-                metrics[key].update(batch[key])
+                data = batch[key]
+                # With horizon=1, time-varying variables have shape (B, 2, H, W, C).
+                # Take t=0 slice to recover (B, H, W, C) for the metric dim indices.
+                if data.ndim == 5:
+                    data = data[:, 0, ...]
+                metrics[key].update(data)
+        for var in increment_variables:
+            if var in batch:
+                # batch[var]: (B, 2, H, W, C) — index 0 = t, index 1 = t+1
+                inc_metrics[var].update(batch[var][:, 1, ...] - batch[var][:, 0, ...])
 
-    all_variables: dict = {}
+    all_stats: dict = {}
     for var_name, metric in metrics.items():
         stats = metric.compute()
-        all_variables[var_name] = {k: v.cpu().numpy() for k, v in stats.items()}
+        all_stats[var_name] = {k: v.cpu().numpy() for k, v in stats.items()}
+    for var, metric in inc_metrics.items():
+        stats = metric.compute()
+        all_stats[f"{var}_increment"] = {k: v.cpu().numpy() for k, v in stats.items()}
 
-    return all_variables
+    return all_stats
 
 
 def main():
@@ -240,11 +285,15 @@ def main():
         print(f"Total samples: {len(indices):,}")
         print(f"Label        : {label}")
 
-    # ── compute ───────────────────────────────────────────────────────────────
-    stats = calculate_statistics(
+    # ── compute statistics ────────────────────────────────────────────────────
+    increment_variables = modality_cfg.get("increment_variables", [])
+    if rank == 0 and increment_variables:
+        print(f"Computing regular + increment statistics for: {increment_variables}")
+    all_stats = calculate_all_statistics(
         store,
         reader_cls=ReaderCls,
         indices=indices,
+        increment_variables=increment_variables,
         device=device,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -256,18 +305,19 @@ def main():
 
     # ── save (rank 0 only) ────────────────────────────────────────────────────
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-        for var_name, var_stats in stats.items():
+        for var_name, var_stats in all_stats.items():
             print(f"  {var_name}: mean={var_stats['mean']:.4f}  std={var_stats['std']:.4f}")
 
         # Save to npz (for compatibility with existing training configs)
         out_path = paths.statistics_path(args.modality, label)
-        save_statistics_npz(stats, out_path)
+        save_statistics_npz(all_stats, out_path)
         print(f"\nSaved statistics npz → {out_path}")
 
         # Embed statistics in the zarr store under the experiment label.
-        # Computed variables (solar_zenith, doy_sin, doy_cos) have no backing
-        # zarr array — set_statistics stores them on the root group automatically.
-        for var_name, var_stats in stats.items():
+        # Computed variables (solar_zenith, doy_sin, doy_cos) and increment
+        # variables have no backing zarr array — set_statistics stores them
+        # on the root group automatically.
+        for var_name, var_stats in all_stats.items():
             store.set_statistics(args.modality, var_name, var_stats, label=label, overwrite=True)
         print(f"Embedded statistics in zarr store (label='{label}')")
 

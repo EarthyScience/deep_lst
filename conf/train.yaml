@@ -8,7 +8,7 @@ defaults:
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    ${_stratification}_${_size}
-_statistics: ${_stratification}_L
+_statistics: ${_stratification}_${_size}
 _experiment: ${_size}_${_stratification}_${_loss}_${_horizon}_v1
 
 modality_ids: [era5, seviri]
@@ -83,7 +83,7 @@ test_dataset:
     statistics: ${_statistics}
 
 training:
-  max_epochs: 60
+  max_epochs: 80
   batch_size: 512
   num_workers: 24
   pin_memory: true

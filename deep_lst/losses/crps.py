@@ -122,6 +122,7 @@ class RolloutCRPS:
         self.incremental_loss = incremental_loss
         self.impute_inputs = impute_inputs
         self.timestep_weights = timestep_weights
+        self.inc_variances: dict[str, float] = kwargs.get("inc_variances") or {}
 
     def __call__(self, lit_module, batch, stage: str):
         horizon = lit_module.config["train_dataset"]["seviri"]["horizon"]
@@ -168,8 +169,11 @@ class RolloutCRPS:
 
                 frac = target_valid.sum().float() / max(target_valid.numel(), 1)
                 if frac >= self.min_valid_fraction:
+                    sigma2_inc = self.inc_variances.get(key[1], 1.0)
                     loss += (
-                        w * _gaussian_crps(y_hat[target_valid], log_sigma[target_valid], target[target_valid]).mean()
+                        w
+                        * _gaussian_crps(y_hat[target_valid], log_sigma[target_valid], target[target_valid]).mean()
+                        / sigma2_inc
                     )
 
                     if self.incremental_loss:
@@ -182,6 +186,7 @@ class RolloutCRPS:
                                 * _gaussian_crps(
                                     pred_increment[inc_valid], log_sigma[inc_valid], target_increment[inc_valid]
                                 ).mean()
+                                / sigma2_inc
                             )
 
                     weight_sum += w
