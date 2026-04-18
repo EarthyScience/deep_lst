@@ -9,12 +9,13 @@ from deep_lst.utils.io import ExperimentPaths
 
 
 class MultiModalMLP(nn.Module):
-    def __init__(self, in_keys, out_keys, config):
+    def __init__(self, in_keys, out_keys, config, in_feature_sizes=None):
         super().__init__()
 
         self.in_keys = in_keys
         self.out_keys = out_keys
-        self.input_size = len(in_keys)
+        sizes = in_feature_sizes or {}
+        self.input_size = sum(sizes.get(k, 1) for k in in_keys)
         self.target_size = len(out_keys)
         self.hidden_sizes = config["hidden_sizes"]
         self.dropout_p = config["dropout"]
@@ -110,8 +111,9 @@ class LitModelModule(LightningModule):
             eps=1e-8,
             weight_decay=1e-4,
         )
+        t0 = self.config["model"].get("scheduler_T0", 80000)
         warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=20000)  # ~5 epochs
-        cosine = CosineAnnealingWarmRestarts(optimizer, T_0=80000, T_mult=1, eta_min=1e-6)
+        cosine = CosineAnnealingWarmRestarts(optimizer, T_0=t0, T_mult=1, eta_min=1e-6)
         scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[20000])
 
         return {
@@ -124,14 +126,22 @@ class LitModelModule(LightningModule):
         torch.cuda.empty_cache()
 
 
-def load_model(config: dict, td_keys: dict, experiment: str, version: str, prefer_best: bool = False):
+def load_model(
+    config: dict,
+    td_keys: dict,
+    experiment: str,
+    version: str,
+    prefer_best: bool = False,
+    in_feature_sizes: dict | None = None,
+):
     """Instantiate model and load from checkpoint.
 
     Args:
-        config:     Full experiment config dict.
-        td_keys:    TensorDict keys from get_keys_from_config.
-        experiment: Experiment name (matches folder under experiments/).
-        version:    Version/run name (subfolder containing checkpoints/).
+        config:           Full experiment config dict.
+        td_keys:          TensorDict keys from get_keys_from_config.
+        experiment:       Experiment name (matches folder under experiments/).
+        version:          Version/run name (subfolder containing checkpoints/).
+        in_feature_sizes: Optional dict mapping context keys to their feature count.
 
     Returns:
         lit_module: LitModelModule in eval mode, moved to GPU if available.
@@ -141,6 +151,7 @@ def load_model(config: dict, td_keys: dict, experiment: str, version: str, prefe
         in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
         out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
         config=config["model"],
+        in_feature_sizes=in_feature_sizes,
     )
 
     paths = ExperimentPaths()

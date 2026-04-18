@@ -69,6 +69,7 @@ def main(cfg: DictConfig) -> None:
         OmegaConf.save(OmegaConf.create(config), run_dir / "config.yml")
         metadata = {
             "name": name,
+            "config": config["_model_name"],
             "smoke": smoke,
             "tag": tag,
             "git_hash": _git_hash(),
@@ -103,6 +104,18 @@ def main(cfg: DictConfig) -> None:
 
     td_keys = get_keys_from_config(config["train_dataset"])
 
+    # Build context keys: each context var contributes (lookback * C) features.
+    # C=1 for all MLP prognostic variables (the MLP operates on masked flat pixels).
+    # Option B: values + validity mask → 2 * lookback features per context var.
+    lookback = config["train_dataset"]["seviri"]["lookback"]
+    context_vars = config["train_dataset"]["seviri"].get("context_vars", [])
+    in_feature_sizes: dict = {}
+    if lookback > 0:
+        for var in context_vars:
+            ctx_key = ("seviri", f"{var}_ctx")
+            td_keys["in_keys"].append(ctx_key)
+            in_feature_sizes[ctx_key] = 2 * lookback  # values + validity mask
+
     paths = ExperimentPaths()
     inc_variances: dict[str, float] = {}
     for modality, mod_cfg in config["train_dataset"].items():
@@ -113,8 +126,15 @@ def main(cfg: DictConfig) -> None:
         in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
         out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
         config=config["model"],
+        in_feature_sizes=in_feature_sizes,
     )
-    model_module = LitModelModule(model, config, **td_keys, inc_variances=inc_variances)
+    model_module = LitModelModule(
+        model,
+        config,
+        **td_keys,
+        inc_variances=inc_variances,
+        detach_rollout=config["model"].get("detach_rollout", True),
+    )
 
     ngpu = torch.cuda.device_count()
     print("number of GPUs:", ngpu)

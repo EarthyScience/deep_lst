@@ -1,39 +1,40 @@
-"""Finetune a pre-trained MLP on a continuation config (e.g. horizon scheduling).
+"""Finetune a pre-trained MLP on a new config (e.g. horizon scheduling).
 
 Loads weights from a pre-trained checkpoint and continues training with a new
-config — typically a longer horizon, adjusted timestep_weights, and/or lower lr.
-Architecture must be identical between pre-training and finetuning runs.
+Hydra-composed config — typically a longer horizon, adjusted timestep_weights,
+and/or lower lr. Architecture must be identical between pre-training and finetuning.
 
 Usage
 -----
 uv run deep_lst/mlp/finetune.py \\
-    --from mlp_rollout_L_KG_v1/version_1 \\
-    --config mlp_rollout \\
-    --override mlp_rollout_L_KG_v1 mlp_rollout_L_KG_v1_h12
+    model=mlp_rollout stratification=KG size=L loss=crps horizon=h12 \\
+    from_run=mlp_rollout_L_KG_mse_h3_v1/version_0
 
-The run name is derived from the config + override's _experiment key (e.g.
-mlp_rollout_L_KG_v1_h12), matching the naming convention of train.py.
-
-Override naming convention: {base_experiment}_h{N}.yml sets horizon, timestep_weights,
-and optionally lr and max_epochs.
+Override any single value on the CLI:
+    uv run deep_lst/mlp/finetune.py ... training.max_epochs=40 checkpoint=last
 """
 
-import argparse
 import json
 import os
 import subprocess
 import time
 from pathlib import Path
 
+import hydra
 import pytorch_lightning as pl
 import torch
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import loggers as lgrs
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.config import get_keys_from_config, merge_configs
+from deep_lst.utils.config import get_keys_from_config
+from deep_lst.utils.io import load_inc_variances
+
+print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
+print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS"))
 
 
 def _git_hash() -> str:
@@ -45,69 +46,20 @@ def _git_hash() -> str:
         return "unknown"
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--from",
-        dest="from_run",
-        required=True,
-        metavar="EXPERIMENT/VERSION",
-        help="Pre-trained run to load weights from. Format: experiment_name/version_N. "
-        "Loads best.ckpt (falls back to last.ckpt).",
-    )
-    parser.add_argument("--config", required=True, type=str, help="Base config folder name (e.g. mlp_rollout).")
-    parser.add_argument(
-        "--override",
-        nargs="+",
-        default=None,
-        metavar="OVERRIDE",
-        help="Override file names applied in order. Must include the spatial override and "
-        "the horizon continuation override (e.g. mlp_rollout_L_KG_v1 mlp_rollout_L_KG_v1_h12).",
-    )
-    parser.add_argument(
-        "--checkpoint",
-        choices=["best", "last"],
-        default="best",
-        help="Which checkpoint to load from the source run (default: best).",
-    )
-    parser.add_argument("--tag", default=None, type=str, help="Short label appended to the run name.")
-    parser.add_argument("--smoke", action="store_true", help="Smoke-test mode: 1 epoch, 3 batches, CSV only.")
-    args = parser.parse_args()
+@hydra.main(config_path="../../conf", config_name="finetune", version_base="1.3")
+def main(cfg: DictConfig) -> None:
+    config = OmegaConf.to_container(cfg, resolve=True)
 
-    print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
-    print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS"))
+    smoke = config.pop("smoke", False)
+    tag = config.pop("tag", None)
+    from_run = config.pop("from_run")
+    checkpoint_choice = config.pop("checkpoint", "best")
 
-    paths = ExperimentPaths()
+    name = f"{config['_model_name']}_{config['_experiment']}"
+    if tag:
+        name = f"{name}_{tag}"
 
-    # --- resolve source checkpoint ---
-    from_parts = args.from_run.split("/")
-    if len(from_parts) != 2:
-        raise ValueError(f"--from must be EXPERIMENT/VERSION, got: {args.from_run!r}")
-    from_experiment, from_version = from_parts
-
-    if args.checkpoint == "best":
-        ckpt_path = paths.best_checkpoint(from_experiment, from_version)
-    else:
-        ckpt_path = paths.checkpoint_dir(from_experiment, from_version) / "last.ckpt"
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"last.ckpt not found at {ckpt_path}")
-
-    print(f"Loading weights from: {ckpt_path}")
-
-    # --- load new config ---
-    if args.override:
-        override_paths = [paths.config_root / args.config / "overrides" / f"{o}.yml" for o in args.override]
-        config = merge_configs(paths.config_path(args.config), override_paths)
-    else:
-        raise ValueError("--override is required for finetune.py (need at least the spatial + horizon overrides)")
-
-    name = f"{args.config}_{config['_experiment']}"
-    config["name"] = name
-
-    if args.tag:
-        config["name"] = config["name"] + f"_{args.tag}"
-
-    if args.smoke:
+    if smoke:
         print(">>> SMOKE MODE: overriding training limits.")
         config["training"]["max_epochs"] = 1
         config["training"]["limit_train_batches"] = 3
@@ -115,7 +67,24 @@ def main():
         config["training"]["limit_test_batches"] = 3
         config["training"]["overfit_batches"] = 0.0
         config["wandb_logger"] = False
-        config["name"] = config["name"] + "_smoke"
+        name = f"{name}_smoke"
+    config["name"] = name
+
+    # --- resolve source checkpoint ---
+    paths = ExperimentPaths()
+    from_parts = from_run.split("/")
+    if len(from_parts) != 2:
+        raise ValueError(f"from_run must be EXPERIMENT/VERSION, got: {from_run!r}")
+    from_experiment, from_version = from_parts
+
+    if checkpoint_choice == "best":
+        ckpt_path = paths.best_checkpoint(from_experiment, from_version)
+    else:
+        ckpt_path = paths.checkpoint_dir(from_experiment, from_version) / "last.ckpt"
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"last.ckpt not found at {ckpt_path}")
+
+    print(f"Loading weights from: {ckpt_path}")
 
     # --- loggers ---
     loggers = []
@@ -130,15 +99,13 @@ def main():
     if config["csv_logger"]:
         run_dir = Path(csv_logger.log_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
-        from omegaconf import OmegaConf as _OC
-
-        _OC.save(_OC.create(config), run_dir / "config.yml")
+        OmegaConf.save(OmegaConf.create(config), run_dir / "config.yml")
         metadata = {
-            "config": args.config,
-            "tag": args.tag,
-            "smoke": args.smoke,
-            "overrides": args.override or [],
-            "from_run": args.from_run,
+            "name": name,
+            "config": config["_model_name"],
+            "smoke": smoke,
+            "tag": tag,
+            "from_run": from_run,
             "from_checkpoint": str(ckpt_path),
             "git_hash": _git_hash(),
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -152,7 +119,7 @@ def main():
 
     # --- checkpointing ---
     callbacks = []
-    if not args.smoke and config["csv_logger"]:
+    if not smoke and config["csv_logger"]:
         monitor = config["model"].get("checkpoint_monitor", "val_loss")
         ckpt_dir = run_dir / "checkpoints"
         callbacks = [
@@ -173,12 +140,17 @@ def main():
 
     td_keys = get_keys_from_config(config["train_dataset"])
 
+    inc_variances: dict[str, float] = {}
+    for modality, mod_cfg in config["train_dataset"].items():
+        if isinstance(mod_cfg, dict) and "statistics" in mod_cfg:
+            inc_variances.update(load_inc_variances(paths.statistics_path(modality, mod_cfg["statistics"])))
+
     model = MultiModalMLP(
         in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
         out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
         config=config["model"],
     )
-    lit_module = LitModelModule(model, config, **td_keys)
+    lit_module = LitModelModule(model, config, **td_keys, inc_variances=inc_variances)
 
     state = torch.load(ckpt_path, map_location="cpu")
     lit_module.load_state_dict(state["state_dict"])

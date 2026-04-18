@@ -1,0 +1,25 @@
+defaults:
+  - _self_
+  - eval: gobabeb
+
+# --- required ---
+experiment: ???   # e.g. mlp_rollout_L_KG_mse_h3_v1
+version: version_0
+
+# --- populated by the eval group (eval/*.yaml) ---
+eval_name: ???
+spatial_indices: ???
+
+# --- optional inference flags ---
+best: false               # load best.ckpt instead of last.ckpt
+no_consistent_mask: false
+inference_horizon: null   # extend rollout beyond trained horizon (steps)
+chunk_id: null            # for parallel chunked inference
+
+hydra:
+  run:
+    dir: ${hydra:runtime.cwd}
+  output_subdir: null
+  job_logging:
+    root:
+      level: WARNING

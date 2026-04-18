@@ -34,3 +34,5 @@ model:
   use_residual: true
   step_loss: ${_step_loss_mse}
   checkpoint_monitor: val_loss_step
+  detach_rollout: true
+  scheduler_T0: 80000

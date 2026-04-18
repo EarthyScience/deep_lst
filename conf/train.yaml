@@ -5,6 +5,7 @@ defaults:
   - stratification: KG
   - size: L
   - horizon: h3
+  - lookback: lb0
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    ${_stratification}_${_size}

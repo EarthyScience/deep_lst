@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -18,24 +18,47 @@ PATHS = ExperimentPaths()
 # Index 0 = 2016-01-01 00:00 UTC. Must match the start_date passed to TemporalFilter.
 TIME_INDEX_ORIGIN = pd.Timestamp("2016-01-01")
 
+# Pixels below this fill fraction of the bounding-box grid use sparse output.
+# Avoids allocating a mostly-NaN (H x W) grid for scattered training-site pixels.
+_SPARSE_FILL_THRESHOLD = 0.01
+
 
 @dataclass
 class ForecastResult:
-    """Gridded forecast predictions and observations with coordinates."""
+    """Forecast predictions and observations with coordinates.
 
-    predictions: dict[str, np.ndarray]  # {var: (N_time, T, lat, lon)}
-    observations: dict[str, np.ndarray]  # {var: (N_time, T, lat, lon)}
+    Dense mode  (sparse=False): predictions shape (N_time, T, lat, lon) — for
+        geographically concentrated eval sites where the bounding box is small.
+    Sparse mode (sparse=True):  predictions shape (N_pixel, N_time, T) — for
+        scattered training-site pixels where the bounding box would be huge.
+    """
+
+    predictions: dict[str, np.ndarray]
+    observations: dict[str, np.ndarray]
     init_times: pd.DatetimeIndex
     lead_times: pd.TimedeltaIndex
     lats: np.ndarray
     lons: np.ndarray
+    sparse: bool = field(default=False)
 
     def to_xarray(self) -> xr.Dataset:
         data_vars = {}
+        if self.sparse:
+            for var in self.predictions:
+                data_vars[f"{var}_pred"] = (["pixel", "init_time", "lead_time"], self.predictions[var])
+                data_vars[f"{var}_obs"] = (["pixel", "init_time", "lead_time"], self.observations[var])
+            return xr.Dataset(
+                data_vars,
+                coords={
+                    "lat": ("pixel", self.lats),
+                    "lon": ("pixel", self.lons),
+                    "init_time": self.init_times,
+                    "lead_time": self.lead_times,
+                },
+            )
         for var in self.predictions:
             data_vars[f"{var}_pred"] = (["init_time", "lead_time", "lat", "lon"], self.predictions[var])
             data_vars[f"{var}_obs"] = (["init_time", "lead_time", "lat", "lon"], self.observations[var])
-
         return xr.Dataset(
             data_vars,
             coords={
@@ -49,7 +72,9 @@ class ForecastResult:
     def save(self, path: Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.to_xarray().to_netcdf(path)
+        ds = self.to_xarray()
+        encoding = {v: {"zlib": True, "complevel": 4, "dtype": "float32"} for v in ds.data_vars}
+        ds.to_netcdf(path, encoding=encoding)
         print(f"Saved forecast results to {path}")
 
     @classmethod
@@ -58,13 +83,21 @@ class ForecastResult:
         pred_vars = [v.replace("_pred", "") for v in ds.data_vars if v.endswith("_pred")]
         predictions = {var: ds[f"{var}_pred"].values for var in pred_vars}
         observations = {var: ds[f"{var}_obs"].values for var in pred_vars}
+        sparse = "pixel" in ds.dims
+        if sparse:
+            lats = ds["lat"].values
+            lons = ds["lon"].values
+        else:
+            lats = ds["lat"].values
+            lons = ds["lon"].values
         return cls(
             predictions=predictions,
             observations=observations,
             init_times=pd.DatetimeIndex(ds["init_time"].values),
             lead_times=pd.TimedeltaIndex(ds["lead_time"].values),
-            lats=ds["lat"].values,
-            lons=ds["lon"].values,
+            lats=lats,
+            lons=lons,
+            sparse=sparse,
         )
 
 
@@ -100,8 +133,13 @@ class Forecast:
             self.unique_spatial_idx
         )
 
+        fill = len(self.unique_spatial_idx) / (self.grid_shape[0] * self.grid_shape[1])
+        self.sparse = fill < _SPARSE_FILL_THRESHOLD
+        if self.sparse:
+            print(f"Sparse output mode (fill={fill:.4f} < {_SPARSE_FILL_THRESHOLD})")
+
     def predict(self) -> ForecastResult:
-        """Run inference and return gridded results."""
+        """Run inference and return results."""
         predict_dispatch = {
             "DiagnosticMSE": self._predict_diagnostic,
             "RolloutMSE": self._predict_rollout,
@@ -124,49 +162,28 @@ class Forecast:
 
         first_var = list(preds_flat.keys())[0]
         time_horizon = preds_flat[first_var].shape[1]
-
-        # Infer number of time steps from data length and number of spatial indices
         n_spatial = len(self.unique_spatial_idx)
         n_time = preds_flat[first_var].shape[0] // n_spatial
 
-        predictions = {}
-        observations = {}
-        for var in preds_flat:
-            pred_grid, obs_grid = self._remap_to_grid(
-                preds_flat[var],
-                obs_flat[var],
-                n_spatial,
-                n_time,
-                time_horizon,
-                self.local_rows,
-                self.local_cols,
-                self.grid_shape,
-            )
-            predictions[var] = pred_grid
-            observations[var] = obs_grid
+        predictions, observations = self._remap(preds_flat, obs_flat, n_spatial, n_time, time_horizon)
 
-        # Align lead_time axis: both models use [0h, 1h, 2h, 3h].
-        # Diagnostic already produces t=0 (nowcast); rollout starts at t=1, so we
-        # prepend a NaN slice at lead_time=0 to give it the same shape.
         if self.prediction_mode == "RolloutMSE":
-            nan_slice = np.full((n_time, 1, *self.grid_shape), np.nan)
-            for var in predictions:
-                predictions[var] = np.concatenate([nan_slice, predictions[var]], axis=1)
-                observations[var] = np.concatenate([nan_slice.copy(), observations[var]], axis=1)
-            time_horizon += 1
+            predictions, observations, time_horizon = self._prepend_nan_lead(
+                predictions, observations, n_spatial, n_time, time_horizon
+            )
 
         lead_times = pd.timedelta_range(start="0h", periods=time_horizon, freq="h")
-
-        # Use a placeholder index; proper init times require the dataset's time_idx
         init_times = pd.date_range(start="2000-01-01", periods=n_time, freq="h")
+        pixel_lats, pixel_lons = self._pixel_coords()
 
         return ForecastResult(
             predictions=predictions,
             observations=observations,
             init_times=init_times,
             lead_times=lead_times,
-            lats=self.lats,
-            lons=self.lons,
+            lats=pixel_lats,
+            lons=pixel_lons,
+            sparse=self.sparse,
         )
 
     def predict_with_time_index(self, time_idx: np.ndarray) -> ForecastResult:
@@ -195,45 +212,69 @@ class Forecast:
         time_horizon = preds_flat[first_var].shape[1]
         n_spatial = len(self.unique_spatial_idx)
         unique_time_idx = np.unique(time_idx)
-        n_time = len(unique_time_idx)
+        n_time = preds_flat[first_var].shape[0] // n_spatial
+        unique_time_idx = unique_time_idx[:n_time]
 
-        predictions = {}
-        observations = {}
-        for var in preds_flat:
-            pred_grid, obs_grid = self._remap_to_grid(
-                preds_flat[var],
-                obs_flat[var],
-                n_spatial,
-                n_time,
-                time_horizon,
-                self.local_rows,
-                self.local_cols,
-                self.grid_shape,
-            )
-            predictions[var] = pred_grid
-            observations[var] = obs_grid
+        predictions, observations = self._remap(preds_flat, obs_flat, n_spatial, n_time, time_horizon)
 
-        # Align lead_time axis: both models use [0h, 1h, 2h, 3h].
-        # Diagnostic already produces t=0 (nowcast); rollout starts at t=1, so we
-        # prepend a NaN slice at lead_time=0 to give it the same shape.
         if self.prediction_mode == "RolloutMSE":
-            nan_slice = np.full((n_time, 1, *self.grid_shape), np.nan)
-            for var in predictions:
-                predictions[var] = np.concatenate([nan_slice, predictions[var]], axis=1)
-                observations[var] = np.concatenate([nan_slice.copy(), observations[var]], axis=1)
-            time_horizon += 1
+            predictions, observations, time_horizon = self._prepend_nan_lead(
+                predictions, observations, n_spatial, n_time, time_horizon
+            )
 
         init_times = TIME_INDEX_ORIGIN + pd.to_timedelta(unique_time_idx.astype(np.int64), unit="h")
         lead_times = pd.timedelta_range(start="0h", periods=time_horizon, freq="h")
 
+        pixel_lats, pixel_lons = self._pixel_coords()
         return ForecastResult(
             predictions=predictions,
             observations=observations,
             init_times=init_times,
             lead_times=lead_times,
-            lats=self.lats,
-            lons=self.lons,
+            lats=pixel_lats,
+            lons=pixel_lons,
+            sparse=self.sparse,
         )
+
+    def _remap(self, preds_flat, obs_flat, n_spatial, n_time, time_horizon):
+        predictions = {}
+        observations = {}
+        for var in preds_flat:
+            if self.sparse:
+                p, o = self._remap_to_sparse(preds_flat[var], obs_flat[var], n_spatial, n_time, time_horizon)
+            else:
+                p, o = self._remap_to_grid(
+                    preds_flat[var],
+                    obs_flat[var],
+                    n_spatial,
+                    n_time,
+                    time_horizon,
+                    self.local_rows,
+                    self.local_cols,
+                    self.grid_shape,
+                )
+            predictions[var] = p
+            observations[var] = o
+        return predictions, observations
+
+    def _prepend_nan_lead(self, predictions, observations, n_spatial, n_time, time_horizon):
+        """Prepend NaN at lead_time=0 so rollout output aligns with diagnostic shape."""
+        if self.sparse:
+            nan_slice = np.full((n_spatial, n_time, 1), np.nan, dtype=np.float32)
+            axis = 2
+        else:
+            nan_slice = np.full((n_time, 1, *self.grid_shape), np.nan, dtype=np.float32)
+            axis = 1
+        for var in predictions:
+            predictions[var] = np.concatenate([nan_slice, predictions[var]], axis=axis)
+            observations[var] = np.concatenate([nan_slice.copy(), observations[var]], axis=axis)
+        return predictions, observations, time_horizon + 1
+
+    def _pixel_coords(self):
+        """Per-pixel lat/lon for sparse output or bbox lat/lon arrays for dense."""
+        if self.sparse:
+            return self.lats[self.local_rows], self.lons[self.local_cols]
+        return self.lats, self.lons
 
     @staticmethod
     def _predict_diagnostic(model, device, loader, td_keys, normaliser=None, **kwargs):
@@ -273,6 +314,9 @@ class Forecast:
         diag_keys = td_keys.get("diagnostic_keys", [])
         diag_out_keys = td_keys.get("diagnostic_out_keys", [])
 
+        lookback = kwargs.get("lookback", 0)
+        context_vars = kwargs.get("context_vars", [])
+
         all_vars = [k[1] for k in prog_keys] + [k[1] for k in diag_keys]
 
         all_preds = {var: [] for var in all_vars}
@@ -281,7 +325,18 @@ class Forecast:
         with torch.no_grad():
             for batch in tqdm(loader, desc="Predicting (rollout)"):
                 batch = batch.to(device)
-                prog = {key: batch[key][:, 0, ...] for key in prog_keys}
+
+                # Initial prognostic state is at batch index = lookback (t0)
+                prog = {key: batch[key][:, lookback, ...] for key in prog_keys}
+
+                # Seed the rolling context history from the batch lookback window.
+                # history[var] is a list of lookback tensors (oldest first), each [B, H, W, C].
+                # Batch indices 1..lookback correspond to times t0-lookback+1 .. t0.
+                history = {}
+                if lookback > 0:
+                    for var in context_vars:
+                        src_key = ("seviri", var)
+                        history[var] = [batch[src_key][:, i, ...] for i in range(1, lookback + 1)]
 
                 batch_preds = {var: [] for var in all_vars}
                 batch_obs = {var: [] for var in all_vars}
@@ -289,36 +344,51 @@ class Forecast:
                 for t in range(1, kwargs["horizon"] + 1):
                     tstep_td = TensorDict({}, batch_size=[batch.batch_size[0]])
                     for key in td_keys["in_keys"]:
-                        tstep_td[key] = batch[key][:, t, ...]
+                        if key[1].endswith("_ctx"):
+                            continue  # context keys injected below
+                        tstep_td[key] = batch[key][:, lookback + t, ...]
                     for key in prog_keys:
                         tstep_td[key] = prog[key]
+
+                    # Inject rolling context with Option B: values + validity mask.
+                    # At t=1 the history is all teacher-forced; beyond that it mixes
+                    # predictions as the window slides past the observed lookback.
+                    if lookback > 0:
+                        for var in context_vars:
+                            ctx_key = ("seviri", f"{var}_ctx")
+                            # [B, lookback, H, W, C]
+                            ctx = torch.stack(history[var], dim=1)
+                            valid_mask = torch.isfinite(ctx).all(dim=-1, keepdim=True)
+                            ctx_vals = torch.nan_to_num(ctx, nan=0.0)
+                            # Flatten to [B, 2*lookback] (H=W=1 for pixel-level batches)
+                            tstep_td[ctx_key] = torch.cat([ctx_vals.flatten(1), valid_mask.float().flatten(1)], dim=-1)
 
                     out = model.model(tstep_td)
 
                     for key, out_key in zip(prog_keys, prog_out_keys):
                         var = key[1]
                         prog[key] = prog[key] + out[out_key]
-                        pred_t = prog[key].cpu().numpy().squeeze((-3, -2, -1))
-                        obs_t = batch[key][:, t, ...].cpu().numpy().squeeze((-3, -2, -1))
-                        if normaliser:
-                            pred_t = normaliser.denormalise(pred_t, var)
-                            obs_t = normaliser.denormalise(obs_t, var)
-                        batch_preds[var].append(pred_t)
-                        batch_obs[var].append(obs_t)
+                        batch_preds[var].append(prog[key].squeeze((-3, -2, -1)))
+                        batch_obs[var].append(batch[key][:, lookback + t, ...].squeeze((-3, -2, -1)))
+
+                        # Advance history: drop oldest, append current prediction
+                        if lookback > 0 and var in history:
+                            history[var].pop(0)
+                            history[var].append(prog[key])
 
                     for key, out_key in zip(diag_keys, diag_out_keys):
                         var = key[1]
-                        pred_t = out[out_key].cpu().numpy().squeeze((-3, -2, -1))
-                        obs_t = batch[key][:, t, ...].cpu().numpy().squeeze((-3, -2, -1))
-                        if normaliser:
-                            pred_t = normaliser.denormalise(pred_t, var)
-                            obs_t = normaliser.denormalise(obs_t, var)
-                        batch_preds[var].append(pred_t)
-                        batch_obs[var].append(obs_t)
+                        batch_preds[var].append(out[out_key].squeeze((-3, -2, -1)))
+                        batch_obs[var].append(batch[key][:, lookback + t, ...].squeeze((-3, -2, -1)))
 
                 for var in all_vars:
-                    all_preds[var].append(np.stack(batch_preds[var], axis=1))
-                    all_obs[var].append(np.stack(batch_obs[var], axis=1))
+                    p = torch.stack(batch_preds[var], dim=1).cpu().numpy()
+                    o = torch.stack(batch_obs[var], dim=1).cpu().numpy()
+                    if normaliser:
+                        p = normaliser.denormalise(p, var)
+                        o = normaliser.denormalise(o, var)
+                    all_preds[var].append(p)
+                    all_obs[var].append(o)
 
         preds = {var: np.concatenate(all_preds[var], axis=0) for var in all_vars}
         obs = {var: np.concatenate(all_obs[var], axis=0) for var in all_vars}
@@ -343,11 +413,18 @@ class Forecast:
         return preds_masked, obs_masked
 
     @staticmethod
+    def _remap_to_sparse(all_preds, all_obs, n_spatial, n_time, t):
+        """Reshape flat predictions to (N_pixel, N_time, T) — no grid allocation."""
+        preds = all_preds.reshape(n_spatial, n_time, t)
+        obs = all_obs.reshape(n_spatial, n_time, t)
+        return preds.astype(np.float32), obs.astype(np.float32)
+
+    @staticmethod
     def _remap_to_grid(all_preds, all_obs, n_spatial, n_time, t, local_rows, local_cols, grid_shape):
         preds = all_preds.reshape(n_spatial, n_time, t)
         obs = all_obs.reshape(n_spatial, n_time, t)
-        spatial_preds = np.full((n_time, t, *grid_shape), np.nan)
-        spatial_obs = np.full((n_time, t, *grid_shape), np.nan)
+        spatial_preds = np.full((n_time, t, *grid_shape), np.nan, dtype=np.float32)
+        spatial_obs = np.full((n_time, t, *grid_shape), np.nan, dtype=np.float32)
         spatial_preds[:, :, local_rows, local_cols] = preds.transpose(1, 2, 0)
         spatial_obs[:, :, local_rows, local_cols] = obs.transpose(1, 2, 0)
         return spatial_preds, spatial_obs

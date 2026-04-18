@@ -3,6 +3,7 @@ results/
 
 wandb/
 
+
 scripts/out
 scripts/bin
 scripts/**/*.sh
@@ -14,6 +15,9 @@ configs/
 
 deep_lst/raw
 deep_lst/exploration
+
+seed.md
+run_inference.log
 
 # Python-generated files
 __pycache__/

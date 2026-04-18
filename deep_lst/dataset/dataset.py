@@ -17,6 +17,8 @@ def _load_samples(
     start_time: str | None = None,
     end_time: str | None = None,
     temporal_indices_path: str | list | None = None,
+    horizon: int = 0,
+    lookback: int = 0,
 ) -> np.ndarray:
     data = np.load(path)
     space_idx = data.get(f"{modality_id}_indices", data.get("mapping"))
@@ -30,10 +32,14 @@ def _load_samples(
             )
         else:
             time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64)
+        if horizon > 0:
+            time_idx = time_idx[time_idx <= time_idx.max() - horizon]
+        if lookback > 0:
+            time_idx = time_idx[time_idx >= lookback]
     else:
         time_idx = np.arange(
-            start=T1H.date_to_index(start_time),
-            stop=T1H.date_to_index(end_time),
+            start=T1H.date_to_index(start_time) + lookback,
+            stop=T1H.date_to_index(end_time) - horizon,
         )
 
     space, time = np.meshgrid(space_idx, time_idx, indexing="ij")
@@ -80,6 +86,8 @@ class UnimodalDataset(Dataset):
             start_time=kwargs.get("start_time"),
             end_time=kwargs.get("end_time"),
             temporal_indices_path=temporal_paths,
+            horizon=kwargs[modality_id].get("horizon", 0),
+            lookback=kwargs[modality_id].get("lookback", 0),
         )
         statistics = assemble_statistics_from_npz(PATHS.statistics_path(modality_id, kwargs[modality_id]["statistics"]))
 
@@ -135,6 +143,8 @@ class MultimodalDataset(Dataset):
                 start_time=kwargs.get("start_time"),
                 end_time=kwargs.get("end_time"),
                 temporal_indices_path=temporal_paths,
+                horizon=kwargs[mod].get("horizon", 0),
+                lookback=kwargs[mod].get("lookback", 0),
             )
             for mod in modality_ids
         }

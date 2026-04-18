@@ -1,0 +1,15 @@
+# @package _global_
+eval_name: train_KG_L
+spatial_indices: KG_L
+
+test_dataset:
+  spatial: KG_L
+  temporal: test_period_00
+  era5:
+    preload: true
+  seviri:
+    preload: true
+
+analysis:
+  batch_size: 4096
+  num_workers: 16

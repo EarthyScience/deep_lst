@@ -1,0 +1,18 @@
+# @package _global_
+
+_lookback: lb0
+
+train_dataset:
+  seviri:
+    lookback: 0
+    context_vars: []
+
+val_dataset:
+  seviri:
+    lookback: 0
+    context_vars: []
+
+test_dataset:
+  seviri:
+    lookback: 0
+    context_vars: []

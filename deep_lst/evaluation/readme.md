@@ -38,15 +38,25 @@ Metrics: `results/{experiment}/{version}/{eval}/metrics_*.nc`
 
 ```bash
 # Default horizon (3 h), 3 test periods, all experiments × all eval regions
-bash scripts/inference/run_inference_experiments.sh mlp_diag
-bash scripts/inference/run_inference_experiments.sh mlp_rollout
-
-# Long horizon (72 h)
-SLURM_TIME=12:00:00 bash scripts/inference/run_inference_experiments.sh mlp_diag 72
-SLURM_TIME=12:00:00 bash scripts/inference/run_inference_experiments.sh mlp_rollout 72
+sbatch scripts/inference/run_inference_big.sh \
+    experiment=mlp_rollout_XL_KG_mse_h3_v1 version=version_0 \
+    eval=train_KG_XL_fullyear best=true inference_horizon=72
 ```
 
 Wall time: ~2 h (24 h horizon), ~6 h (72 h), ~10 h (120 h).
+
+Run multiple inference jobs on the big node:
+
+```bash
+for exp in mlp_rollout_XL_KG_mse_h3_v1 mlp_rollout_XL_KG_crps_h3_v1 mlp_rollout_XL_KGLC_mse_h3_v1 mlp_rollout_XL_KGLC_crps_h3_v1; do
+    sbatch scripts/inference/run_inference_big.sh \
+        experiment=${exp} \
+        version=version_0 \
+        eval=fulltestyear \
+        best=true
+done
+```
+
 
 ---
 
