@@ -142,7 +142,9 @@ class Forecast:
         """Run inference and return results."""
         predict_dispatch = {
             "DiagnosticMSE": self._predict_diagnostic,
+            "DiagnosticCRPS": self._predict_diagnostic,
             "RolloutMSE": self._predict_rollout,
+            "RolloutCRPS": self._predict_rollout,
         }
         predict_fn = predict_dispatch.get(self.prediction_mode)
         if predict_fn is None:
@@ -157,7 +159,7 @@ class Forecast:
             **self.config["seviri"],
         )
 
-        if self.apply_consistent_mask and self.prediction_mode != "DiagnosticMSE":
+        if self.apply_consistent_mask and self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
             preds_flat, obs_flat = self._apply_consistent_mask(preds_flat, obs_flat)
 
         first_var = list(preds_flat.keys())[0]
@@ -167,7 +169,7 @@ class Forecast:
 
         predictions, observations = self._remap(preds_flat, obs_flat, n_spatial, n_time, time_horizon)
 
-        if self.prediction_mode == "RolloutMSE":
+        if self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
             predictions, observations, time_horizon = self._prepend_nan_lead(
                 predictions, observations, n_spatial, n_time, time_horizon
             )
@@ -190,7 +192,9 @@ class Forecast:
         """Run inference and map init_times from explicit T1H time indices."""
         predict_dispatch = {
             "DiagnosticMSE": self._predict_diagnostic,
+            "DiagnosticCRPS": self._predict_diagnostic,
             "RolloutMSE": self._predict_rollout,
+            "RolloutCRPS": self._predict_rollout,
         }
         predict_fn = predict_dispatch.get(self.prediction_mode)
         if predict_fn is None:
@@ -205,7 +209,7 @@ class Forecast:
             **self.config["seviri"],
         )
 
-        if self.apply_consistent_mask and self.prediction_mode != "DiagnosticMSE":
+        if self.apply_consistent_mask and self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
             preds_flat, obs_flat = self._apply_consistent_mask(preds_flat, obs_flat)
 
         first_var = list(preds_flat.keys())[0]
@@ -217,7 +221,7 @@ class Forecast:
 
         predictions, observations = self._remap(preds_flat, obs_flat, n_spatial, n_time, time_horizon)
 
-        if self.prediction_mode == "RolloutMSE":
+        if self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
             predictions, observations, time_horizon = self._prepend_nan_lead(
                 predictions, observations, n_spatial, n_time, time_horizon
             )
@@ -346,7 +350,8 @@ class Forecast:
                     for key in td_keys["in_keys"]:
                         if key[1].endswith("_ctx"):
                             continue  # context keys injected below
-                        tstep_td[key] = batch[key][:, lookback + t, ...]
+                        mod_lb = lookback if key[0] == "seviri" else 0
+                        tstep_td[key] = batch[key][:, mod_lb + t, ...]
                     for key in prog_keys:
                         tstep_td[key] = prog[key]
 
@@ -356,12 +361,14 @@ class Forecast:
                     if lookback > 0:
                         for var in context_vars:
                             ctx_key = ("seviri", f"{var}_ctx")
-                            # [B, lookback, H, W, C]
+                            # [B, lookback, H, W, C] -> [B, H, W, 2*lookback*C]
                             ctx = torch.stack(history[var], dim=1)
+                            B, lb, H, W, C = ctx.shape
                             valid_mask = torch.isfinite(ctx).all(dim=-1, keepdim=True)
                             ctx_vals = torch.nan_to_num(ctx, nan=0.0)
-                            # Flatten to [B, 2*lookback] (H=W=1 for pixel-level batches)
-                            tstep_td[ctx_key] = torch.cat([ctx_vals.flatten(1), valid_mask.float().flatten(1)], dim=-1)
+                            ctx_hw = ctx_vals.permute(0, 2, 3, 1, 4).reshape(B, H, W, lb * C)
+                            valid_hw = valid_mask.float().permute(0, 2, 3, 1, 4).reshape(B, H, W, lb * C)
+                            tstep_td[ctx_key] = torch.cat([ctx_hw, valid_hw], dim=-1)
 
                     out = model.model(tstep_td)
 

@@ -147,6 +147,17 @@ def load_model(
         lit_module: LitModelModule in eval mode, moved to GPU if available.
         device:     The torch.device the model is on.
     """
+    lookback = config.get("train_dataset", {}).get("seviri", {}).get("lookback", 0)
+    context_vars = config.get("train_dataset", {}).get("seviri", {}).get("context_vars", [])
+    if in_feature_sizes is None:
+        in_feature_sizes = {}
+    if lookback > 0:
+        for var in context_vars:
+            ctx_key = ("seviri", f"{var}_ctx")
+            if ctx_key not in td_keys["in_keys"]:
+                td_keys["in_keys"].append(ctx_key)
+            in_feature_sizes[ctx_key] = 2 * lookback
+
     model = MultiModalMLP(
         in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
         out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],

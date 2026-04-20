@@ -89,7 +89,7 @@ training:
   num_workers: 24
   pin_memory: true
   prefetch_factor: 2
-  limit_train_batches: 4000
+  limit_train_batches: 2500
   limit_val_batches: 500
   limit_test_batches: 1.0
   overfit_batches: 0.0

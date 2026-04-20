@@ -423,11 +423,9 @@ def run_evaluation():
             print("No init_times matched the requested period(s). Check --temporal or re-run inference.")
             return
 
-    print(
-        f"\nForecast dims: init_time={ds.sizes['init_time']}, "
-        f"lead_time={ds.sizes['lead_time']}, "
-        f"lat={ds.sizes['lat']}, lon={ds.sizes['lon']}"
-    )
+    sparse = "pixel" in ds.dims
+    spatial_str = f"pixel={ds.sizes['pixel']}" if sparse else f"lat={ds.sizes['lat']}, lon={ds.sizes['lon']}"
+    print(f"\nForecast dims: init_time={ds.sizes['init_time']}, lead_time={ds.sizes['lead_time']}, {spatial_str}")
 
     # -------------------------------------------------------------------------
     # Convert to valid_time at the selected lead time
@@ -527,7 +525,7 @@ def run_evaluation():
         )
 
     # c) Forecast GIF
-    if "forecast_gif" in requested:
+    if "forecast_gif" in requested and not sparse:
         init_tag = pd.Timestamp(args.gif_init_time).strftime("%Y%m%dT%H%M") if args.gif_init_time else "first"
         forecast_gif(
             ds,
@@ -689,7 +687,7 @@ def run_evaluation():
             )
 
         # D4) Spatial power spectrum — model + obs + all baselines
-        if "power_spectrum" in requested:
+        if "power_spectrum" in requested and not sparse:
             lats = ds["lat"].values
             lons = ds["lon"].values
             dx_km = _grid_spacing_km(lats, lons)
@@ -711,7 +709,7 @@ def run_evaluation():
             )
 
         # E) Bias maps — model + each baseline
-        if "bias_maps" in requested:
+        if "bias_maps" in requested and not sparse:
             bias_by_case = {case_label: compute_scores(pred, obs, metrics=["bias"], aggregation="region_space")["bias"]}
             for label, da in baselines_aligned.items():
                 bias_by_case[label] = compute_scores(da, obs, metrics=["bias"], aggregation="region_space")["bias"]
@@ -722,7 +720,7 @@ def run_evaluation():
             )
 
         # F) Improvement map — all baselines in one multi-panel figure
-        if "improvement_map" in requested:
+        if "improvement_map" in requested and not sparse:
             rmse_model = compute_scores(pred, obs, metrics=["rmse"], aggregation="region_space")["rmse"]
             rmse_by_baseline = {
                 label: compute_scores(da, obs, metrics=["rmse"], aggregation="region_space")["rmse"]

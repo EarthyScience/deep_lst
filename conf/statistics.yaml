@@ -1,0 +1,89 @@
+# Statistics computation configuration.
+# Used exclusively by scripts/statistics/compute_statistics.py.
+# Independent of model experiment configs — update this file when the zarr store
+# gains or loses variables, not when model inputs change.
+#
+# Variable lists are explicit here so that statistics remain stable across
+# database versions. The reader's torch schema assigns VariableType.CONTINUOUS or
+# CATEGORICAL per variable; only CONTINUOUS variables receive statistics.
+# Ancillary variables (lsm, LWMASK, LANDCOV) are included so the reader loads
+# them correctly, but they are filtered out automatically by the schema.
+#
+# SEVIRI: LST, standard_error, quality_flag must be in diagnostics, not inputs.
+# SeviriReader applies nan_to_num(nan=0.0) to all inputs after loading, which
+# would zero out cloud-masked pixels and bias the statistics. Diagnostics bypass
+# that imputation step.
+#
+# Grid extents are zarr-store-level properties — change only if the store is rebuilt.
+
+# Runtime parameters (override on CLI, e.g. store_path=/path/to/store.zarr modality=seviri spatial=KGLC_L)
+store_path: ???        # Path to the EOZarr store (.zarr directory) — required
+modality: ???          # Modality: era5 or seviri — required
+spatial: ???           # Spatial index name (e.g. KGLC_L) — required
+temporal: train        # Temporal split name; resolves to assets/temporal/time_indices_{temporal}.npz
+batch_size: 32
+num_workers: 1
+preload: false         # Preload all zarr arrays into RAM before computing statistics
+
+era5:
+  inputs:
+    # dynamic
+    - stl1           # Soil temperature layer 1 (K)
+    - swvl1          # Volumetric soil water layer 1 (m³/m³)
+    - u10            # Zonal wind at 10 m (m/s)
+    - v10            # Meridional wind at 10 m (m/s)
+    - sp             # Surface pressure (Pa)
+    - t2m            # 2 m air temperature (K)
+    - d2m            # 2 m dewpoint temperature (K)
+    - sf             # Snowfall (m of water equivalent)
+    - strd           # Surface thermal radiation downwards (J/m²)
+    - ssrd           # Surface solar radiation downwards (J/m²)
+    - cp             # Convective precipitation (m)
+    - tp             # Total precipitation (m)
+    - tcwv           # Total column water vapour (kg/m²)
+    - skt            # Skin temperature (K)
+    # static
+    - tvh            # High vegetation cover (fraction)
+    - tvl            # Low vegetation cover (fraction)
+    # computed on the fly — not stored in zarr
+    - solar_zenith   # Solar zenith angle (degrees)
+    # ancillary — loaded by reader but CATEGORICAL in schema; no statistics computed
+    - lsm            # Land-sea mask (binary)
+  diagnostics: []
+  prognostics: []
+  row_extent: 721    # 0.25° global grid
+  col_extent: 1440
+
+seviri:
+  inputs:
+    # static
+    - DEM            # Digital elevation model (m)
+    # dynamic_daily
+    #- AL-NI-DH       # NIR broadband albedo (0–1)
+    #- AL-VI-DH       # Visible broadband albedo (0–1)
+    - AL-BB-DH       # Shortwave broadband albedo (0–1)
+    - FVC            # Fraction vegetation cover (0–1)
+    # computed on the fly — not stored in zarr
+    - solar_zenith   # Solar zenith angle (degrees)
+    - doy_sin        # sin(2π × day_of_year / 365)
+    - doy_cos        # cos(2π × day_of_year / 365)
+    # ancillary — loaded by reader but CATEGORICAL in schema; no statistics computed
+    - LWMASK         # Land-water mask (binary)
+    - LANDCOV        # Land cover classification (integer codes)
+  diagnostics:
+    # dynamic — kept out of inputs to avoid nan_to_num(nan=0.0) imputation on
+    # cloud-masked pixels, which would bias the statistics toward clear-sky values
+    - LST            # Land surface temperature (K)
+    - standard_error # LST retrieval uncertainty (K)
+    # - quality_flag   # LST quality control flag -  FIX NEEDED: SAVE AS DYNAMIC ANCILLARY IN TORCH SCHEME.
+  prognostics: []
+  # Variables for which temporal increment statistics (mean, std, min, max of
+  # Y_t - Y_{t-1}) are computed in a second pass with horizon=1. These are
+  # stored under keys "{var}_increment" alongside the regular statistics.
+  # Both variables are moved to diagnostics for this pass so that NaN values
+  # (cloud-masked pixels) are preserved rather than zeroed out by nan_to_num.
+  increment_variables:
+    - LST
+    - AL-BB-DH
+  row_extent: 3201   # SEVIRI Africa domain
+  col_extent: 3201

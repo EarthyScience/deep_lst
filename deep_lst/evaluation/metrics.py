@@ -118,8 +118,8 @@ def to_valid_time(
 # ---------------------------------------------------------------------------
 
 _AGGREGATION_DIMS = {
-    "total": ["valid_time", "lat", "lon"],
-    "region_time": ["lat", "lon"],
+    "total": ["valid_time", "lat", "lon", "pixel"],
+    "region_time": ["lat", "lon", "pixel"],
     "region_space": ["valid_time"],
     "none": [],
 }
@@ -252,12 +252,12 @@ def compute_diurnal_scores(
     std_by_hour = np.full(24, np.nan)
     n_valid = np.zeros(24, dtype=np.int64)
 
-    pred_vals = pred.values
-    obs_vals = obs.values
+    pred_vals = pred.transpose("valid_time", ...).values
+    obs_vals = obs.transpose("valid_time", ...).values
 
     for h in range(24):
         h_mask = hours == h  # (n_valid_time,)
-        p_h = pred_vals[h_mask]  # (n_h, lat, lon) or (n_h,)
+        p_h = pred_vals[h_mask]  # (n_h, lat, lon) or (n_h, pixel)
         o_h = obs_vals[h_mask]
         valid = np.isfinite(p_h) & np.isfinite(o_h)
         n = int(valid.sum())
@@ -314,8 +314,8 @@ def compute_diurnal_mean(
     obs_std = np.full(24, np.nan)
     n_valid = np.zeros(24, dtype=np.int64)
 
-    pred_vals = pred.values
-    obs_vals = obs.values
+    pred_vals = pred.transpose("valid_time", ...).values
+    obs_vals = obs.transpose("valid_time", ...).values
 
     for h in range(24):
         h_mask = hours == h

@@ -8,20 +8,20 @@ over a spatial × temporal index mesh, then written to two places:
 
 Which indices are used
 ----------------------
---spatial   Name of the spatial index file, e.g. KGLC_L.
-            Resolves to: assets/{modality}/spatial/indices_{spatial}.npz
-            The spatial key read from the file is '{modality}_indices', with
-            'mapping' as fallback (older files).
+spatial   Name of the spatial index file, e.g. KGLC_L.
+          Resolves to: assets/{modality}/spatial/indices_{spatial}.npz
+          The spatial key read from the file is '{modality}_indices', with
+          'mapping' as fallback (older files).
 
---temporal  Name of the temporal index file (default: train).
-            Resolves to: assets/temporal/time_indices_{temporal}.npz
+temporal  Name of the temporal index file (default: train).
+          Resolves to: assets/temporal/time_indices_{temporal}.npz
 
-The statistics label stored in the zarr store equals --spatial, so training
+The statistics label stored in the zarr store equals spatial, so training
 configs that reference label='KGLC_L' will load the right statistics.
 
 Which variables are included
 -----------------------------
-Controlled by configs/statistics/config.yml (--config flag).
+Controlled by conf/statistics.yaml (the Hydra config for this script).
 The config lists inputs/diagnostics/prognostics per modality.
 Only CONTINUOUS variables (per the reader's torch schema) receive statistics;
 CATEGORICAL variables (lsm, LWMASK, LANDCOV) are loaded but skipped.
@@ -32,19 +32,19 @@ Typical usage
 -------------
 Single GPU (development / small stores):
     python scripts/statistics/compute_statistics.py \\
-        -s /path/to/seviri_sampled_KGLC_L.zarr \\
-        -m seviri \\
-        --spatial KGLC_L \\
-        --temporal train \\
-        --preload
+        store_path=/path/to/seviri_sampled_KGLC_L.zarr \\
+        modality=seviri \\
+        spatial=KGLC_L \\
+        temporal=train \\
+        preload=true
 
 Multi-GPU via torchrun (recommended for large stores):
     torchrun --nproc_per_node=4 scripts/statistics/compute_statistics.py \\
-        -s /path/to/seviri_sampled_KGLC_L.zarr \\
-        -m seviri \\
-        --spatial KGLC_L \\
-        --temporal train \\
-        --preload
+        store_path=/path/to/seviri_sampled_KGLC_L.zarr \\
+        modality=seviri \\
+        spatial=KGLC_L \\
+        temporal=train \\
+        preload=true
 
 Nested sampling strategy
 ------------------------
@@ -53,20 +53,20 @@ and use that label for all levels — the distribution is representative for all
 Run once per modality × spatial strategy, not once per size level.
 """
 
-import argparse
 import os
 
+import hydra
 import numpy as np
 import torch
 from eodata.dataset import deep_to
 from eodata.eo_zarr import EOZarrStore
 from eodata.schemes.torch.base import VariableType
 from eodata.statistics import StandardStatisticsMetric
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DistributedSampler
 from tqdm import tqdm
 
 from deep_lst.dataset.dataset import UnimodalDataset
-from deep_lst.utils.config import open_config
 from deep_lst.utils.io import ExperimentPaths, save_statistics_npz
 
 
@@ -132,6 +132,13 @@ def calculate_all_statistics(
     reader = reader_cls(eozarr_store=store, **unified_kwargs)
     if unified_kwargs.get("preload", False):
         reader.preload()
+
+    # Init process group AFTER preload so the NCCL watchdog doesn't expire
+    # while ranks are busy loading large stores (e.g. ERA5's 15 GB) from NFS.
+    if "RANK" in os.environ and "LOCAL_RANK" in os.environ and not torch.distributed.is_initialized():
+        torch.distributed.init_process_group(device_id=torch.device("cuda", int(os.environ["LOCAL_RANK"])))
+        device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
+
     dataset = UnimodalDataset(reader=reader, indices=safe_indices)
 
     if torch.distributed.is_initialized():
@@ -187,60 +194,18 @@ def calculate_all_statistics(
     return all_stats
 
 
-def main():
-    if "RANK" in os.environ and "LOCAL_RANK" in os.environ:
-        torch.distributed.init_process_group(device_id=torch.device("cuda", int(os.environ["LOCAL_RANK"])))
+@hydra.main(config_path="../../conf", config_name="statistics", version_base="1.3")
+def main(cfg: DictConfig) -> None:
+    config = OmegaConf.to_container(cfg, resolve=True)
+    modality = config["modality"]
+    modality_cfg = config[modality]
 
-    parser = argparse.ArgumentParser(
-        description="Compute normalisation statistics for an EOZarr store.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "-s",
-        "--store",
-        required=True,
-        help="Path to the EOZarr store (.zarr directory).",
-    )
-    parser.add_argument(
-        "-m",
-        "--modality",
-        required=True,
-        choices=["era5", "seviri"],
-        help="Modality to compute statistics for.",
-    )
-    parser.add_argument(
-        "--spatial",
-        required=True,
-        help="Spatial index name (e.g. KGLC_L). Resolves to assets/{modality}/spatial/indices_{name}.npz. "
-        "Also used as the statistics label and output filename suffix.",
-    )
-    parser.add_argument(
-        "--temporal",
-        default="train",
-        help="Temporal split name (default: train). Resolves to assets/temporal/time_indices_{name}.npz.",
-    )
-    parser.add_argument(
-        "-c",
-        "--config",
-        default="statistics",
-        help="Config name under configs/ — used to read variable lists (default: statistics).",
-    )
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--num_workers", type=int, default=1)
-    parser.add_argument(
-        "--preload",
-        action="store_true",
-        default=False,
-        help="Preload all zarr arrays into RAM before computing statistics. "
-        "Recommended for sampled stores (~9 GB total).",
-    )
-    args = parser.parse_args()
-
-    # Label and output name derived from the spatial index name
-    label = args.spatial  # e.g. 'KGLC_L'
+    label = config["spatial"]  # e.g. 'KGLC_L'
 
     # ── device ────────────────────────────────────────────────────────────────
-    if torch.cuda.is_available() and torch.distributed.is_initialized():
+    # init_process_group is deferred until after preloading (inside
+    # calculate_all_statistics), so derive device/rank from env vars directly.
+    if torch.cuda.is_available() and "LOCAL_RANK" in os.environ:
         device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
     elif torch.cuda.is_available():
         device = torch.device("cuda")
@@ -248,15 +213,13 @@ def main():
         device = torch.device("cpu")
 
     # ── reader class ──────────────────────────────────────────────────────────
-    if args.modality == "era5":
+    if modality == "era5":
         from eodata.data_reader.era5 import Era5Reader as ReaderCls
     else:
         from eodata.data_reader.seviri import SeviriReader as ReaderCls
 
     # ── reader kwargs from config ─────────────────────────────────────────────
     paths = ExperimentPaths()
-    config = open_config(paths.config_path(args.config))
-    modality_cfg = config[args.modality]
     reader_kwargs = {
         "inputs": modality_cfg["inputs"],
         "diagnostics": modality_cfg["diagnostics"],
@@ -265,23 +228,23 @@ def main():
         "col_extent": modality_cfg["col_extent"],
         "lookback": 0,
         "horizon": 0,
-        "preload": args.preload,
+        "preload": config["preload"],
     }
 
     # ── indices ───────────────────────────────────────────────────────────────
-    store = EOZarrStore(args.store, mode="r+")
+    store = EOZarrStore(config["store_path"], mode="r+")
     indices = _load_indices(
-        args.modality,
-        spatial_path=paths.spatial_indices_path(args.modality, args.spatial),
-        temporal_path=paths.temporal_indices_path(args.temporal),
+        modality,
+        spatial_path=paths.spatial_indices_path(modality, config["spatial"]),
+        temporal_path=paths.temporal_indices_path(config["temporal"]),
     )
 
-    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    rank = int(os.environ.get("RANK", 0))
     if rank == 0:
-        print(f"Modality     : {args.modality}")
-        print(f"Store        : {args.store}")
-        print(f"Spatial      : {args.spatial}  ({len(np.unique(indices[:, 0]))} unique pixels)")
-        print(f"Temporal     : {args.temporal}  ({len(np.unique(indices[:, 1]))} unique timesteps)")
+        print(f"Modality     : {modality}")
+        print(f"Store        : {config['store_path']}")
+        print(f"Spatial      : {config['spatial']}  ({len(np.unique(indices[:, 0]))} unique pixels)")
+        print(f"Temporal     : {config['temporal']}  ({len(np.unique(indices[:, 1]))} unique timesteps)")
         print(f"Total samples: {len(indices):,}")
         print(f"Label        : {label}")
 
@@ -295,8 +258,8 @@ def main():
         indices=indices,
         increment_variables=increment_variables,
         device=device,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        batch_size=config["batch_size"],
+        num_workers=config["num_workers"],
         **reader_kwargs,
     )
 
@@ -309,7 +272,7 @@ def main():
             print(f"  {var_name}: mean={var_stats['mean']:.4f}  std={var_stats['std']:.4f}")
 
         # Save to npz (for compatibility with existing training configs)
-        out_path = paths.statistics_path(args.modality, label)
+        out_path = paths.statistics_path(modality, label)
         save_statistics_npz(all_stats, out_path)
         print(f"\nSaved statistics npz → {out_path}")
 
@@ -318,7 +281,7 @@ def main():
         # variables have no backing zarr array — set_statistics stores them
         # on the root group automatically.
         for var_name, var_stats in all_stats.items():
-            store.set_statistics(args.modality, var_name, var_stats, label=label, overwrite=True)
+            store.set_statistics(modality, var_name, var_stats, label=label, overwrite=True)
         print(f"Embedded statistics in zarr store (label='{label}')")
 
     if torch.distributed.is_initialized():
