@@ -12,9 +12,9 @@ def load_forecast(
     suffix: str = "",
     paths: ExperimentPaths = None,
 ) -> xr.Dataset:
-    """Load a saved forecast NetCDF for the given experiment/version/eval."""
+    """Load a saved forecast zarr store for the given experiment/version/eval."""
     p = (paths or PATHS).forecast_path(experiment, version, eval_name, suffix=suffix)
-    return xr.open_dataset(p)
+    return xr.open_zarr(p)
 
 
 def load_metrics(

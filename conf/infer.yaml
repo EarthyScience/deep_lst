@@ -13,8 +13,18 @@ spatial_indices: ???
 # --- optional inference flags ---
 best: false               # load best.ckpt instead of last.ckpt
 no_consistent_mask: false
-inference_horizon: null   # extend rollout beyond trained horizon (steps)
+inference_horizon: ???    # required: rollout horizon in hours (e.g. 72). Use trained horizon value to reproduce training-length forecasts.
 chunk_id: null            # for parallel chunked inference
+
+test_dataset:
+  era5:
+    preload: true
+  seviri:
+    preload: true
+
+analysis:
+  batch_size: 4096
+  num_workers: 16
 
 hydra:
   run:

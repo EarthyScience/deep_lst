@@ -91,6 +91,14 @@ class ExperimentPaths:
         """Resolve the dense evaluation pixel index file for *modality* and *eval name*."""
         return self.assets_root / modality / "spatial" / f"indices_eval_{name}.npz"
 
+    def persistence_path(self, eval_name: str) -> Path:
+        """Resolve the SEVIRI LST persistence baseline NetCDF for an eval region.
+
+        Saved under assets/seviri/baselines/ and shared across experiments.
+        Created by scripts/benchmarks/extract_seviri_persistence.py.
+        """
+        return self.assets_root / "seviri" / "baselines" / f"persistence_{eval_name}.nc"
+
     def baseline_path(self, eval_name: str) -> Path:
         """Resolve the ERA5 SKT baseline NetCDF for an eval region.
 
@@ -126,7 +134,7 @@ class ExperimentPaths:
         return self.results_root / experiment / version / eval_name
 
     def forecast_path(self, experiment: str, version: str, eval_name: str, suffix: str = "") -> Path:
-        path = self.results_dir(experiment, version, eval_name) / f"forecast{suffix}.nc"
+        path = self.results_dir(experiment, version, eval_name) / f"forecast{suffix}.zarr"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 

@@ -248,7 +248,7 @@ def run_comparison():
             if not fc_path.exists():
                 print(f"Warning: forecast not found for {exp} — skipping power spectrum")
                 continue
-            forecast_by_case[case_label] = xr.open_dataset(fc_path)
+            forecast_by_case[case_label] = xr.open_zarr(fc_path)
 
         if forecast_by_case:
             ps_path = out_dir / f"{args.variable}_power_spectrum_lt{args.lead_time}.png"

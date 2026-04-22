@@ -43,6 +43,8 @@ Available --baselines:
     era5          ERA5 skin temperature (assets/era5/baselines/)
     clim_hourly   SEVIRI hourly climatology (assets/climatology/hourly/)
     clim_smooth   SEVIRI smoothed climatology (assets/climatology/smoothed_hourly/)
+    persistence   SEVIRI obs at init_time (assets/seviri/baselines/); precompute with
+                  scripts/benchmarks/extract_seviri_persistence.py
 """
 
 import argparse
@@ -55,6 +57,7 @@ import xarray as xr
 from deep_lst.evaluation.metrics import (
     compute_diurnal_mean,
     compute_diurnal_scores,
+    compute_persistence_scores_by_lead_time,
     compute_scores,
     compute_scores_by_lead_time,
     compute_validity_report,
@@ -75,7 +78,9 @@ from deep_lst.evaluation.plots.scores import error_overview_plot
 from deep_lst.evaluation.plots.spectra import (
     _grid_spacing_km,
     compute_spatial_power_spectrum,
+    compute_temporal_power_spectrum,
     spatial_power_spectrum_plot,
+    temporal_power_spectrum_plot,
 )
 from deep_lst.evaluation.plots.timeseries import timeseries_plot
 from deep_lst.utils import ExperimentPaths
@@ -93,6 +98,8 @@ FAST_EVAL_PLOTS = [
     "fingerprint",  # (DOY × hour) heatmap, spatially averaged
     "error_growth",  # RMSE vs lead_time line plot (hourly)
     "error_growth_daily",  # RMSE per day bucket (day 1 / 2 / 3)
+    "temporal_power_spectrum",  # PSD vs period (hours); works on sparse and grid
+    "persistence_skill",  # skill score vs lead time relative to persistence
 ]
 
 BENCHMARK_PLOTS = [
@@ -130,6 +137,11 @@ BASELINE_REGISTRY: dict[str, tuple[str, callable, str]] = {
         lambda n: PATHS.climatology_path(n, "smoothed_hourly"),
         "LST",
     ),
+    "persistence": (
+        "persistence",
+        lambda n: PATHS.persistence_path(n),
+        "LST",
+    ),
 }
 
 
@@ -165,7 +177,7 @@ def parse_args():
         metavar="NAME",
         help=(
             "Baselines to load for benchmark plots. "
-            f"Available: {list(BASELINE_REGISTRY)}. "
+            f"Available: {list(BASELINE_REGISTRY) + ['persistence']}. "
             "Pass --baselines with no arguments to skip all benchmark plots. "
             "(default: era5)"
         ),
@@ -191,6 +203,13 @@ def parse_args():
         help="Lead times for forecast_gif, e.g. --gif_lead_times 1h 2h 3h. Default: all.",
     )
     p.add_argument("--gif_fps", type=int, default=2, help="FPS for forecast_gif (default: 2)")
+    p.add_argument(
+        "--plots",
+        nargs="+",
+        default=None,
+        metavar="PLOT",
+        help=(f"Subset of plots to generate. Available: {ALL_PLOTS}. Default: all plots."),
+    )
     return p.parse_args()
 
 
@@ -203,7 +222,7 @@ def _load_forecast(experiment: str, version: str, eval_name: str) -> xr.Dataset:
     path = PATHS.forecast_path(experiment, version, eval_name)
     if not path.exists():
         raise FileNotFoundError(f"Forecast not found: {path}\nRun scripts/inference/run_inference.py first.")
-    return xr.open_dataset(path)
+    return xr.open_zarr(path)
 
 
 def _load_baselines(eval_name: str, baseline_names: list[str]) -> dict[str, xr.DataArray]:
@@ -314,6 +333,47 @@ def _plot_error_growth(
     ax.set_xticks(lead_hours[::step])
     ax.set_title(f"{eval_region}  —  RMSE vs. lead time  (mean over test period)")
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0, framealpha=0.9)
+    ax.grid(axis="y", alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.tight_layout()
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"  Saved: {save_path}")
+    plt.close(fig)
+
+
+def _plot_persistence_skill(
+    ds_model_by_lead: xr.Dataset,
+    ds_pers_by_lead: xr.Dataset,
+    case_label: str,
+    metric: str,
+    save_path,
+    eval_region: str,
+) -> None:
+    """Skill score vs lead time: SS = 1 - model_error(lt) / persistence_error(lt).
+
+    SS > 0 means the model beats persistence; SS = 0 is the tie line.
+    """
+    plt.rcParams.update(_PLOT_RC)
+    lead_td = pd.TimedeltaIndex(ds_model_by_lead["lead_time"].values)
+    lead_hours = [int(lt.total_seconds() / 3600) for lt in lead_td]
+    model_err = ds_model_by_lead[metric].values
+    pers_err = ds_pers_by_lead[metric].values
+    skill = 1.0 - model_err / pers_err
+
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    model_color = _CASE_COLORS.get(case_label, _DEFAULT_COLOR)
+    ax.plot(lead_hours, skill, color=model_color, linewidth=2, marker="o", markersize=5, label=case_label)
+    ax.axhline(0.0, color="gray", linewidth=1.2, linestyle="--", label="persistence (SS = 0)")
+
+    ax.set_xlabel("Lead time (h)")
+    ax.set_ylabel(f"Skill score  (1 − {metric.upper()} / {metric.upper()}$_{{pers}}$)")
+    step = max(1, len(lead_hours) // 12)
+    ax.set_xticks(lead_hours[::step])
+    ax.set_title(f"{eval_region}  —  skill vs. persistence  ({metric.upper()}, mean over test period)")
+    ax.legend(loc="lower right")
     ax.grid(axis="y", alpha=0.3)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -477,15 +537,23 @@ def run_evaluation():
     print("\nLoading baselines...")
     baselines: dict[str, xr.DataArray] = _load_baselines(args.eval, args.baselines or [])
 
-    # Aligned versions (matched to model's valid_time) used for metrics comparisons
-    baselines_aligned: dict[str, xr.DataArray] = {
-        label: _align_baseline(da, pred["valid_time"]) for label, da in baselines.items()
-    }
+    # Aligned versions (matched to model's valid_time) used for metrics comparisons.
+    # Persistence needs a time-shift: obs(init_time) = obs(valid_time - lead_time),
+    # so we reindex on shifted times then relabel to pred valid_times.
+    lt_ns = np.timedelta64(int(pd.Timedelta(args.lead_time).total_seconds() * 1e9), "ns")
+    baselines_aligned: dict[str, xr.DataArray] = {}
+    for label, da in baselines.items():
+        if label == "persistence":
+            init_times = pred["valid_time"].values - lt_ns
+            pers = da.reindex(valid_time=init_times)
+            baselines_aligned[label] = pers.assign_coords(valid_time=pred["valid_time"].values)
+        else:
+            baselines_aligned[label] = _align_baseline(da, pred["valid_time"])
 
     # -------------------------------------------------------------------------
     # Plots
     # -------------------------------------------------------------------------
-    requested = set(ALL_PLOTS)
+    requested = set(args.plots) if args.plots else set(ALL_PLOTS)
     print(f"\nGenerating plots → {plots_dir}")
 
     # =========================================================================
@@ -511,9 +579,13 @@ def run_evaluation():
         # are restricted to a single lead-time slice and may miss some hours.
         bl_hourly_means = {}
         for label, da in baselines.items():
-            hours_da = da["valid_time"].dt.hour.values
+            # Use aligned version for persistence so the 6h shift is reflected in
+            # the diurnal mean (obs(t-lead_time) averaged by hour(t)).  For all
+            # other baselines the aligned and raw versions cover the same hours.
+            src = baselines_aligned.get(label, da)
+            hours_da = src["valid_time"].dt.hour.values
             bl_hourly_means[label] = np.array(
-                [float(np.nanmean(da.values[hours_da == h])) if (hours_da == h).any() else np.nan for h in range(24)]
+                [float(np.nanmean(src.values[hours_da == h])) if (hours_da == h).any() else np.nan for h in range(24)]
             )
         diurnal_mean_plot(
             diurnal_mean_ds,
@@ -540,7 +612,7 @@ def run_evaluation():
     # f) Fingerprint — model pred + obs (+ baselines in same figure if available)
     if "fingerprint" in requested:
         fp_data = {f"{case_label} pred": pred, "SEVIRI obs": obs}
-        fp_data.update({label: da for label, da in baselines.items()})
+        fp_data.update({label: da for label, da in baselines_aligned.items()})
         fingerprint_plot(
             fp_data,
             title=f"{args.eval} — LST fingerprint  (lead_time={args.lead_time})",
@@ -582,6 +654,42 @@ def run_evaluation():
             save_path=plots_dir / f"{var}_error_growth_daily.png",
             eval_region=args.eval,
             baseline_rmse=bl_rmse or None,
+        )
+
+    # i) Persistence skill score vs lead time
+    if "persistence_skill" in requested and ds_by_lead is not None and "persistence" in baselines:
+        ds_pers_by_lead = compute_persistence_scores_by_lead_time(
+            ds, baselines["persistence"], var=var, metrics=["rmse"]
+        )
+        _plot_persistence_skill(
+            ds_by_lead,
+            ds_pers_by_lead,
+            case_label=case_label,
+            metric="rmse",
+            save_path=plots_dir / f"{var}_persistence_skill.png",
+            eval_region=args.eval,
+        )
+
+    # h) Temporal power spectrum — PSD of raw pred vs obs only.
+    # Baselines are excluded: ERA5 has no cloud NaNs, persistence samples
+    # cloud-free init_times, climatologies have full coverage — all produce
+    # artificially inflated spectra compared to SEVIRI obs (which has cloud gaps).
+    # A fair spectral comparison requires the same valid/NaN mask.
+    if "temporal_power_spectrum" in requested:
+        diffs = np.diff(pred["valid_time"].values).astype("timedelta64[h]").astype(float)
+        dt_hours = float(np.median(diffs[diffs > 0])) if len(diffs) > 0 else 1.0
+
+        spectra_t = {
+            case_label: compute_temporal_power_spectrum(pred.transpose("valid_time", ...).values, dt_hours=dt_hours)
+        }
+        obs_spectrum_t = compute_temporal_power_spectrum(obs.transpose("valid_time", ...).values, dt_hours=dt_hours)
+
+        temporal_power_spectrum_plot(
+            pred_spectra_by_case=spectra_t,
+            obs_spectrum=obs_spectrum_t,
+            var=var,
+            save_path=plots_dir / f"{var}_temporal_power_spectrum.png",
+            eval_region=args.eval,
         )
 
     # =========================================================================
@@ -642,9 +750,8 @@ def run_evaluation():
                 fp_imp = {f"{case_label} vs {label}": improvement_da(pred, obs, da)}
                 fingerprint_plot(
                     fp_imp,
-                    cmap="RdBu_r",
                     vcenter=0.0,
-                    cbar_label="ΔMAE (K, neg = model better)",
+                    cbar_label="ΔMAE (K)  [low = model better, high = baseline better]",
                     title=f"{args.eval} — improvement vs {label}  (lead_time={args.lead_time})",
                     save_path=plots_dir / f"{var}_improvement_fingerprint_{safe_label}_lt{args.lead_time}.png",
                 )
@@ -686,23 +793,23 @@ def run_evaluation():
                 case_label=case_label,
             )
 
-        # D4) Spatial power spectrum — model + obs + all baselines
+        # D4) Spatial power spectrum — PSD of raw pred vs obs only.
+        # Same reasoning as temporal: baselines have different NaN structures
+        # (ERA5: none; persistence: cloud-free init_times; clim: full coverage)
+        # making spectral comparison against SEVIRI obs unfair.
         if "power_spectrum" in requested and not sparse:
             lats = ds["lat"].values
             lons = ds["lon"].values
             dx_km = _grid_spacing_km(lats, lons)
 
-            wav_pred, pwr_pred = compute_spatial_power_spectrum(pred.values, dx_km=dx_km)
-            wav_obs, pwr_obs = compute_spatial_power_spectrum(obs.values, dx_km=dx_km)
-
-            pred_spectra = {case_label: (wav_pred, pwr_pred)}
-            for label, da in baselines_aligned.items():
-                wav_bl, pwr_bl = compute_spatial_power_spectrum(da.values, dx_km=dx_km)
-                pred_spectra[label] = (wav_bl, pwr_bl)
+            spectra_s = {
+                case_label: compute_spatial_power_spectrum(pred.transpose("valid_time", ...).values, dx_km=dx_km)
+            }
+            obs_spectrum_s = compute_spatial_power_spectrum(obs.transpose("valid_time", ...).values, dx_km=dx_km)
 
             spatial_power_spectrum_plot(
-                pred_spectra_by_case=pred_spectra,
-                obs_spectrum=(wav_obs, pwr_obs),
+                pred_spectra_by_case=spectra_s,
+                obs_spectrum=obs_spectrum_s,
                 var=var,
                 save_path=plots_dir / f"{var}_power_spectrum_lt{args.lead_time}.png",
                 eval_region=args.eval,

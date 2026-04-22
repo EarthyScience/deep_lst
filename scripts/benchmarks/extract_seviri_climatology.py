@@ -1,7 +1,14 @@
 """Extract hourly and smoothed-hourly SEVIRI LST climatology for an eval region.
 
 Reads the preloaded SEVIRI eval zarr store (seviri_sampled_eval_{region}.zarr)
-and computes two climatological baselines from the training years:
+and computes two climatological baselines from the training years.
+
+For training-site eval regions (e.g. train_KG_L_fullyear) the dedicated
+eval zarr store does not exist — use the training-region store instead:
+
+    python scripts/benchmarks/extract_seviri_climatology.py \\
+        --eval train_KG_L_fullyear \\
+        --store_spatial KG_L
 
   hourly
     For each (DOY, hour) in the test year: mean LST across all training-year
@@ -14,9 +21,9 @@ and computes two climatological baselines from the training years:
     (circular, wrapping at year boundaries).
     Typical sample count per bin: n_train_years × (2·window + 1) (≈ 126).
 
-Both outputs have dims (valid_time, lat, lon) covering every hour of the test
-year so they can be reindexed to any test-period subset at evaluation time,
-exactly like the ERA5 baseline.
+Both outputs have dims (valid_time, lat, lon) for dense eval regions, or
+(valid_time, pixel) for sparse training-site regions where the bounding-box
+grid would be too large. Output format matches the forecast (inference.py).
 
 Saved to
   assets/climatology/hourly/climatology_{eval}.nc
@@ -43,6 +50,9 @@ from deep_lst.utils import ExperimentPaths
 
 PATHS = ExperimentPaths()
 
+# Mirrors inference.py: pixel fill fraction below this → sparse (pixel) output.
+_SPARSE_FILL_THRESHOLD = 0.01
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -63,6 +73,13 @@ def parse_args():
         help="Half-width of the DOY window for smoothed_hourly (default: 10). "
         "A target at (DOY, hour) pools all train observations at that "
         "hour from [DOY − window, DOY + window] (circular).",
+    )
+    p.add_argument(
+        "--store_spatial",
+        default=None,
+        help=(
+            "Override the zarr store spatial key. Default: eval_{eval}. Use e.g. KG_L for training-site eval regions."
+        ),
     )
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     return p.parse_args()
@@ -155,12 +172,15 @@ def extract_climatology(
     eval_name: str,
     test_year: int,
     window_days: int,
+    store_spatial: str | None = None,
 ) -> tuple[xr.Dataset, xr.Dataset]:
     # --- Open preloaded SEVIRI zarr store ---
-    store_path = PATHS.sampled_store_path("seviri", f"eval_{eval_name}")
+    spatial_key = store_spatial if store_spatial is not None else f"eval_{eval_name}"
+    store_path = PATHS.sampled_store_path("seviri", spatial_key)
     if not store_path.exists():
         raise FileNotFoundError(
-            f"Preloaded SEVIRI store not found: {store_path}\nRun the eval-store preloading step first."
+            f"Preloaded SEVIRI store not found: {store_path}\n"
+            "For training-site eval regions pass --store_spatial <key>, e.g. KG_L."
         )
     store = zarr.open(str(store_path), mode="r")
 
@@ -204,13 +224,12 @@ def extract_climatology(
     flat_hourly = _lookup_clim(clim_hourly, test_ts)
     flat_smooth = _lookup_clim(clim_smooth, test_ts)
 
-    # --- Remap pixels → (lat, lon) grid ---
+    # --- Remap pixels → output layout ---
     lats, lons, local_rows, local_cols, grid_shape = build_local_grid(spatial_idx)
 
-    def _to_grid(flat):  # (n_time, n_pix) → (n_time, lat, lon)
-        out = np.full((flat.shape[0], *grid_shape), np.nan, dtype=np.float32)
-        out[:, local_rows, local_cols] = flat
-        return out
+    fill = n_pixels / (grid_shape[0] * grid_shape[1])
+    sparse = fill < _SPARSE_FILL_THRESHOLD
+    print(f"Spatial: {n_pixels} pixels, fill={fill:.4f} → {'sparse' if sparse else 'dense'} output")
 
     attrs_base = dict(
         eval_region=eval_name,
@@ -219,24 +238,42 @@ def extract_climatology(
         units="K",
     )
 
-    ds_hourly = xr.Dataset(
-        {"LST": (["valid_time", "lat", "lon"], _to_grid(flat_hourly))},
-        coords={"valid_time": test_ts.values, "lat": lats, "lon": lons},
-        attrs={
-            **attrs_base,
-            "description": "Hourly SEVIRI LST climatology: mean at each (DOY, hour) across train years.",
-        },
+    if sparse:
+        pixel_lats = lats[local_rows]
+        pixel_lons = lons[local_cols]
+
+        def _make_ds(flat, description):
+            return xr.Dataset(
+                {"LST": (["valid_time", "pixel"], flat.astype(np.float32))},
+                coords={
+                    "valid_time": test_ts.values,
+                    "lat": ("pixel", pixel_lats),
+                    "lon": ("pixel", pixel_lons),
+                },
+                attrs={**attrs_base, "description": description},
+            )
+    else:
+
+        def _to_grid(flat):  # (n_time, n_pix) → (n_time, lat, lon)
+            out = np.full((flat.shape[0], *grid_shape), np.nan, dtype=np.float32)
+            out[:, local_rows, local_cols] = flat
+            return out
+
+        def _make_ds(flat, description):
+            return xr.Dataset(
+                {"LST": (["valid_time", "lat", "lon"], _to_grid(flat))},
+                coords={"valid_time": test_ts.values, "lat": lats, "lon": lons},
+                attrs={**attrs_base, "description": description},
+            )
+
+    ds_hourly = _make_ds(
+        flat_hourly,
+        "Hourly SEVIRI LST climatology: mean at each (DOY, hour) across train years.",
     )
-    ds_smooth = xr.Dataset(
-        {"LST": (["valid_time", "lat", "lon"], _to_grid(flat_smooth))},
-        coords={"valid_time": test_ts.values, "lat": lats, "lon": lons},
-        attrs={
-            **attrs_base,
-            "description": (
-                f"Smoothed-hourly SEVIRI LST climatology: "
-                f"mean at each hour within ±{window_days}-day DOY window across train years."
-            ),
-        },
+    ds_smooth = _make_ds(
+        flat_smooth,
+        f"Smoothed-hourly SEVIRI LST climatology: "
+        f"mean at each hour within ±{window_days}-day DOY window across train years.",
     )
     return ds_hourly, ds_smooth
 
@@ -251,7 +288,7 @@ def main():
         print(f"Both files already exist for '{args.eval}'. Pass --overwrite to refresh.")
         return
 
-    ds_hourly, ds_smooth = extract_climatology(args.eval, args.test_year, args.window_days)
+    ds_hourly, ds_smooth = extract_climatology(args.eval, args.test_year, args.window_days, args.store_spatial)
 
     for ds, path, label in [
         (ds_hourly, out_hourly, "hourly"),
@@ -261,7 +298,10 @@ def main():
         ds.to_netcdf(path)
         print(f"Saved {label:20s}: {path}")
         print(f"  valid_time: {ds.valid_time.values[0]} → {ds.valid_time.values[-1]}")
-        print(f"  grid: {ds.sizes['lat']}×{ds.sizes['lon']}, {ds.sizes['valid_time']} timesteps")
+        if "pixel" in ds.dims:
+            print(f"  sparse: {ds.sizes['pixel']} pixels, {ds.sizes['valid_time']} timesteps")
+        else:
+            print(f"  dense: {ds.sizes['lat']}×{ds.sizes['lon']}, {ds.sizes['valid_time']} timesteps")
 
 
 if __name__ == "__main__":

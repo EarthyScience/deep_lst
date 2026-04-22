@@ -113,6 +113,28 @@ def to_valid_time(
     return pred, obs
 
 
+def compute_persistence_baseline(
+    ds: xr.Dataset,
+    var: str,
+    lead_time: str | np.timedelta64,
+) -> xr.DataArray:
+    """Return the initial observed LST as a persistence forecast.
+
+    For each init_time t₀, the persistence forecast at valid_time t₀ + lead_time
+    is the observed LST at t₀ (lead_time index 0), held constant.
+    """
+    init_obs = ds[f"{var}_obs"].isel(lead_time=0)
+    # Drop any pre-existing valid_time coordinate (may be present in forecast files)
+    # to avoid a name collision when we rename init_time → valid_time.
+    if "valid_time" in init_obs.coords:
+        init_obs = init_obs.drop_vars("valid_time")
+    # Ensure init_time is axis 0 — the forecast dataset may store pixel before init_time.
+    init_obs = init_obs.transpose("init_time", ...)
+    lt_delta = np.timedelta64(pd.Timedelta(lead_time).value, "ns")
+    valid_times = ds["init_time"].values + lt_delta
+    return init_obs.assign_coords(init_time=valid_times).rename({"init_time": "valid_time"})
+
+
 # ---------------------------------------------------------------------------
 # Core scoring
 # ---------------------------------------------------------------------------
@@ -209,9 +231,9 @@ def compute_validity_report(
     obs_nan = ~np.isfinite(obs)
 
     n_total = int(pred.size)
-    n_invalid_init = int((pred_nan).sum().item())
-    n_invalid_truth = int((~pred_nan & obs_nan).sum().item())
-    n_valid = int((~pred_nan & ~obs_nan).sum().item())
+    n_invalid_init = int((pred_nan).sum().values)
+    n_invalid_truth = int((~pred_nan & obs_nan).sum().values)
+    n_valid = int((~pred_nan & ~obs_nan).sum().values)
 
     return {
         "n_total": n_total,
@@ -351,6 +373,57 @@ def compute_diurnal_mean(
             "n_valid": ("hour", n_valid),
         },
         coords={"hour": np.arange(24)},
+    )
+
+
+def compute_persistence_scores_by_lead_time(
+    ds: xr.Dataset,
+    pers_da: xr.DataArray,
+    var: str = "LST",
+    metrics: list[str] | None = None,
+) -> xr.Dataset:
+    """Compute persistence baseline metrics at every lead_time.
+
+    For each lead time lt, persistence predicts obs(init_time) = obs(valid_time - lt).
+    Metrics are aggregated over all (init_time, lat, lon / pixel).
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        ForecastResult with dims (init_time, lead_time, ...).
+    pers_da : xr.DataArray
+        Raw persistence file DataArray with dim ``valid_time`` → obs(t).
+    """
+    if metrics is None:
+        metrics = ["rmse"]
+
+    lead_times = ds["lead_time"].values
+    results = {m: [] for m in metrics}
+    n_valid_list = []
+
+    for lt in lead_times:
+        lt_ns = np.timedelta64(int(pd.Timedelta(lt).total_seconds() * 1e9), "ns")
+        lt_h = int(pd.Timedelta(lt).total_seconds() // 3600)
+        try:
+            _, obs = to_valid_time(ds, var, lead_time=f"{lt_h}h")
+        except Exception:
+            for m in metrics:
+                results[m].append(np.nan)
+            n_valid_list.append(0)
+            continue
+
+        init_times = obs["valid_time"].values - lt_ns
+        pers = pers_da.reindex(valid_time=init_times)
+        pers = pers.assign_coords(valid_time=obs["valid_time"].values)
+
+        scores = compute_scores(pers, obs, metrics=metrics, aggregation="total")
+        for m in metrics:
+            results[m].append(float(scores[m].values))
+        n_valid_list.append(int(scores["n_valid"].values))
+
+    return xr.Dataset(
+        {m: ("lead_time", results[m]) for m in metrics} | {"n_valid": ("lead_time", n_valid_list)},
+        coords={"lead_time": lead_times},
     )
 
 

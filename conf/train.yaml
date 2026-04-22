@@ -18,6 +18,7 @@ train_dataset:
   spatial: ${_spatial}
   temporal: train
   era5:
+    preload: true
     modality_id: era5
     inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
     prognostics: []
@@ -29,6 +30,7 @@ train_dataset:
     patch_size: 1
     statistics: ${_statistics}
   seviri:
+    preload: true
     modality_id: seviri
     normalization: zscore
     row_extent: 3201
@@ -41,6 +43,7 @@ val_dataset:
   spatial: ${_spatial}
   temporal: val
   era5:
+    preload: true
     modality_id: era5
     inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
     prognostics: []
@@ -52,6 +55,7 @@ val_dataset:
     patch_size: 1
     statistics: ${_statistics}
   seviri:
+    preload: true
     modality_id: seviri
     normalization: zscore
     row_extent: 3201
@@ -64,6 +68,7 @@ test_dataset:
   spatial: ${_spatial}
   temporal: test_period_00
   era5:
+    preload: true
     modality_id: era5
     inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
     prognostics: []
@@ -75,6 +80,7 @@ test_dataset:
     patch_size: 1
     statistics: ${_statistics}
   seviri:
+    preload: true
     modality_id: seviri
     normalization: zscore
     row_extent: 3201
@@ -84,7 +90,7 @@ test_dataset:
     statistics: ${_statistics}
 
 training:
-  max_epochs: 80
+  max_epochs: 50
   batch_size: 512
   num_workers: 24
   pin_memory: true
@@ -94,10 +100,6 @@ training:
   limit_test_batches: 1.0
   overfit_batches: 0.0
 
-analysis:
-  batch_size: 512
-  num_workers: 8
-  pin_memory: true
 
 wandb_logger: true
 csv_logger: true

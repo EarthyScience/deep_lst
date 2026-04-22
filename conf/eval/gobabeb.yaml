@@ -4,15 +4,4 @@ spatial_indices: eval_gobabeb
 
 test_dataset:
   spatial: eval_gobabeb
-  temporal:
-    - test_period_00
-    - test_period_01
-    - test_period_02
-  era5:
-    preload: true
-  seviri:
-    preload: true
-
-analysis:
-  batch_size: 4096
-  num_workers: 16
+  temporal: test

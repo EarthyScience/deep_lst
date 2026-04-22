@@ -5,11 +5,3 @@ spatial_indices: KG_XL
 test_dataset:
   spatial: KG_XL
   temporal: test
-  era5:
-    preload: true
-  seviri:
-    preload: true
-
-analysis:
-  batch_size: 4096
-  num_workers: 32

@@ -6,13 +6,6 @@ test_dataset:
   spatial: eval_dahra
   temporal:
     - test_period_00
-    - test_period_01
-    - test_period_02
-  era5:
-    preload: true
-  seviri:
-    preload: true
-
-analysis:
-  batch_size: 4096
-  num_workers: 16
+    - test_period_06
+    - test_period_12
+    - test_period_18

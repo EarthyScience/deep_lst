@@ -93,7 +93,6 @@ def _rollout_batch(b=B, t=T, finite=True):
 
 def _diag_batch(b=B, finite=True):
     """TensorDict with shape (b, *SPATIAL) for diagnostic keys (no time dim)."""
-    fill = torch.randn if finite else lambda *s: torch.full(s, float("nan"))
     data = {}
     for k in IN_KEYS:
         data[k] = torch.randn(b, *SPATIAL)
@@ -208,7 +207,7 @@ def test_lead_times_are_sequential_hourly(sample_result):
 
 
 def test_roundtrip_values(tmp_path, sample_result):
-    path = tmp_path / "forecast.nc"
+    path = tmp_path / "forecast.zarr"
     sample_result.save(path)
     loaded = ForecastResult.load(path)
     np.testing.assert_allclose(loaded.predictions["LST"], sample_result.predictions["LST"], rtol=1e-5)
@@ -216,7 +215,7 @@ def test_roundtrip_values(tmp_path, sample_result):
 
 
 def test_roundtrip_coords(tmp_path, sample_result):
-    path = tmp_path / "forecast.nc"
+    path = tmp_path / "forecast.zarr"
     sample_result.save(path)
     loaded = ForecastResult.load(path)
     np.testing.assert_allclose(loaded.lats, sample_result.lats)

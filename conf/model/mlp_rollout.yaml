@@ -36,3 +36,4 @@ model:
   checkpoint_monitor: val_loss_step
   detach_rollout: true
   scheduler_T0: 80000
+  weight_decay: 0.0001

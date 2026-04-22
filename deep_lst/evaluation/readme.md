@@ -30,20 +30,27 @@ Metrics: `results/{experiment}/{version}/{eval}/metrics_*.nc`
 | `bias_maps` | bench | Spatial bias maps: model + all baselines |
 | `improvement_map` | bench | RMSE improvement: multi-panel figure, one panel per baseline |
 
-**Baseline names:** `era5`  `clim_hourly`  `clim_smooth`
+**Baseline names:** `era5`  `clim_hourly`  `clim_smooth`  `persistence`
 
 ---
 
 ## Step 1 — Inference
 
-```bash
-# Default horizon (3 h), 3 test periods, all experiments × all eval regions
-sbatch scripts/inference/run_inference_big.sh \
-    experiment=mlp_rollout_XL_KG_mse_h3_v1 version=version_0 \
-    eval=train_KG_XL_fullyear best=true inference_horizon=72
-```
+`inference_horizon` is **required** — omitting it raises a Hydra error. Set it to
+the trained model horizon (e.g. `6`) to reproduce training-length forecasts, or
+higher to extend the rollout.
 
 Wall time: ~2 h (24 h horizon), ~6 h (72 h), ~10 h (120 h).
+
+```bash
+sbatch scripts/inference/run_inference_big.sh \
+    experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
+    eval=dahra best=true inference_horizon=72
+
+sbatch scripts/inference/run_inference_big.sh \
+    experiment=mlp_rollout_L_KG_mse_lb6_bptt_v3 version=version_0 \
+    eval=train_KG_L_fullyear best=true inference_horizon=72
+```
 
 Run multiple inference jobs on the big node:
 
@@ -53,7 +60,19 @@ for exp in mlp_rollout_XL_KG_mse_h3_v1 mlp_rollout_XL_KG_crps_h3_v1 mlp_rollout_
         experiment=${exp} \
         version=version_0 \
         eval=fulltestyear \
-        best=true
+        best=true \
+        inference_horizon=6
+done
+```
+
+```bash
+for ev in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa yangambi bouamir; do
+    sbatch scripts/inference/run_inference_big.sh \
+        experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 \
+        version=version_0 \
+        eval=${ev} \
+        best=true \
+        inference_horizon=200
 done
 ```
 
@@ -64,7 +83,7 @@ done
 
 ### ERA5
 
-Single SLURM array job — all 7 eval regions in parallel:
+Single SLURM array job — all 7 point-site eval regions in parallel:
 
 ```bash
 sbatch scripts/benchmarks/extract_era5_baseline.sh
@@ -72,7 +91,22 @@ sbatch scripts/benchmarks/extract_era5_baseline.sh
 
 Output: `assets/era5/baselines/baseline_{eval}.nc`
 
+**Training-site eval regions** (e.g. `train_KG_L_fullyear`, `train_KG_L`) do not have
+dedicated eval zarr stores. Pass `--store_spatial` and `--index_name` to reuse the
+training-region stores:
+
+```bash
+uv run scripts/benchmarks/extract_era5_baseline.py \
+    --eval train_KG_L_fullyear \
+    --store_spatial KG_L \
+    --index_name KG_L \
+    --test_year 2024 \
+    --overwrite
+```
+
 ### SEVIRI climatology
+
+Point-site eval regions:
 
 ```bash
 for EVAL in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa; do
@@ -80,8 +114,43 @@ for EVAL in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_af
 done
 ```
 
+Training-site eval regions — pass `--store_spatial` to use the training-region store:
+
+```bash
+uv run scripts/benchmarks/extract_seviri_climatology.py \
+    --eval train_KG_L_fullyear \
+    --store_spatial KG_L \
+    --test_year 2024 \
+    --window_days 7 \
+    --overwrite
+```
+
 Output: `assets/climatology/hourly/climatology_{eval}.nc`
         `assets/climatology/smoothed_hourly/climatology_{eval}.nc`
+
+### SEVIRI persistence
+
+Point-site eval regions:
+
+```bash
+for EVAL in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa; do
+    uv run scripts/benchmarks/extract_seviri_persistence.py \
+        --eval ${EVAL} \
+        --test_year 2024
+done
+```
+
+Training-site eval regions — pass `--store_spatial` to use the training-region store:
+
+```bash
+uv run scripts/benchmarks/extract_seviri_persistence.py \
+    --eval train_KG_L_fullyear \
+    --store_spatial KG_L \
+    --test_year 2024 \
+    --overwrite
+```
+
+Output: `assets/seviri/baselines/persistence_{eval}.nc`
 
 ### Baseline fingerprint check
 
@@ -99,6 +168,47 @@ Output: `results/baselines/{eval}/fingerprint.png`
 
 Run after Step 2. Always generates all plots. Benchmark plots are skipped
 automatically when no baselines are loaded.
+
+### Training-site eval (post-inference, with baselines)
+
+After running inference with `eval=train_KG_L_fullyear` and creating baselines
+(Step 2), evaluate over the first 3 days of init times (72 h horizon):
+
+```bash
+uv run scripts/evaluation/run_evaluation.py \
+    --experiment mlp_rollout_L_KG_crps_lb6_bptt_v3 \
+    --version version_0 \
+    --eval train_KG_L_fullyear \
+    --lead_time 6h \
+    --baselines era5 clim_hourly clim_smooth \
+    --temporal test \
+    --overwrite
+```
+
+Or via SLURM:
+
+```bash
+sbatch scripts/evaluation/run_evaluation.sh \
+    --experiment mlp_rollout_L_KG_crps_lb6_bptt_v3 \
+    --version version_0 \
+    --eval dahra \
+    --lead_time 12h \
+    --baselines era5 clim_hourly clim_smooth persistence \
+    --temporal test \
+    --overwrite
+```
+
+Just the error-growth plot for a specific site and time period:
+
+```bash
+uv run scripts/evaluation/run_evaluation.py \
+    --experiment mlp_rollout_L_KG_crps_lb6_bptt_v3 \
+    --version version_0 \
+    --eval train_KG_L_fullyear \
+    --baselines era5 clim_hourly clim_smooth \
+    --temporal test \
+    --plots error_growth error_growth_daily
+```
 
 ### All experiments × all eval regions
 

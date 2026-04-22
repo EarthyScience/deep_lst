@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 import xarray as xr
+import zarr
 from tensordict import TensorDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -73,30 +74,31 @@ class ForecastResult:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         ds = self.to_xarray()
-        encoding = {v: {"zlib": True, "complevel": 4, "dtype": "float32"} for v in ds.data_vars}
-        ds.to_netcdf(path, encoding=encoding)
+        first_var = next(iter(ds.data_vars))
+        shape = ds[first_var].shape
+        if self.sparse:
+            enc = {v: {"chunks": (min(shape[0], 1000), shape[1], shape[2])} for v in ds.data_vars}
+        else:
+            enc = {v: {"chunks": (1, shape[1], min(shape[2], 256), min(shape[3], 256))} for v in ds.data_vars}
+        for c in ds.coords:
+            enc[c] = {"chunks": (ds[c].shape[0],)}
+        ds.to_zarr(path, encoding=enc, mode="w")
         print(f"Saved forecast results to {path}")
 
     @classmethod
     def load(cls, path: Path) -> "ForecastResult":
-        ds = xr.open_dataset(path)
+        ds = xr.open_zarr(path)
         pred_vars = [v.replace("_pred", "") for v in ds.data_vars if v.endswith("_pred")]
         predictions = {var: ds[f"{var}_pred"].values for var in pred_vars}
         observations = {var: ds[f"{var}_obs"].values for var in pred_vars}
         sparse = "pixel" in ds.dims
-        if sparse:
-            lats = ds["lat"].values
-            lons = ds["lon"].values
-        else:
-            lats = ds["lat"].values
-            lons = ds["lon"].values
         return cls(
             predictions=predictions,
             observations=observations,
             init_times=pd.DatetimeIndex(ds["init_time"].values),
             lead_times=pd.TimedeltaIndex(ds["lead_time"].values),
-            lats=lats,
-            lons=lons,
+            lats=ds["lat"].values,
+            lons=ds["lon"].values,
             sparse=sparse,
         )
 
@@ -239,6 +241,165 @@ class Forecast:
             lons=pixel_lons,
             sparse=self.sparse,
         )
+
+    def predict_and_save(self, path: Path, time_idx: np.ndarray) -> None:
+        """Run inference and write directly to zarr without holding the full grid in memory.
+
+        For dense output (large bounding-box grids) this streams one time step at a time
+        into the zarr store, keeping peak memory at O(horizon × H × W) rather than
+        O(n_time × horizon × H × W).  Sparse output is small enough to build in memory
+        and delegate to ForecastResult.save().
+        """
+        predict_dispatch = {
+            "DiagnosticMSE": self._predict_diagnostic,
+            "DiagnosticCRPS": self._predict_diagnostic,
+            "RolloutMSE": self._predict_rollout,
+            "RolloutCRPS": self._predict_rollout,
+        }
+        predict_fn = predict_dispatch.get(self.prediction_mode)
+        if predict_fn is None:
+            raise ValueError(f"Unknown prediction_mode: {self.prediction_mode}. Known: {list(predict_dispatch)}")
+
+        preds_flat, obs_flat = predict_fn(
+            self.model,
+            self.device,
+            self.loader,
+            self.td_keys,
+            normaliser=self.normaliser,
+            **self.config["seviri"],
+        )
+
+        if self.apply_consistent_mask and self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
+            preds_flat, obs_flat = self._apply_consistent_mask(preds_flat, obs_flat)
+
+        first_var = list(preds_flat.keys())[0]
+        time_horizon = preds_flat[first_var].shape[1]
+        n_spatial = len(self.unique_spatial_idx)
+        unique_time_idx = np.unique(time_idx)[: preds_flat[first_var].shape[0] // n_spatial]
+
+        is_rollout = self.prediction_mode in ("RolloutMSE", "RolloutCRPS")
+        t_out = time_horizon + 1 if is_rollout else time_horizon
+        init_times = TIME_INDEX_ORIGIN + pd.to_timedelta(unique_time_idx.astype(np.int64), unit="h")
+        lead_times = pd.timedelta_range(start="0h", periods=t_out, freq="h")
+        pixel_lats, pixel_lons = self._pixel_coords()
+
+        if self.sparse:
+            predictions, observations = self._remap(preds_flat, obs_flat, n_spatial, len(unique_time_idx), time_horizon)
+            if is_rollout:
+                predictions, observations, _ = self._prepend_nan_lead(
+                    predictions, observations, n_spatial, len(unique_time_idx), time_horizon
+                )
+            ForecastResult(
+                predictions=predictions,
+                observations=observations,
+                init_times=init_times,
+                lead_times=lead_times,
+                lats=pixel_lats,
+                lons=pixel_lons,
+                sparse=True,
+            ).save(path)
+        else:
+            self._stream_dense_to_zarr(
+                path=path,
+                preds_flat=preds_flat,
+                obs_flat=obs_flat,
+                n_spatial=n_spatial,
+                n_time=len(unique_time_idx),
+                time_horizon=time_horizon,
+                local_rows=self.local_rows,
+                local_cols=self.local_cols,
+                grid_shape=self.grid_shape,
+                init_times=init_times,
+                lead_times=lead_times,
+                lats=pixel_lats,
+                lons=pixel_lons,
+                prepend_nan=is_rollout,
+            )
+        print(f"Done. Saved to {path}")
+
+    @staticmethod
+    def _stream_dense_to_zarr(
+        path,
+        preds_flat,
+        obs_flat,
+        n_spatial,
+        n_time,
+        time_horizon,
+        local_rows,
+        local_cols,
+        grid_shape,
+        init_times,
+        lead_times,
+        lats,
+        lons,
+        prepend_nan,
+    ):
+        """Write dense (n_time, t, H, W) predictions to zarr one time step at a time."""
+        H, W = grid_shape
+        t_out = time_horizon + 1 if prepend_nan else time_horizon
+        lead_offset = 1 if prepend_nan else 0
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build coordinate dataset and write to zarr to handle CF encoding of
+        # datetime/timedelta automatically, using a 1-element dummy variable.
+        coord_ds = xr.Dataset(
+            {"_dummy": (("init_time", "lead_time", "lat", "lon"), np.empty((n_time, t_out, H, W), dtype="float32"))},
+            coords={
+                "init_time": init_times,
+                "lead_time": lead_times,
+                "lat": lats,
+                "lon": lons,
+            },
+        )
+        chunk_h, chunk_w = min(int(H), 256), min(int(W), 256)
+        enc = {
+            "_dummy": {"chunks": (1, t_out, chunk_h, chunk_w)},
+            **{c: {"chunks": (int(coord_ds[c].shape[0]),)} for c in coord_ds.coords},
+        }
+        coord_ds.to_zarr(path, encoding=enc, mode="w")
+
+        # Pre-allocate full data arrays in the zarr store (filled with NaN on disk).
+        store = zarr.open_group(str(path), mode="r+")
+        chunk_shape = (1, t_out, chunk_h, chunk_w)
+        dim_names = ["init_time", "lead_time", "lat", "lon"]
+        zarr_arrays = {}
+        for var in preds_flat:
+            pa = store.require_array(
+                f"{var}_pred",
+                shape=(n_time, t_out, H, W),
+                dtype="float32",
+                chunks=chunk_shape,
+                fill_value=float("nan"),
+                dimension_names=dim_names,
+            )
+            oa = store.require_array(
+                f"{var}_obs",
+                shape=(n_time, t_out, H, W),
+                dtype="float32",
+                chunks=chunk_shape,
+                fill_value=float("nan"),
+                dimension_names=dim_names,
+            )
+            zarr_arrays[var] = (pa, oa)
+
+        # Reshape flat predictions to sparse (n_spatial, n_time, horizon) — cheap view.
+        p_sparse = {var: preds_flat[var].reshape(n_spatial, n_time, time_horizon) for var in preds_flat}
+        o_sparse = {var: obs_flat[var].reshape(n_spatial, n_time, time_horizon) for var in obs_flat}
+
+        dense_p = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
+        dense_o = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
+        for ti in range(n_time):
+            for var, (pa, oa) in zarr_arrays.items():
+                dense_p[:] = np.nan
+                dense_p[0, lead_offset:, local_rows, local_cols] = p_sparse[var][:, ti, :]
+                pa[ti : ti + 1] = dense_p
+                dense_o[:] = np.nan
+                dense_o[0, lead_offset:, local_rows, local_cols] = o_sparse[var][:, ti, :]
+                oa[ti : ti + 1] = dense_o
+
+        zarr.consolidate_metadata(str(path))
 
     def _remap(self, preds_flat, obs_flat, n_spatial, n_time, time_horizon):
         predictions = {}

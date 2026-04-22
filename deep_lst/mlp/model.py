@@ -109,7 +109,7 @@ class LitModelModule(LightningModule):
             self.parameters(),
             lr=self.learning_rate,
             eps=1e-8,
-            weight_decay=1e-4,
+            weight_decay=self.config["model"].get("weight_decay", 1e-4),
         )
         t0 = self.config["model"].get("scheduler_T0", 80000)
         warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=20000)  # ~5 epochs

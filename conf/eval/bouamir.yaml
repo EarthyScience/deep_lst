@@ -1,0 +1,7 @@
+# @package _global_
+eval_name: bouamir
+spatial_indices: eval_bouamir
+
+test_dataset:
+  spatial: eval_bouamir
+  temporal: test

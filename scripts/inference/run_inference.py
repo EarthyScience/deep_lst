@@ -64,16 +64,13 @@ def run_inference(cfg: DictConfig) -> None:
     print(f"Experiment : {cfg.experiment} / {cfg.version}")
     print(f"Eval       : {eval_name}  (indices: {cfg.spatial_indices})")
 
-    # --- Optional inference overrides ---
-    if cfg.inference_horizon is not None:
-        trained_horizon = config["test_dataset"]["era5"]["horizon"]
-        if cfg.inference_horizon < trained_horizon:
-            raise ValueError(
-                f"inference_horizon ({cfg.inference_horizon}) must be >= trained horizon ({trained_horizon})."
-            )
-        config = copy.deepcopy(config)
-        for mod in config["modality_ids"]:
-            config["test_dataset"][mod]["horizon"] = cfg.inference_horizon
+    # --- Apply inference_horizon override ---
+    trained_horizon = config["test_dataset"]["era5"]["horizon"]
+    if cfg.inference_horizon < trained_horizon:
+        raise ValueError(f"inference_horizon ({cfg.inference_horizon}) must be >= trained horizon ({trained_horizon}).")
+    config = copy.deepcopy(config)
+    for mod in config["modality_ids"]:
+        config["test_dataset"][mod]["horizon"] = cfg.inference_horizon
 
     td_keys = get_keys_from_config(config["test_dataset"])
 
@@ -130,13 +127,10 @@ def run_inference(cfg: DictConfig) -> None:
         prediction_mode=config["model"]["step_loss"],
         apply_consistent_mask=not cfg.no_consistent_mask,
     )
-    result = forecast.predict_with_time_index(time_idx)
-
     # --- Save ---
     suffix = f"_chunk{cfg.chunk_id}" if cfg.chunk_id else ""
     output_path = paths.forecast_path(cfg.experiment, cfg.version, eval_name, suffix=suffix)
-    result.save(output_path)
-    print(f"Done. Saved to {output_path}")
+    forecast.predict_and_save(output_path, time_idx)
 
 
 if __name__ == "__main__":
