@@ -5,7 +5,5 @@ spatial_indices: eval_dahra
 test_dataset:
   spatial: eval_dahra
   temporal:
-    - test_period_00
     - test_period_06
-    - test_period_12
     - test_period_18

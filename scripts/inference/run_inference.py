@@ -27,11 +27,9 @@ uv run scripts/inference/run_inference.py \\
 Available eval groups: see conf/eval/
 """
 
-import copy
-
 import hydra
 import numpy as np
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Subset
 
 from deep_lst.dataset.collator import Collator
@@ -40,62 +38,26 @@ from deep_lst.evaluation.inference import Forecast
 from deep_lst.mlp.model import load_model
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config
+from deep_lst.utils.inference import load_run_config, load_spatial_indices, load_time_indices
 
 
 @hydra.main(config_path="../../conf", config_name="infer", version_base="1.3")
 def run_inference(cfg: DictConfig) -> None:
     paths = ExperimentPaths()
 
-    # --- Load saved training config (authoritative for model/data) ---
-    saved_config_path = paths.experiment_dir(cfg.experiment) / cfg.version / "config.yml"
-    if not saved_config_path.exists():
-        raise FileNotFoundError(
-            f"Saved config not found at {saved_config_path}. "
-            "Ensure the experiment version directory contains config.yml."
-        )
-    saved = OmegaConf.load(saved_config_path)
-
-    # Merge: saved config is base, Hydra cfg provides eval overrides on top.
-    # eval group keys (test_dataset.*, analysis.*) win over saved values.
-    # Inference-only keys (experiment, version, best, ...) are added as new keys.
-    config = OmegaConf.to_container(OmegaConf.merge(saved, cfg), resolve=True)
+    config = load_run_config(cfg, paths)
+    td_keys = get_keys_from_config(config["test_dataset"])
+    spatial_indices = load_spatial_indices(paths, cfg.spatial_indices)
+    time_idx = load_time_indices(paths, config["test_dataset"])
 
     eval_name = cfg.eval_name
     print(f"Experiment : {cfg.experiment} / {cfg.version}")
     print(f"Eval       : {eval_name}  (indices: {cfg.spatial_indices})")
 
-    # --- Apply inference_horizon override ---
-    trained_horizon = config["test_dataset"]["era5"]["horizon"]
-    if cfg.inference_horizon < trained_horizon:
-        raise ValueError(f"inference_horizon ({cfg.inference_horizon}) must be >= trained horizon ({trained_horizon}).")
-    config = copy.deepcopy(config)
-    for mod in config["modality_ids"]:
-        config["test_dataset"][mod]["horizon"] = cfg.inference_horizon
-
-    td_keys = get_keys_from_config(config["test_dataset"])
-
-    # --- Load spatial indices ---
-    # spatial_indices key in eval config covers both eval regions (eval_gobabeb)
-    # and training sites (KG_S) via the model-agnostic spatial_indices_path.
-    spatial_path = paths.spatial_indices_path("seviri", cfg.spatial_indices)
-    if not spatial_path.exists():
-        raise FileNotFoundError(f"Spatial indices not found: {spatial_path}")
-    spatial_indices = np.load(spatial_path)["src_indices"]
-
     # --- Load model ---
     lit_module, device = load_model(
         config, td_keys, experiment=cfg.experiment, version=cfg.version, prefer_best=cfg.best
     )
-
-    # --- Load temporal indices ---
-    temporal = config["test_dataset"].get("temporal")
-    if temporal is None:
-        raise ValueError("No temporal period specified in eval config.")
-    periods = [temporal] if isinstance(temporal, str) else list(temporal)
-    time_idx = np.concatenate(
-        [np.load(paths.temporal_indices_path(p))["time_indices"].astype(np.int64) for p in periods]
-    )
-    time_idx = np.sort(np.unique(time_idx))
 
     # --- Distributed inference: compute chunk bounds before building dataset ---
     # n_chunks / chunk_offset can come from Hydra config or from SLURM array env vars.
@@ -174,8 +136,7 @@ def run_inference(cfg: DictConfig) -> None:
         apply_consistent_mask=not cfg.no_consistent_mask,
     )
     # --- Save ---
-    suffix = f"_chunk{cfg.chunk_id}" if cfg.chunk_id else ""
-    output_path = paths.forecast_path(cfg.experiment, cfg.version, eval_name, suffix=suffix)
+    output_path = paths.forecast_path(cfg.experiment, cfg.version, eval_name)
     forecast.predict_and_save(output_path, time_idx, time_offset=time_offset)
 
 

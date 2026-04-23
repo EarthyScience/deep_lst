@@ -36,45 +36,47 @@ Metrics: `results/{experiment}/{version}/{eval}/metrics_*.nc`
 
 ## Step 1 — Inference
 
-`inference_horizon` is **required** — omitting it raises a Hydra error. Set it to
-the trained model horizon (e.g. `6`) to reproduce training-length forecasts, or
-higher to extend the rollout.
+Inference uses a two-phase approach: a CPU setup job creates the output zarr store,
+then GPU array jobs fill it in parallel chunks.
 
-Wall time: ~2 h (24 h horizon), ~6 h (72 h), ~10 h (120 h).
+**Key parameters**
+
+| Parameter | Required | Notes |
+|---|---|---|
+| `experiment` | yes | e.g. `mlp_rollout_L_KG_mse_h3_v1` |
+| `version` | yes | e.g. `version_0` |
+| `eval` | yes | eval config name — see `conf/eval/` |
+| `inference_horizon` | yes | rollout horizon in hours; must be ≥ trained horizon |
+| `best` | no | `true` = load `best.ckpt`; default loads `last.ckpt` |
+| `--array=0-N` | yes | N+1 GPU chunks; 4 chunks is a good default |
+
+### Dense eval region (e.g. `dahra`)
 
 ```bash
-sbatch scripts/inference/run_inference_big.sh \
+SETUP=$(sbatch --parsable scripts/inference/run_inference_setup.sh \
     experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
-    eval=dahra best=true inference_horizon=72
+    eval=dahra inference_horizon=200 best=true)
 
-sbatch scripts/inference/run_inference_big.sh \
-    experiment=mlp_rollout_L_KG_mse_lb6_bptt_v3 version=version_0 \
-    eval=train_KG_L_fullyear best=true inference_horizon=72
+sbatch --dependency=afterok:${SETUP} --array=0-3 \
+    scripts/inference/run_inference_array.sh \
+    experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
+    eval=dahra inference_horizon=200 best=true
 ```
 
-Run multiple inference jobs on the big node:
+### Sparse training-site region (e.g. `train_KG_S`)
 
 ```bash
-for exp in mlp_rollout_XL_KG_mse_h3_v1 mlp_rollout_XL_KG_crps_h3_v1 mlp_rollout_XL_KGLC_mse_h3_v1 mlp_rollout_XL_KGLC_crps_h3_v1; do
-    sbatch scripts/inference/run_inference_big.sh \
-        experiment=${exp} \
-        version=version_0 \
-        eval=fulltestyear \
-        best=true \
-        inference_horizon=6
-done
+SETUP=$(sbatch --parsable scripts/inference/run_inference_setup.sh \
+    experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
+    eval=train_KG_S inference_horizon=200 best=true)
+
+sbatch --dependency=afterok:${SETUP} --array=0-3 \
+    scripts/inference/run_inference_array.sh \
+    experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
+    eval=train_KG_S inference_horizon=200 best=true
 ```
 
-```bash
-for ev in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa yangambi bouamir; do
-    sbatch scripts/inference/run_inference_big.sh \
-        experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 \
-        version=version_0 \
-        eval=${ev} \
-        best=true \
-        inference_horizon=200
-done
-```
+Output: `results/{experiment}/{version}/{eval}/forecast.zarr`
 
 
 ---

@@ -283,63 +283,53 @@ class Forecast:
         pixel_lats, pixel_lons = self._pixel_coords()
 
         if self.sparse:
-            predictions, observations = self._remap(preds_flat, obs_flat, n_spatial, n_time, time_horizon)
-            if is_rollout:
-                predictions, observations, _ = self._prepend_nan_lead(
-                    predictions, observations, n_spatial, n_time, time_horizon
-                )
-            ForecastResult(
-                predictions=predictions,
-                observations=observations,
-                init_times=init_times,
-                lead_times=lead_times,
-                lats=pixel_lats,
-                lons=pixel_lons,
-                sparse=True,
-            ).save(path)
+            spatial_shape = (len(self.unique_spatial_idx),)
         else:
             H, W = self.grid_shape
-            if time_offset is None:
-                self._create_zarr_store(
-                    path,
-                    list(preds_flat.keys()),
-                    n_time,
-                    t_out,
-                    int(H),
-                    int(W),
-                    init_times,
-                    lead_times,
-                    pixel_lats,
-                    pixel_lons,
-                )
-                self._fill_zarr_store(
-                    path,
-                    preds_flat,
-                    obs_flat,
-                    n_spatial,
-                    n_time,
-                    time_horizon,
-                    self.local_rows,
-                    self.local_cols,
-                    self.grid_shape,
-                    0,
-                    is_rollout,
-                )
-                zarr.consolidate_metadata(str(path))
-            else:
-                self._fill_zarr_store(
-                    path,
-                    preds_flat,
-                    obs_flat,
-                    n_spatial,
-                    n_time,
-                    time_horizon,
-                    self.local_rows,
-                    self.local_cols,
-                    self.grid_shape,
-                    time_offset,
-                    is_rollout,
-                )
+            spatial_shape = (int(H), int(W))
+
+        if time_offset is None:
+            self._create_zarr_store(
+                path,
+                list(preds_flat.keys()),
+                n_time,
+                t_out,
+                spatial_shape,
+                init_times,
+                lead_times,
+                pixel_lats,
+                pixel_lons,
+            )
+            self._fill_zarr_store(
+                path,
+                preds_flat,
+                obs_flat,
+                n_spatial,
+                n_time,
+                time_horizon,
+                self.local_rows,
+                self.local_cols,
+                self.grid_shape,
+                0,
+                is_rollout,
+                sparse=self.sparse,
+            )
+            zarr.consolidate_metadata(str(path))
+        else:
+            self._fill_zarr_store(
+                path,
+                preds_flat,
+                obs_flat,
+                n_spatial,
+                n_time,
+                time_horizon,
+                self.local_rows,
+                self.local_cols,
+                self.grid_shape,
+                time_offset,
+                is_rollout,
+                sparse=self.sparse,
+            )
         print(f"Done. Saved to {path}")
 
     @staticmethod
@@ -353,13 +343,13 @@ class Forecast:
     ) -> None:
         """Create empty zarr store for distributed inference. No model weights required."""
         unique_spatial_idx = np.unique(spatial_indices)
-        lats, lons, _local_rows, _local_cols, grid_shape = build_local_grid(unique_spatial_idx)
+        lats, lons, local_rows, local_cols, grid_shape = build_local_grid(unique_spatial_idx)
         H, W = int(grid_shape[0]), int(grid_shape[1])
 
         fill = len(unique_spatial_idx) / (H * W)
-        if fill < _SPARSE_FILL_THRESHOLD:
-            print(f"Sparse output mode (fill={fill:.4f}) — no zarr setup needed")
-            return
+        sparse = fill < _SPARSE_FILL_THRESHOLD
+        if sparse:
+            print(f"Sparse output mode (fill={fill:.4f})")
 
         all_vars = [key[1] for key in td_keys.get("prognostic_keys", [])]
         all_vars += [key[1] for key in td_keys.get("diagnostic_keys", [])]
@@ -372,35 +362,76 @@ class Forecast:
         init_times = TIME_INDEX_ORIGIN + pd.to_timedelta(unique_time_idx.astype(np.int64), unit="h")
         lead_times = pd.timedelta_range(start="0h", periods=t_out, freq="h")
 
-        Forecast._create_zarr_store(path, all_vars, n_time, t_out, H, W, init_times, lead_times, lats, lons)
+        if sparse:
+            pixel_lats = lats[local_rows]
+            pixel_lons = lons[local_cols]
+            spatial_shape = (len(unique_spatial_idx),)
+        else:
+            pixel_lats, pixel_lons = lats, lons
+            spatial_shape = (H, W)
+
+        Forecast._create_zarr_store(
+            path, all_vars, n_time, t_out, spatial_shape, init_times, lead_times, pixel_lats, pixel_lons
+        )
 
     @staticmethod
-    def _create_zarr_store(path, pred_vars, n_time, t_out, H, W, init_times, lead_times, lats, lons):
-        """Create empty zarr store with coordinates and NaN-filled data arrays."""
+    def _create_zarr_store(
+        path, pred_vars, n_time, t_out, spatial_shape, init_times, lead_times, pixel_lats, pixel_lons
+    ):
+        """Create empty zarr store with coordinates and NaN-filled data arrays.
+
+        spatial_shape=(H, W): dense grid output with lat/lon as 1D coordinate arrays.
+        spatial_shape=(N_pixel,): sparse output with per-pixel lat/lon stored on 'pixel' dim.
+        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        chunk_h, chunk_w = min(H, 256), min(W, 256)
+        sparse = len(spatial_shape) == 1
 
-        # Coordinate-only dataset — xarray handles CF encoding of datetime/timedelta.
-        coord_ds = xr.Dataset(
-            coords={
-                "init_time": init_times,
-                "lead_time": lead_times,
-                "lat": lats,
-                "lon": lons,
+        if sparse:
+            n_pixel = spatial_shape[0]
+            coord_ds = xr.Dataset(
+                coords={
+                    "init_time": init_times,
+                    "lead_time": lead_times,
+                    "lat": xr.DataArray(pixel_lats, dims=["pixel"]),
+                    "lon": xr.DataArray(pixel_lons, dims=["pixel"]),
+                }
+            )
+            enc = {
+                "init_time": {"chunks": (n_time,)},
+                "lead_time": {"chunks": (t_out,)},
+                "lat": {"chunks": (n_pixel,)},
+                "lon": {"chunks": (n_pixel,)},
             }
-        )
-        enc = {c: {"chunks": (int(coord_ds[c].shape[0]),)} for c in coord_ds.coords}
-        coord_ds.to_zarr(path, encoding=enc, mode="w")
+            coord_ds.to_zarr(path, encoding=enc, mode="w")
 
-        # Pre-allocate data arrays (NaN fill — data written later by _fill_zarr_store).
-        store = zarr.open_group(str(path), mode="r+")
-        chunk_shape = (1, t_out, chunk_h, chunk_w)
-        dim_names = ["init_time", "lead_time", "lat", "lon"]
+            store = zarr.open_group(str(path), mode="r+")
+            chunk_shape = (1, t_out, n_pixel)
+            dim_names = ["init_time", "lead_time", "pixel"]
+            array_shape = (n_time, t_out, n_pixel)
+        else:
+            H, W = spatial_shape
+            chunk_h, chunk_w = min(H, 256), min(W, 256)
+            coord_ds = xr.Dataset(
+                coords={
+                    "init_time": init_times,
+                    "lead_time": lead_times,
+                    "lat": pixel_lats,
+                    "lon": pixel_lons,
+                }
+            )
+            enc = {c: {"chunks": (int(coord_ds[c].shape[0]),)} for c in coord_ds.coords}
+            coord_ds.to_zarr(path, encoding=enc, mode="w")
+
+            store = zarr.open_group(str(path), mode="r+")
+            chunk_shape = (1, t_out, chunk_h, chunk_w)
+            dim_names = ["init_time", "lead_time", "lat", "lon"]
+            array_shape = (n_time, t_out, H, W)
+
         for var in pred_vars:
             store.require_array(
                 f"{var}_pred",
-                shape=(n_time, t_out, H, W),
+                shape=array_shape,
                 dtype="float32",
                 chunks=chunk_shape,
                 fill_value=float("nan"),
@@ -408,7 +439,7 @@ class Forecast:
             )
             store.require_array(
                 f"{var}_obs",
-                shape=(n_time, t_out, H, W),
+                shape=array_shape,
                 dtype="float32",
                 chunks=chunk_shape,
                 fill_value=float("nan"),
@@ -430,9 +461,9 @@ class Forecast:
         grid_shape,
         time_offset,
         prepend_nan,
+        sparse=False,
     ):
         """Write n_time steps of predictions into existing zarr store starting at time_offset."""
-        H, W = grid_shape
         lead_offset = 1 if prepend_nan else 0
 
         store = zarr.open_group(str(path), mode="r+")
@@ -440,20 +471,36 @@ class Forecast:
         t_out = store[f"{first_var}_pred"].shape[1]
         zarr_arrays = {var: (store[f"{var}_pred"], store[f"{var}_obs"]) for var in preds_flat}
 
-        p_sparse = {var: preds_flat[var].reshape(n_spatial, n_time, time_horizon) for var in preds_flat}
-        o_sparse = {var: obs_flat[var].reshape(n_spatial, n_time, time_horizon) for var in obs_flat}
+        p_by_pixel = {var: preds_flat[var].reshape(n_spatial, n_time, time_horizon) for var in preds_flat}
+        o_by_pixel = {var: obs_flat[var].reshape(n_spatial, n_time, time_horizon) for var in obs_flat}
 
-        dense_p = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
-        dense_o = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
-        for ti in range(n_time):
-            abs_ti = time_offset + ti
-            for var, (pa, oa) in zarr_arrays.items():
-                dense_p[:] = np.nan
-                dense_p[0, lead_offset:, local_rows, local_cols] = p_sparse[var][:, ti, :]
-                pa[abs_ti : abs_ti + 1] = dense_p
-                dense_o[:] = np.nan
-                dense_o[0, lead_offset:, local_rows, local_cols] = o_sparse[var][:, ti, :]
-                oa[abs_ti : abs_ti + 1] = dense_o
+        if sparse:
+            # Shape: (n_time, t_out, N_pixel) — write per-pixel data directly, no scatter.
+            buf_p = np.full((1, t_out, n_spatial), np.nan, dtype=np.float32)
+            buf_o = np.full((1, t_out, n_spatial), np.nan, dtype=np.float32)
+            for ti in range(n_time):
+                abs_ti = time_offset + ti
+                for var, (pa, oa) in zarr_arrays.items():
+                    buf_p[:] = np.nan
+                    # p_by_pixel[:, ti, :] is (N_pixel, T); transpose to (T, N_pixel) for lead/pixel dims
+                    buf_p[0, lead_offset:, :] = p_by_pixel[var][:, ti, :].T
+                    pa[abs_ti : abs_ti + 1] = buf_p
+                    buf_o[:] = np.nan
+                    buf_o[0, lead_offset:, :] = o_by_pixel[var][:, ti, :].T
+                    oa[abs_ti : abs_ti + 1] = buf_o
+        else:
+            H, W = grid_shape
+            dense_p = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
+            dense_o = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
+            for ti in range(n_time):
+                abs_ti = time_offset + ti
+                for var, (pa, oa) in zarr_arrays.items():
+                    dense_p[:] = np.nan
+                    dense_p[0, lead_offset:, local_rows, local_cols] = p_by_pixel[var][:, ti, :]
+                    pa[abs_ti : abs_ti + 1] = dense_p
+                    dense_o[:] = np.nan
+                    dense_o[0, lead_offset:, local_rows, local_cols] = o_by_pixel[var][:, ti, :]
+                    oa[abs_ti : abs_ti + 1] = dense_o
 
     def _remap(self, preds_flat, obs_flat, n_spatial, n_time, time_horizon):
         predictions = {}

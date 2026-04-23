@@ -10,52 +10,23 @@ uv run scripts/inference/run_inference_setup.py \\
     inference_horizon=200
 """
 
-import copy
-
 import hydra
-import numpy as np
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from deep_lst.evaluation.inference import Forecast
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config
+from deep_lst.utils.inference import load_run_config, load_spatial_indices, load_time_indices
 
 
 @hydra.main(config_path="../../conf", config_name="infer", version_base="1.3")
 def run_inference_setup(cfg: DictConfig) -> None:
     paths = ExperimentPaths()
 
-    saved_config_path = paths.experiment_dir(cfg.experiment) / cfg.version / "config.yml"
-    if not saved_config_path.exists():
-        raise FileNotFoundError(
-            f"Saved config not found at {saved_config_path}. "
-            "Ensure the experiment version directory contains config.yml."
-        )
-    saved = OmegaConf.load(saved_config_path)
-    config = OmegaConf.to_container(OmegaConf.merge(saved, cfg), resolve=True)
-
-    trained_horizon = config["test_dataset"]["era5"]["horizon"]
-    if cfg.inference_horizon < trained_horizon:
-        raise ValueError(f"inference_horizon ({cfg.inference_horizon}) must be >= trained horizon ({trained_horizon}).")
-    config = copy.deepcopy(config)
-    for mod in config["modality_ids"]:
-        config["test_dataset"][mod]["horizon"] = cfg.inference_horizon
-
+    config = load_run_config(cfg, paths)
     td_keys = get_keys_from_config(config["test_dataset"])
-
-    spatial_path = paths.spatial_indices_path("seviri", cfg.spatial_indices)
-    if not spatial_path.exists():
-        raise FileNotFoundError(f"Spatial indices not found: {spatial_path}")
-    spatial_indices = np.load(spatial_path)["src_indices"]
-
-    temporal = config["test_dataset"].get("temporal")
-    if temporal is None:
-        raise ValueError("No temporal period specified in eval config.")
-    periods = [temporal] if isinstance(temporal, str) else list(temporal)
-    time_idx = np.concatenate(
-        [np.load(paths.temporal_indices_path(p))["time_indices"].astype(np.int64) for p in periods]
-    )
-    time_idx = np.sort(np.unique(time_idx))
+    spatial_indices = load_spatial_indices(paths, cfg.spatial_indices)
+    time_idx = load_time_indices(paths, config["test_dataset"])
 
     output_path = paths.forecast_path(cfg.experiment, cfg.version, cfg.eval_name)
 
