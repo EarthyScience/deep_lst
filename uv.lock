@@ -1018,11 +1018,14 @@ requires-dist = [
     { name = "tensordict" },
     { name = "tifffile", extras = ["all"] },
     { name = "torch", specifier = "~=2.6" },
+    { name = "torch", marker = "extra == 'cpu'", specifier = "~=2.6", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "eodata", extra = "cpu" } },
+    { name = "torch", marker = "extra == 'cu128'", specifier = "~=2.6", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "eodata", extra = "cu128" } },
     { name = "torchmetrics", specifier = "~=1.7" },
     { name = "tqdm" },
     { name = "xarray", specifier = ">=2025.1" },
     { name = "zarr", specifier = ">=3.1" },
 ]
+provides-extras = ["cpu", "cu128"]
 
 [package.metadata.requires-dev]
 dev = [

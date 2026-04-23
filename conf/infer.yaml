@@ -14,7 +14,9 @@ spatial_indices: ???
 best: false               # load best.ckpt instead of last.ckpt
 no_consistent_mask: false
 inference_horizon: ???    # required: rollout horizon in hours (e.g. 72). Use trained horizon value to reproduce training-length forecasts.
-chunk_id: null            # for parallel chunked inference
+chunk_id: null            # for parallel chunked inference (separate output files)
+n_chunks: null            # distributed inference: total number of GPU array jobs
+chunk_offset: null        # distributed inference: 0-indexed chunk for this job (set via SLURM_ARRAY_TASK_ID)
 
 test_dataset:
   era5:
