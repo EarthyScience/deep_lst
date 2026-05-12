@@ -10,11 +10,10 @@ scripts/**/*.sh
 
 experiments/
 notebooks/
-plots/
+
 configs/
 
 deep_lst/raw
-deep_lst/exploration
 
 seed.md
 run_inference.log

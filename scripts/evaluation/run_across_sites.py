@@ -36,11 +36,10 @@ Available --baseline names match the BASELINE_REGISTRY in run_evaluation.py:
 import argparse
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from deep_lst.evaluation.plots._colors import CASE_COLORS, DEFAULT_COLOR
+from deep_lst.evaluation.plots.across_sites import cross_site_acc_boxplot, cross_site_rmse_boxplot
 from deep_lst.utils import ExperimentPaths
 
 PATHS = ExperimentPaths()
@@ -50,17 +49,40 @@ _BASELINE_DISPLAY: dict[str, str] = {
     "era5": "ERA5",
     "clim_hourly": "hourly clim",
     "clim_smooth": "smoothed clim",
+    "persistence": "persistence",
 }
 
 _ALL_EVALS = [
     "dahra",
     "antananarivo",
+    "bouamir",
     "gobabeb",
     "johannesburg",
     "east_africa",
     "sahel_niger",
     "w_africa",
+    "yangambi",
 ]
+
+_REGION_DISPLAY: dict[str, str] = {
+    "dahra": "Dahra",
+    "antananarivo": "Antananarivo",
+    "bouamir": "Bouamir",
+    "gobabeb": "Gobabeb",
+    "johannesburg": "Johannesburg",
+    "east_africa": "Passage",
+    "sahel_niger": "Sahel",
+    "w_africa": "West Africa",
+    "yangambi": "Yangambi",
+}
+
+# Maps file-based display label (from _BASELINE_DISPLAY) → plot legend label.
+_BASELINE_PLOT_LABEL: dict[str, str] = {
+    "ERA5": "ERA5",
+    "hourly clim": "Climatology",
+    "smoothed clim": "Climatology (smooth)",
+    "persistence": "Persistence",
+}
 
 _PLOT_RC = {
     "font.size": 13,
@@ -79,7 +101,7 @@ _PLOT_RC = {
 
 def _detect_case_label(experiment: str) -> str:
     if "rollout" in experiment.lower():
-        return "MLP-Rollout"
+        return "Deep LST"
     if "diag" in experiment.lower():
         return "MLP-Diag"
     return experiment
@@ -98,111 +120,16 @@ def _load_region_time(results_dir: Path, suffix: str = "") -> np.ndarray | None:
     return vals[np.isfinite(vals)]
 
 
-# ---------------------------------------------------------------------------
-# Plot
-# ---------------------------------------------------------------------------
-
-
-def cross_site_rmse_boxplot(
-    model_vals_by_region: dict[str, np.ndarray],
-    baselines_vals_by_region: dict[str, dict[str, np.ndarray]],
-    model_label: str,
-    metric: str = "rmse",
-    save_path: Path = None,
-    title: str = None,
-) -> plt.Figure:
-    """Paired boxplots: one group per eval region, boxes for model + baselines.
-
-    Parameters
-    ----------
-    model_vals_by_region : dict[str, np.ndarray]
-        ``{eval_region: rmse_values}`` — per-timestep RMSE for the model.
-    baselines_vals_by_region : dict[str, dict[str, np.ndarray]]
-        ``{baseline_label: {eval_region: rmse_values}}``.
-    model_label : str
-        Display label for the model (colour from CASE_COLORS).
-    """
-    plt.rcParams.update(_PLOT_RC)
-
-    regions = list(model_vals_by_region.keys())
-    baseline_labels = list(baselines_vals_by_region.keys())
-    n_boxes = 1 + len(baseline_labels)  # model + each baseline
-    box_width = 0.18
-    group_spacing = n_boxes * box_width + 0.5  # tight packing + small gap
-    offsets = np.linspace(-(n_boxes - 1) / 2, (n_boxes - 1) / 2, n_boxes) * (box_width + 0.04)
-
-    fig, ax = plt.subplots(figsize=(max(6, len(regions) * group_spacing * 1.5 - 4.5), 5))
-
-    _bp_kw = dict(
-        widths=box_width,
-        patch_artist=True,
-        medianprops=dict(color="black", linewidth=1.5),
-        manage_ticks=False,
-    )
-
-    legend_handles = []
-
-    for g_idx, region in enumerate(regions):
-        x_center = g_idx * group_spacing
-
-        # Model box
-        model_vals = model_vals_by_region.get(region)
-        if model_vals is not None and len(model_vals) > 0:
-            x_pos = x_center + offsets[0]
-            color = CASE_COLORS.get(model_label, DEFAULT_COLOR)
-            bp = ax.boxplot(
-                model_vals,
-                positions=[x_pos],
-                boxprops=dict(facecolor=color, alpha=0.65),
-                whiskerprops=dict(color=color, linewidth=1.2),
-                capprops=dict(color=color, linewidth=1.2),
-                flierprops=dict(marker=".", color=color, alpha=0.3, markersize=3),
-                **_bp_kw,
-            )
-            if g_idx == 0:
-                bp["boxes"][0].set_label(model_label)
-                legend_handles.append(bp["boxes"][0])
-
-        # Baseline boxes
-        for b_idx, bl_label in enumerate(baseline_labels):
-            bl_vals = baselines_vals_by_region[bl_label].get(region)
-            if bl_vals is None or len(bl_vals) == 0:
-                continue
-            x_pos = x_center + offsets[1 + b_idx]
-            color = CASE_COLORS.get(bl_label, DEFAULT_COLOR)
-            bp = ax.boxplot(
-                bl_vals,
-                positions=[x_pos],
-                boxprops=dict(facecolor=color, alpha=0.65),
-                whiskerprops=dict(color=color, linewidth=1.2),
-                capprops=dict(color=color, linewidth=1.2),
-                flierprops=dict(marker=".", color=color, alpha=0.3, markersize=3),
-                **_bp_kw,
-            )
-            if g_idx == 0:
-                bp["boxes"][0].set_label(bl_label)
-                legend_handles.append(bp["boxes"][0])
-
-    ax.set_xticks([g * group_spacing for g in range(len(regions))])
-    ax.set_xticklabels(regions, rotation=20, ha="right")
-    ax.set_ylabel(f"{metric.upper()} (K)")
-    ax.legend(handles=legend_handles, loc="upper right", framealpha=0.9)
-    ax.grid(axis="y", alpha=0.3)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    bl_str = " + ".join(baseline_labels) if baseline_labels else "no baseline"
-    ax.set_title(title or f"{model_label}  —  {metric.upper()} across sites  (vs {bl_str})")
-
-    plt.tight_layout()
-
-    if save_path is not None:
-        save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Saved: {save_path}")
-
-    return fig
+def _load_region_space_acc(results_dir: Path) -> np.ndarray | None:
+    """Load flattened per-pixel ACC array from metrics_region_space_acc.nc."""
+    path = results_dir / "metrics_region_space_acc.nc"
+    if not path.exists():
+        return None
+    ds = xr.open_dataset(path)
+    if "correlation" not in ds:
+        return None
+    vals = ds["correlation"].values.ravel()
+    return vals[np.isfinite(vals)]
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +159,13 @@ def parse_args():
     )
     p.add_argument("--metric", default="rmse", help="Metric to plot (default: rmse)")
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--violin", action="store_true", help="Use violin plots instead of boxplots")
     return p.parse_args()
 
 
 def run_across_sites():
     args = parse_args()
-    case_label = _detect_case_label(args.experiment)
+    case_label = "Deep LST"
 
     out_dir = PATHS.results_dir(args.experiment, args.version, "across_sites")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -255,6 +183,8 @@ def run_across_sites():
         _BASELINE_DISPLAY[b]: {} for b in args.baseline if b in _BASELINE_DISPLAY
     }
 
+    acc_vals: dict[str, np.ndarray] = {}
+
     for eval_region in args.evals:
         results_dir = PATHS.results_dir(args.experiment, args.version, eval_region)
 
@@ -264,6 +194,11 @@ def run_across_sites():
             continue
         model_vals[eval_region] = vals
         print(f"  [ok]   {eval_region}: {len(vals)} model timesteps")
+
+        acc = _load_region_space_acc(results_dir)
+        if acc is not None:
+            acc_vals[eval_region] = acc
+            print(f"  [ok]   {eval_region}: {len(acc)} ACC pixels")
 
         for b_key in args.baseline:
             bl_display = _BASELINE_DISPLAY.get(b_key)
@@ -281,22 +216,50 @@ def run_across_sites():
         print("No model metrics found. Exiting.")
         return
 
+    # Apply display name mappings before plotting
+    model_vals = {_REGION_DISPLAY.get(r, r): v for r, v in model_vals.items()}
+    acc_vals = {_REGION_DISPLAY.get(r, r): v for r, v in acc_vals.items()}
+    baselines_vals = {
+        _BASELINE_PLOT_LABEL.get(bl, bl): {_REGION_DISPLAY.get(r, r): v for r, v in region_vals.items()}
+        for bl, region_vals in baselines_vals.items()
+    }
+
     # -------------------------------------------------------------------------
-    # Plot
+    # RMSE boxplot
     # -------------------------------------------------------------------------
     bl_str = "_".join(_BASELINE_DISPLAY.get(b, b) for b in args.baseline)
-    save_path = out_dir / f"cross_site_{args.metric}_lt{args.lead_time}_vs_{bl_str}.png"
+    rmse_path = out_dir / f"cross_site_{args.metric}_lt{args.lead_time}_vs_{bl_str}.pdf"
 
-    if save_path.exists() and not args.overwrite:
-        print(f"Plot exists (--overwrite to regenerate): {save_path}")
+    if rmse_path.exists() and not args.overwrite:
+        print(f"Plot exists (--overwrite to regenerate): {rmse_path}")
     else:
         cross_site_rmse_boxplot(
             model_vals_by_region=model_vals,
             baselines_vals_by_region=baselines_vals,
             model_label=case_label,
             metric=args.metric,
-            save_path=save_path,
+            save_path=rmse_path,
             title=f"{case_label}  —  {args.metric.upper()} across sites  (lt={args.lead_time})",
+            violin=args.violin,
+        )
+
+    # -------------------------------------------------------------------------
+    # ACC boxplot (requires metrics_region_space_acc.nc — run_evaluation.py with
+    # --baselines clim_hourly must have been run first)
+    # -------------------------------------------------------------------------
+    if acc_vals:
+        acc_path = out_dir / f"cross_site_acc_lt{args.lead_time}.pdf"
+        if acc_path.exists() and not args.overwrite:
+            print(f"Plot exists (--overwrite to regenerate): {acc_path}")
+        else:
+            cross_site_acc_boxplot(
+                acc_vals_by_region=acc_vals,
+                save_path=acc_path,
+                violin=args.violin,
+            )
+    else:
+        print(
+            "  [skip] ACC plot: no metrics_region_space_acc.nc found — run run_evaluation.py with --baselines clim_hourly"
         )
 
     print("\nDone.")

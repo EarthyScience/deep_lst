@@ -1,31 +1,26 @@
-"""Run model inference for a trained experiment on an evaluation site.
+"""Run model inference for a trained experiment (or just create the zarr store).
 
-The saved config.yml from the training run is the authoritative source for model
-architecture, features, and normalisation. The Hydra eval group adds the
-inference-specific settings (spatial indices, temporal period, batch size) on top.
+When setup_only=true, creates the output zarr store without loading model weights;
+intended for CPU-only submission before the GPU array job.
+When setup_only=false (default), runs GPU inference for this job's time chunk.
 
 Usage
 -----
-# Single eval site
-uv run scripts/inference/run_inference.py \\
-    experiment=mlp_rollout_L_KG_mse_h3_v1 version=version_0 eval=gobabeb
+# Create zarr store only (CPU, no model weights)
+uv run scripts/inference/run_inference.py setup_only=true \\
+    experiment=mlp_rollout_L_KG_mse_h3_v1 version=version_0 eval=gobabeb \\
+    inference_horizon=200
 
-# All eval sites via Hydra multirun
-uv run scripts/inference/run_inference.py -m \\
-    experiment=mlp_rollout_L_KG_mse_h3_v1 version=version_0 \\
-    eval=antananarivo,dahra,east_africa,gobabeb,johannesburg,sahel_niger,w_africa
-
-# Training-site inference
-uv run scripts/inference/run_inference.py \\
-    experiment=mlp_rollout_S_KG_mse_h3_v1 version=version_0 eval=train_KG_S
-
-# Extend rollout horizon beyond training horizon
+# Run inference (GPU, reads store created above)
 uv run scripts/inference/run_inference.py \\
     experiment=mlp_rollout_L_KG_mse_h3_v1 version=version_0 eval=gobabeb \\
-    inference_horizon=12
+    inference_horizon=200
 
-Available eval groups: see conf/eval/
+# One-command submission via the launcher (recommended):
+#   scripts/inference/run_inference.sh --array=0-3 experiment=... version=... eval=... inference_horizon=200
 """
+
+import os
 
 import hydra
 import numpy as np
@@ -63,7 +58,6 @@ def run_inference(cfg: DictConfig) -> None:
     # n_chunks / chunk_offset can come from Hydra config or from SLURM array env vars.
     # --array=0-N sets SLURM_ARRAY_TASK_COUNT=N+1 and SLURM_ARRAY_TASK_ID per task,
     # so the only submission knob needed is --array=0-N (no n_chunks arg required).
-    import os
 
     n_chunks = (
         cfg.n_chunks

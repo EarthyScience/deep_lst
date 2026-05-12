@@ -26,7 +26,7 @@ Usage
 python scripts/benchmarks/extract_era5_baseline.py --eval dahra
 python scripts/benchmarks/extract_era5_baseline.py --eval dahra --test_year 2024
 
-sbatch scripts/benchmarks/extract_era5_baseline.sh
+sbatch scripts/benchmarks/extract_era5_baseline.sh --eval dahra --test_year 2024
 """
 
 import argparse

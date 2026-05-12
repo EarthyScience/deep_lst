@@ -6,14 +6,13 @@ no --baselines are provided.
 Two tiers of plots
 ------------------
 Fast eval  — self-contained per experiment, per selected lead time:
-    timeseries, diurnal_mean,
-    forecast_gif, fingerprint,
+    timeseries, diurnal_mean, fingerprint,
     error_growth, error_growth_daily
 
 Benchmarking — model compared against --baselines:
     error_overview, error_fingerprint, improvement_fingerprint,
     diurnal, diurnal_delta, diurnal_delta_error,
-    power_spectrum, bias_maps, improvement_map
+    power_spectrum, acc_map, improvement_map
 
 Comparison  — cross-experiment (handled by run_comparison.py)
 
@@ -49,7 +48,6 @@ Available --baselines:
 
 import argparse
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -57,23 +55,26 @@ import xarray as xr
 from deep_lst.evaluation.metrics import (
     compute_diurnal_mean,
     compute_diurnal_scores,
-    compute_persistence_scores_by_lead_time,
     compute_scores,
     compute_scores_by_lead_time,
+    compute_skill_scores_by_lead_time,
     compute_validity_report,
     to_valid_time,
 )
-from deep_lst.evaluation.plots._colors import CASE_COLORS as _CASE_COLORS
-from deep_lst.evaluation.plots._colors import DEFAULT_COLOR as _DEFAULT_COLOR
-from deep_lst.evaluation.plots.animation import forecast_gif
 from deep_lst.evaluation.plots.diurnal import (
     diurnal_delta_comparison,
     diurnal_delta_error_plot,
     diurnal_line,
     diurnal_mean_plot,
 )
+from deep_lst.evaluation.plots.error_growth import (
+    error_growth_daily_plot,
+    error_growth_plot,
+    error_growth_single_valid_time,
+    skill_plot,
+)
 from deep_lst.evaluation.plots.fingerprint import abs_error_da, fingerprint_plot, improvement_da
-from deep_lst.evaluation.plots.maps import bias_maps, improvement_map_multi
+from deep_lst.evaluation.plots.maps import acc_map, improvement_map_multi
 from deep_lst.evaluation.plots.scores import error_overview_plot
 from deep_lst.evaluation.plots.spectra import (
     _grid_spacing_km,
@@ -94,12 +95,11 @@ PATHS = ExperimentPaths()
 FAST_EVAL_PLOTS = [
     "timeseries",  # region-mean time series with ±1σ shading
     "diurnal_mean",  # mean LST by hour of day (pred vs obs)
-    "forecast_gif",  # animated map: pred vs obs over full horizon
     "fingerprint",  # (DOY × hour) heatmap, spatially averaged
     "error_growth",  # RMSE vs lead_time line plot (hourly)
     "error_growth_daily",  # RMSE per day bucket (day 1 / 2 / 3)
     "temporal_power_spectrum",  # PSD vs period (hours); works on sparse and grid
-    "persistence_skill",  # skill score vs lead time relative to persistence
+    "skill_plot",  # skill score vs lead time relative to persistence
 ]
 
 BENCHMARK_PLOTS = [
@@ -110,7 +110,7 @@ BENCHMARK_PLOTS = [
     "diurnal_delta",  # ΔT/h by hour: model + all baselines in one panel
     "diurnal_delta_error",  # ΔT/h error by hour: model + all baselines in one panel
     "power_spectrum",  # spatial power spectrum: model + obs + all baselines
-    "bias_maps",  # spatial bias maps (model + baselines)
+    "acc_map",  # spatial ACC map (anomaly correlation coefficient)
     "improvement_map",  # RMSE improvement: one multi-panel figure per model
 ]
 
@@ -173,7 +173,7 @@ def parse_args():
     p.add_argument(
         "--baselines",
         nargs="*",
-        default=["era5"],
+        default=None,
         metavar="NAME",
         help=(
             "Baselines to load for benchmark plots. "
@@ -191,24 +191,24 @@ def parse_args():
     )
     p.add_argument("--overwrite", action="store_true", help="Recompute and overwrite existing metric files")
     p.add_argument(
-        "--gif_init_time",
-        default=None,
-        help="init_time for forecast_gif, e.g. '2024-01-07T06:00'. Default: first init_time.",
-    )
-    p.add_argument(
-        "--gif_lead_times",
-        nargs="+",
-        default=None,
-        metavar="LT",
-        help="Lead times for forecast_gif, e.g. --gif_lead_times 1h 2h 3h. Default: all.",
-    )
-    p.add_argument("--gif_fps", type=int, default=2, help="FPS for forecast_gif (default: 2)")
-    p.add_argument(
         "--plots",
         nargs="+",
         default=None,
         metavar="PLOT",
         help=(f"Subset of plots to generate. Available: {ALL_PLOTS}. Default: all plots."),
+    )
+    p.add_argument(
+        "--target_valid_time",
+        default=None,
+        help="Valid time for error_growth_single_valid_time plot, e.g. '2024-01-10T12:00'. Default: None (skip this plot).",
+    )
+    p.add_argument(
+        "--consistent_mask",
+        action="store_true",
+        help=(
+            "Require obs and pred to be finite at ALL lead times for a given (init_time, pixel). "
+            "Evaluates 'perfect conditions' only. Default: per-lead-time masking (all valid trajectories kept)."
+        ),
     )
     return p.parse_args()
 
@@ -281,167 +281,27 @@ def _align_baseline(da: xr.DataArray, valid_times) -> xr.DataArray:
     return da.reindex(valid_time=valid_times)
 
 
-# ---------------------------------------------------------------------------
-# Error-growth plot helpers (inline — use pre-computed metrics_by_lead_time)
-# ---------------------------------------------------------------------------
+def _subset_pixels(da: xr.DataArray, ref: xr.DataArray) -> xr.DataArray:
+    """Subset da's pixel dim to match ref's lat/lon coordinates.
 
-_PLOT_RC = {
-    "font.size": 13,
-    "axes.labelsize": 14,
-    "axes.titlesize": 14,
-    "xtick.labelsize": 12,
-    "ytick.labelsize": 12,
-    "legend.fontsize": 12,
-}
-
-
-def _plot_error_growth(
-    ds_by_lead: xr.Dataset,
-    case_label: str,
-    metric: str,
-    save_path,
-    eval_region: str,
-    baseline_rmse: dict[str, float] | None = None,
-) -> None:
-    """RMSE vs lead time — model line + flat baseline reference lines.
-
-    Baselines are scored against the *same* observations the model sees at
-    ``--lead_time`` (one RMSE value, independent of lead time). The model's
-    RMSE grows because at longer lead times the forecast was launched from an
-    earlier init_time and is further from the valid_time — the baseline has no
-    such dependence, so it appears as a flat horizontal reference.
+    No-op when pixel counts already match or lat coords are absent.
+    Used when a baseline covers all store pixels but the forecast uses a subset.
     """
-    plt.rcParams.update(_PLOT_RC)
-    lead_td = pd.TimedeltaIndex(ds_by_lead["lead_time"].values)
-    lead_hours = [int(lt.total_seconds() / 3600) for lt in lead_td]
-    vals = ds_by_lead[metric].values
-
-    fig, ax = plt.subplots(figsize=(9, 4.5))
-    model_color = _CASE_COLORS.get(case_label, _DEFAULT_COLOR)
-    ax.plot(lead_hours, vals, color=model_color, linewidth=2, marker="o", markersize=5, label=case_label)
-
-    if baseline_rmse:
-        for bl_label, bl_val in baseline_rmse.items():
-            if bl_val is not None and np.isfinite(bl_val):
-                c = _CASE_COLORS.get(bl_label, _DEFAULT_COLOR)
-                ax.axhline(bl_val, color=c, linewidth=1.5, linestyle="--", label=f"{bl_label}  ({bl_val:.2f} K)")
-
-    ax.set_xlabel("Lead time (h)")
-    ax.set_ylabel(f"{metric.upper()} (K)")
-    # Show at most ~12 tick labels to avoid overlap
-    step = max(1, len(lead_hours) // 12)
-    ax.set_xticks(lead_hours[::step])
-    ax.set_title(f"{eval_region}  —  RMSE vs. lead time  (mean over test period)")
-    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0, framealpha=0.9)
-    ax.grid(axis="y", alpha=0.3)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    plt.tight_layout()
-    if save_path is not None:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  Saved: {save_path}")
-    plt.close(fig)
-
-
-def _plot_persistence_skill(
-    ds_model_by_lead: xr.Dataset,
-    ds_pers_by_lead: xr.Dataset,
-    case_label: str,
-    metric: str,
-    save_path,
-    eval_region: str,
-) -> None:
-    """Skill score vs lead time: SS = 1 - model_error(lt) / persistence_error(lt).
-
-    SS > 0 means the model beats persistence; SS = 0 is the tie line.
-    """
-    plt.rcParams.update(_PLOT_RC)
-    lead_td = pd.TimedeltaIndex(ds_model_by_lead["lead_time"].values)
-    lead_hours = [int(lt.total_seconds() / 3600) for lt in lead_td]
-    model_err = ds_model_by_lead[metric].values
-    pers_err = ds_pers_by_lead[metric].values
-    skill = 1.0 - model_err / pers_err
-
-    fig, ax = plt.subplots(figsize=(9, 4.5))
-    model_color = _CASE_COLORS.get(case_label, _DEFAULT_COLOR)
-    ax.plot(lead_hours, skill, color=model_color, linewidth=2, marker="o", markersize=5, label=case_label)
-    ax.axhline(0.0, color="gray", linewidth=1.2, linestyle="--", label="persistence (SS = 0)")
-
-    ax.set_xlabel("Lead time (h)")
-    ax.set_ylabel(f"Skill score  (1 − {metric.upper()} / {metric.upper()}$_{{pers}}$)")
-    step = max(1, len(lead_hours) // 12)
-    ax.set_xticks(lead_hours[::step])
-    ax.set_title(f"{eval_region}  —  skill vs. persistence  ({metric.upper()}, mean over test period)")
-    ax.legend(loc="lower right")
-    ax.grid(axis="y", alpha=0.3)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    plt.tight_layout()
-    if save_path is not None:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  Saved: {save_path}")
-    plt.close(fig)
-
-
-def _plot_error_growth_daily(
-    ds_by_lead: xr.Dataset,
-    case_label: str,
-    metric: str,
-    save_path,
-    eval_region: str,
-    baseline_rmse: dict[str, float] | None = None,
-) -> None:
-    """Mean RMSE per day bucket (day 1: 1–24 h, day 2: 25–48 h, day 3: 49–72 h).
-
-    Model values are averaged over the lead times in each bucket.
-    Baselines are flat horizontal references (lead-time independent).
-    """
-    plt.rcParams.update(_PLOT_RC)
-    lead_td = pd.TimedeltaIndex(ds_by_lead["lead_time"].values)
-    lead_hours = np.array([int(lt.total_seconds() / 3600) for lt in lead_td])
-    vals = ds_by_lead[metric].values
-
-    DAY_BUCKETS = [(1, 24), (25, 48), (49, 72)]
-    day_labels, day_means = [], []
-
-    for day_idx, (lo, hi) in enumerate(DAY_BUCKETS, start=1):
-        mask = (lead_hours >= lo) & (lead_hours <= hi)
-        if not mask.any():
-            continue
-        day_labels.append(f"Day {day_idx}\n({lo}–{hi} h)")
-        day_means.append(float(np.nanmean(vals[mask])))
-
-    if not day_means:
-        return
-
-    x = np.arange(len(day_means))
-    fig, ax = plt.subplots(figsize=(max(5, len(day_means) * 1.8), 4.5))
-
-    model_color = _CASE_COLORS.get(case_label, _DEFAULT_COLOR)
-    ax.plot(x, day_means, color=model_color, linewidth=2, marker="o", markersize=8, label=case_label)
-
-    if baseline_rmse:
-        for bl_label, bl_val in baseline_rmse.items():
-            if bl_val is not None and np.isfinite(bl_val):
-                c = _CASE_COLORS.get(bl_label, _DEFAULT_COLOR)
-                ax.axhline(bl_val, color=c, linewidth=1.5, linestyle="--", label=f"{bl_label}  ({bl_val:.2f} K)")
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(day_labels)
-    ax.set_ylabel(f"{metric.upper()} (K)")
-    ax.set_title(f"{eval_region}  —  RMSE vs. forecast day  (mean over test period)")
-    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0, framealpha=0.9)
-    ax.grid(axis="y", alpha=0.3)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    plt.tight_layout()
-    if save_path is not None:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  Saved: {save_path}")
-    plt.close(fig)
+    if (
+        "pixel" not in da.dims
+        or "pixel" not in ref.dims
+        or da.sizes["pixel"] == ref.sizes["pixel"]
+        or "lat" not in da.coords
+        or "lat" not in ref.coords
+    ):
+        return da
+    bl_lats = da["lat"].values.astype(np.float32)
+    bl_lons = da["lon"].values.astype(np.float32)
+    lookup = {(float(la), float(lo)): i for i, (la, lo) in enumerate(zip(bl_lats, bl_lons))}
+    p_lats = ref["lat"].values.astype(np.float32)
+    p_lons = ref["lon"].values.astype(np.float32)
+    idx = [lookup[(float(la), float(lo))] for la, lo in zip(p_lats, p_lons)]
+    return da.isel(pixel=idx)
 
 
 # ---------------------------------------------------------------------------
@@ -451,11 +311,19 @@ def _plot_error_growth_daily(
 
 def run_evaluation():
     args = parse_args()
+    if args.target_valid_time is not None:
+        args.target_valid_time = pd.Timestamp(args.target_valid_time)
     var = args.variable
     case_label = _detect_case_label(args.experiment)
     period_tag = "_".join(args.temporal) if args.temporal else "all"
+    condition_tag = "consistent_mask" if args.consistent_mask else ""
     results_dir = PATHS.results_dir(args.experiment, args.version, args.eval)
+    if condition_tag:
+        results_dir = results_dir / condition_tag
+        results_dir.mkdir(parents=True, exist_ok=True)
     plots_dir = PATHS.results_plots_dir(args.experiment, args.version, args.eval) / period_tag
+    if condition_tag:
+        plots_dir = plots_dir / condition_tag
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Experiment : {args.experiment} / {args.version}")
@@ -486,6 +354,22 @@ def run_evaluation():
     sparse = "pixel" in ds.dims
     spatial_str = f"pixel={ds.sizes['pixel']}" if sparse else f"lat={ds.sizes['lat']}, lon={ds.sizes['lon']}"
     print(f"\nForecast dims: init_time={ds.sizes['init_time']}, lead_time={ds.sizes['lead_time']}, {spatial_str}")
+
+    # -------------------------------------------------------------------------
+    # Optional consistent mask: keep only (init_time, pixel) where obs and pred
+    # are finite at every lead time — replicates "perfect conditions" setting.
+    # -------------------------------------------------------------------------
+    if args.consistent_mask:
+        pred_raw = ds[f"{var}_pred"]
+        obs_raw = ds[f"{var}_obs"]
+        all_finite = pred_raw.notnull().all("lead_time") & obs_raw.notnull().all("lead_time")
+        ds = ds.assign(
+            {
+                f"{var}_pred": pred_raw.where(all_finite),
+                f"{var}_obs": obs_raw.where(all_finite),
+            }
+        )
+        print("  Consistent mask applied (perfect conditions only)")
 
     # -------------------------------------------------------------------------
     # Convert to valid_time at the selected lead time
@@ -541,14 +425,17 @@ def run_evaluation():
     # Persistence needs a time-shift: obs(init_time) = obs(valid_time - lead_time),
     # so we reindex on shifted times then relabel to pred valid_times.
     lt_ns = np.timedelta64(int(pd.Timedelta(args.lead_time).total_seconds() * 1e9), "ns")
+    pred_mask = np.isfinite(pred)
     baselines_aligned: dict[str, xr.DataArray] = {}
     for label, da in baselines.items():
         if label == "persistence":
             init_times = pred["valid_time"].values - lt_ns
             pers = da.reindex(valid_time=init_times)
-            baselines_aligned[label] = pers.assign_coords(valid_time=pred["valid_time"].values)
+            aligned = pers.assign_coords(valid_time=pred["valid_time"].values)
         else:
-            baselines_aligned[label] = _align_baseline(da, pred["valid_time"])
+            aligned = _align_baseline(da, pred["valid_time"])
+        aligned = _subset_pixels(aligned, pred)
+        baselines_aligned[label] = aligned.where(pred_mask)
 
     # -------------------------------------------------------------------------
     # Plots
@@ -596,19 +483,6 @@ def run_evaluation():
             case_label=case_label,
         )
 
-    # c) Forecast GIF
-    if "forecast_gif" in requested and not sparse:
-        init_tag = pd.Timestamp(args.gif_init_time).strftime("%Y%m%dT%H%M") if args.gif_init_time else "first"
-        forecast_gif(
-            ds,
-            var=var,
-            init_time=args.gif_init_time,
-            lead_times=args.gif_lead_times,
-            fps=args.gif_fps,
-            save_path=plots_dir / f"{var}_forecast_{init_tag}.gif",
-            eval_region=args.eval,
-        )
-
     # f) Fingerprint — model pred + obs (+ baselines in same figure if available)
     if "fingerprint" in requested:
         fp_data = {f"{case_label} pred": pred, "SEVIRI obs": obs}
@@ -636,37 +510,52 @@ def run_evaluation():
     else:
         bl_rmse = {}
 
-    if "error_growth" in requested and ds_by_lead is not None:
-        _plot_error_growth(
+    if "error_growth" in requested and args.target_valid_time is not None:
+        bl_rmse: dict[str, float] = {}
+        for label, da in baselines_aligned.items():
+            s = compute_scores(da, obs, metrics=["rmse"], aggregation="region_time")
+            # then select your specific valid time:
+            bl_rmse[label] = float(s["rmse"].sel(valid_time=args.target_valid_time).values)
+        error_growth_single_valid_time(
             ds_by_lead,
             case_label=case_label,
             metric="rmse",
-            save_path=plots_dir / f"{var}_error_growth.png",
+            save_path=plots_dir / f"{var}_error_growth_valid_time.pdf",
+            valid_time=args.target_valid_time,
+            climatological_rmse=bl_rmse,
+        )
+
+    if "error_growth" in requested and ds_by_lead is not None:
+        error_growth_plot(
+            ds_by_lead,
+            case_label=case_label,
+            metric="rmse",
+            save_path=plots_dir / f"{var}_error_growth.pdf",
             eval_region=args.eval,
-            baseline_rmse=bl_rmse or None,
         )
 
     if "error_growth_daily" in requested and ds_by_lead is not None:
-        _plot_error_growth_daily(
+        error_growth_daily_plot(
             ds_by_lead,
             case_label=case_label,
             metric="rmse",
-            save_path=plots_dir / f"{var}_error_growth_daily.png",
+            save_path=plots_dir / f"{var}_error_growth_daily.pdf",
             eval_region=args.eval,
-            baseline_rmse=bl_rmse or None,
         )
 
-    # i) Persistence skill score vs lead time
-    if "persistence_skill" in requested and ds_by_lead is not None and "persistence" in baselines:
-        ds_pers_by_lead = compute_persistence_scores_by_lead_time(
-            ds, baselines["persistence"], var=var, metrics=["rmse"]
-        )
-        _plot_persistence_skill(
-            ds_by_lead,
-            ds_pers_by_lead,
+    # i) Skill score vs lead time — all baselines in one plot
+    if "skill_plot" in requested and ds_by_lead is not None and baselines_aligned:
+        references = {}
+        for bl_label in baselines_aligned:
+            ref_type = "persistence" if bl_label == "persistence" else "climatology"
+            references[bl_label] = compute_skill_scores_by_lead_time(
+                ds, _subset_pixels(baselines[bl_label], pred), ref_type=ref_type, var=var, metrics=["rmse"]
+            )
+        skill_plot(
+            references,
             case_label=case_label,
             metric="rmse",
-            save_path=plots_dir / f"{var}_persistence_skill.png",
+            save_path=plots_dir / f"{var}_skill.pdf",
             eval_region=args.eval,
         )
 
@@ -688,7 +577,7 @@ def run_evaluation():
             pred_spectra_by_case=spectra_t,
             obs_spectrum=obs_spectrum_t,
             var=var,
-            save_path=plots_dir / f"{var}_temporal_power_spectrum.png",
+            save_path=plots_dir / f"{var}_temporal_power_spectrum.pdf",
             eval_region=args.eval,
         )
 
@@ -719,6 +608,12 @@ def run_evaluation():
                 f"region_time/{label}",
             )
 
+        # Save spatial ACC for cross-site evaluation (needs hourly climatology)
+        if "hourly clim" in baselines_aligned:
+            clim = baselines_aligned["hourly clim"]
+            acc_ds = compute_scores(pred - clim, obs - clim, metrics=["correlation"], aggregation="region_space")
+            _save_metrics(acc_ds, results_dir / "metrics_region_space_acc.nc", args.overwrite, "region_space_acc")
+
         # A) Error overview boxplot
         if "error_overview" in requested:
             for m in args.metrics:
@@ -740,7 +635,7 @@ def run_evaluation():
                 cmap="Reds",
                 cbar_label="MAE (K)",
                 title=f"{args.eval} — error fingerprint  (lead_time={args.lead_time})",
-                save_path=plots_dir / f"{var}_error_fingerprint_lt{args.lead_time}.png",
+                save_path=plots_dir / f"{var}_error_fingerprint_lt{args.lead_time}.pdf",
             )
 
         # C) Improvement fingerprint — one panel per baseline
@@ -753,7 +648,7 @@ def run_evaluation():
                     vcenter=0.0,
                     cbar_label="ΔMAE (K)  [low = model better, high = baseline better]",
                     title=f"{args.eval} — improvement vs {label}  (lead_time={args.lead_time})",
-                    save_path=plots_dir / f"{var}_improvement_fingerprint_{safe_label}_lt{args.lead_time}.png",
+                    save_path=plots_dir / f"{var}_improvement_fingerprint_{safe_label}_lt{args.lead_time}.pdf",
                 )
 
         # D) Diurnal multi-case
@@ -765,7 +660,7 @@ def run_evaluation():
                 diurnal_line(
                     diurnal_by_case,
                     metric=m,
-                    save_path=plots_dir / f"{var}_diurnal_{m}_lt{args.lead_time}.png",
+                    save_path=plots_dir / f"{var}_diurnal_{m}_lt{args.lead_time}.pdf",
                     title=f"{args.eval} — {var} diurnal {m.upper()}  (lead_time={args.lead_time})",
                 )
 
@@ -777,7 +672,7 @@ def run_evaluation():
             diurnal_delta_comparison(
                 {case_label: diurnal_mean_ds, **bl_diurnal_mean_for_delta},
                 var=var,
-                save_path=plots_dir / f"{var}_diurnal_delta_lt{args.lead_time}.png",
+                save_path=plots_dir / f"{var}_diurnal_delta_lt{args.lead_time}.pdf",
                 eval_region=args.eval,
             )
 
@@ -788,9 +683,10 @@ def run_evaluation():
                 model_diurnal_mean=diurnal_mean_ds,
                 baselines_diurnal_mean=bl_diurnal_mean,
                 var=var,
-                save_path=plots_dir / f"{var}_diurnal_delta_error_lt{args.lead_time}.png",
+                save_path=plots_dir / f"{var}_diurnal_delta_error_lt{args.lead_time}.pdf",
                 eval_region=args.eval,
                 case_label=case_label,
+                lead_time=args.lead_time,
             )
 
         # D4) Spatial power spectrum — PSD of raw pred vs obs only.
@@ -811,20 +707,29 @@ def run_evaluation():
                 pred_spectra_by_case=spectra_s,
                 obs_spectrum=obs_spectrum_s,
                 var=var,
-                save_path=plots_dir / f"{var}_power_spectrum_lt{args.lead_time}.png",
+                save_path=plots_dir / f"{var}_power_spectrum_lt{args.lead_time}.pdf",
                 eval_region=args.eval,
             )
 
-        # E) Bias maps — model + each baseline
-        if "bias_maps" in requested and not sparse:
-            bias_by_case = {case_label: compute_scores(pred, obs, metrics=["bias"], aggregation="region_space")["bias"]}
-            for label, da in baselines_aligned.items():
-                bias_by_case[label] = compute_scores(da, obs, metrics=["bias"], aggregation="region_space")["bias"]
-            bias_maps(
-                bias_by_case=bias_by_case,
-                save_path=plots_dir / f"{var}_bias_maps_lt{args.lead_time}.png",
-                eval_region=args.eval,
-            )
+        # E) ACC map — anomaly correlation coefficient per pixel
+        if "acc_map" in requested and not sparse:
+            clim_path = PATHS.climatology_path(args.eval, "hourly")
+            if clim_path.exists():
+                clim_da = xr.open_dataset(clim_path)[var]
+                clim_aligned = _align_baseline(clim_da, pred["valid_time"])
+                acc = compute_scores(
+                    pred - clim_aligned,
+                    obs - clim_aligned,
+                    metrics=["correlation"],
+                    aggregation="region_space",
+                )["correlation"]
+                acc_map(
+                    acc=acc,
+                    save_path=plots_dir / f"{var}_acc_map_lt{args.lead_time}.pdf",
+                    eval_region=args.eval,
+                )
+            else:
+                print(f"  [skip] acc_map: hourly climatology not found at {clim_path}")
 
         # F) Improvement map — all baselines in one multi-panel figure
         if "improvement_map" in requested and not sparse:
@@ -836,7 +741,7 @@ def run_evaluation():
             improvement_map_multi(
                 rmse_model=rmse_model,
                 rmse_by_baseline=rmse_by_baseline,
-                save_path=plots_dir / f"{var}_improvement_map_lt{args.lead_time}.png",
+                save_path=plots_dir / f"{var}_improvement_map_lt{args.lead_time}.pdf",
                 model_label=case_label,
                 eval_region=args.eval,
             )

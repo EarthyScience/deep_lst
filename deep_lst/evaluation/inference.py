@@ -554,11 +554,12 @@ class Forecast:
         with torch.no_grad():
             for batch in tqdm(loader, desc="Predicting (diagnostic)"):
                 batch = batch.to(device)
-                out = model.model(batch)
+                with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+                    out = model.model(batch)
 
                 for diag_key, diag_out_key in zip(diag_keys, diag_out_keys):
                     var = diag_key[1]
-                    pred_batch = out[diag_out_key].cpu().numpy().squeeze((-3, -2, -1))
+                    pred_batch = out[diag_out_key].float().cpu().numpy().squeeze((-3, -2, -1))
                     obs_batch = batch[diag_key].cpu().numpy().squeeze((-3, -2, -1))
 
                     if normaliser:
@@ -632,11 +633,12 @@ class Forecast:
                             valid_hw = valid_mask.float().permute(0, 2, 3, 1, 4).reshape(B, H, W, lb * C)
                             tstep_td[ctx_key] = torch.cat([ctx_hw, valid_hw], dim=-1)
 
-                    out = model.model(tstep_td)
+                    with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+                        out = model.model(tstep_td)
 
                     for key, out_key in zip(prog_keys, prog_out_keys):
                         var = key[1]
-                        prog[key] = prog[key] + out[out_key]
+                        prog[key] = prog[key] + out[out_key].float()
                         batch_preds[var].append(prog[key].squeeze((-3, -2, -1)))
                         batch_obs[var].append(batch[key][:, lookback + t, ...].squeeze((-3, -2, -1)))
 
@@ -647,7 +649,7 @@ class Forecast:
 
                     for key, out_key in zip(diag_keys, diag_out_keys):
                         var = key[1]
-                        batch_preds[var].append(out[out_key].squeeze((-3, -2, -1)))
+                        batch_preds[var].append(out[out_key].float().squeeze((-3, -2, -1)))
                         batch_obs[var].append(batch[key][:, lookback + t, ...].squeeze((-3, -2, -1)))
 
                 for var in all_vars:

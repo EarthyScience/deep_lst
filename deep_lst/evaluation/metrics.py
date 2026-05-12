@@ -39,7 +39,7 @@ def _register(name):
 
 @_register("bias")
 def _bias(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
-    return (obs - pred).mean(dim=dim, skipna=True)
+    return (pred - obs).mean(dim=dim, skipna=True)
 
 
 @_register("rmse")
@@ -50,6 +50,16 @@ def _rmse(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
 @_register("mae")
 def _mae(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
     return np.abs(obs - pred).mean(dim=dim, skipna=True)
+
+
+@_register("correlation")
+def _correlation(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
+    """Pearson r. Apply to anomalies (pred-clim, obs-clim) to get ACC."""
+    p = pred - pred.mean(dim=dim, skipna=True)
+    o = obs - obs.mean(dim=dim, skipna=True)
+    num = (p * o).sum(dim=dim, skipna=True)
+    denom = np.sqrt((p**2).sum(dim=dim, skipna=True) * (o**2).sum(dim=dim, skipna=True))
+    return num / denom
 
 
 @_register("r2")
@@ -338,20 +348,31 @@ def compute_diurnal_mean(
 
     pred_vals = pred.transpose("valid_time", ...).values
     obs_vals = obs.transpose("valid_time", ...).values
+    # Flatten spatial dims so each column is one pixel: (valid_time, n_pixels)
+    pred_flat = pred_vals.reshape(len(hours), -1)
+    obs_flat = obs_vals.reshape(len(hours), -1)
+
+    # Per-pixel hourly means — shape (24, n_pixels)
+    pred_hourly_px = np.full((24, pred_flat.shape[1]), np.nan)
+    obs_hourly_px = np.full((24, pred_flat.shape[1]), np.nan)
 
     for h in range(24):
         h_mask = hours == h
-        p_h = pred_vals[h_mask]
-        o_h = obs_vals[h_mask]
+        p_h = pred_flat[h_mask]
+        o_h = obs_flat[h_mask]
         valid = np.isfinite(p_h) & np.isfinite(o_h)
         n = int(valid.sum())
         n_valid[h] = n
         if n == 0:
             continue
-        pred_mean[h] = float(np.mean(p_h[valid]))
-        obs_mean[h] = float(np.mean(o_h[valid]))
-        pred_std[h] = float(np.std(p_h[valid]))
-        obs_std[h] = float(np.std(o_h[valid]))
+        p_h_masked = np.where(valid, p_h, np.nan)
+        o_h_masked = np.where(valid, o_h, np.nan)
+        pred_mean[h] = float(np.nanmean(p_h_masked))
+        obs_mean[h] = float(np.nanmean(o_h_masked))
+        pred_std[h] = float(np.nanstd(p_h_masked))
+        obs_std[h] = float(np.nanstd(o_h_masked))
+        pred_hourly_px[h] = np.nanmean(p_h_masked, axis=0)
+        obs_hourly_px[h] = np.nanmean(o_h_masked, axis=0)
 
     # Hour-to-hour change: delta[h] = mean[h] - mean[h-1] (circular)
     pred_delta = np.roll(pred_mean, -1) - pred_mean  # delta[h] = mean[h+1] - mean[h]
@@ -362,6 +383,19 @@ def compute_diurnal_mean(
             if np.isnan(pred_mean[h]) or np.isnan(pred_mean[(h + 1) % 24]):
                 arr[h] = np.nan
 
+    # Per-pixel delta error: (pred_delta_px - obs_delta_px), shape (24, n_pixels)
+    pred_delta_px = np.roll(pred_hourly_px, -1, axis=0) - pred_hourly_px
+    obs_delta_px = np.roll(obs_hourly_px, -1, axis=0) - obs_hourly_px
+    delta_err_px = pred_delta_px - obs_delta_px
+    # Mask hours where either neighbour is NaN for any pixel
+    for h in range(24):
+        if np.isnan(pred_mean[h]) or np.isnan(pred_mean[(h + 1) % 24]):
+            delta_err_px[h] = np.nan
+
+    delta_err_q05 = np.nanpercentile(delta_err_px, 5, axis=1)
+    delta_err_q50 = np.nanpercentile(delta_err_px, 50, axis=1)
+    delta_err_q95 = np.nanpercentile(delta_err_px, 95, axis=1)
+
     return xr.Dataset(
         {
             "pred_mean": ("hour", pred_mean),
@@ -370,9 +404,97 @@ def compute_diurnal_mean(
             "obs_std": ("hour", obs_std),
             "pred_delta": ("hour", pred_delta),
             "obs_delta": ("hour", obs_delta),
+            "delta_err_q05": ("hour", delta_err_q05),
+            "delta_err_q50": ("hour", delta_err_q50),
+            "delta_err_q95": ("hour", delta_err_q95),
             "n_valid": ("hour", n_valid),
         },
         coords={"hour": np.arange(24)},
+    )
+
+
+def compute_skill_scores_by_lead_time(
+    ds: xr.Dataset,
+    ref_da: xr.DataArray,
+    ref_type: str,
+    var: str = "LST",
+    metrics: list[str] | None = None,
+    q_lo: float = 0.05,
+    q_hi: float = 0.95,
+) -> xr.Dataset:
+    """Compute skill score (model / reference) per lead time with empirical percentile CI.
+
+    Per-time-step skill = spatial_RMSE_model(t) / spatial_RMSE_ref(t) is computed
+    directly so that percentiles are of the actual skill distribution, not an
+    approximation from separate numerator/denominator percentiles.
+
+    Central estimate is the median (q50) for consistency with the asymmetric CI.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        ForecastResult with dims (init_time, lead_time, ...).
+    ref_da : xr.DataArray
+        Reference DataArray with dim ``valid_time``.
+    ref_type : str
+        ``"persistence"`` looks up ref_da at init_time (valid_time − lt).
+        ``"climatology"`` looks up ref_da at valid_time directly.
+    q_lo, q_hi : float
+        Lower and upper quantiles for the CI band (default: 0.05 / 0.95).
+    """
+    if metrics is None:
+        metrics = ["rmse"]
+
+    lead_times = ds["lead_time"].values
+    q_lo_label = f"q{int(q_lo * 100):02d}"
+    q_hi_label = f"q{int(q_hi * 100):02d}"
+    results_median = {m: [] for m in metrics}
+    results_q_lo = {m: [] for m in metrics}
+    results_q_hi = {m: [] for m in metrics}
+    n_valid_list = []
+
+    for lt in lead_times:
+        lt_ns = np.timedelta64(int(pd.Timedelta(lt).total_seconds() * 1e9), "ns")
+        lt_h = int(pd.Timedelta(lt).total_seconds() // 3600)
+        try:
+            pred, obs = to_valid_time(ds, var, lead_time=f"{lt_h}h")
+        except Exception:
+            for m in metrics:
+                results_median[m].append(np.nan)
+                results_q_lo[m].append(np.nan)
+                results_q_hi[m].append(np.nan)
+            n_valid_list.append(0)
+            continue
+
+        if ref_type == "persistence":
+            init_times = obs["valid_time"].values - lt_ns
+            ref = ref_da.reindex(valid_time=init_times)
+            ref = ref.assign_coords(valid_time=obs["valid_time"].values)
+        else:
+            ref = ref_da.reindex(valid_time=obs["valid_time"].values)
+        ref = ref.where(np.isfinite(pred))
+
+        model_per_time = compute_scores(pred, obs, metrics=metrics, aggregation="region_time")
+        ref_per_time = compute_scores(ref, obs, metrics=metrics, aggregation="region_time")
+
+        for m in metrics:
+            skill_per_time = model_per_time[m] / ref_per_time[m]
+            if skill_per_time.isnull().all():
+                results_median[m].append(np.nan)
+                results_q_lo[m].append(np.nan)
+                results_q_hi[m].append(np.nan)
+            else:
+                results_median[m].append(float(skill_per_time.quantile(0.5).values))
+                results_q_lo[m].append(float(skill_per_time.quantile(q_lo).values))
+                results_q_hi[m].append(float(skill_per_time.quantile(q_hi).values))
+        n_valid_list.append(int(model_per_time["n_valid"].sum().values))
+
+    return xr.Dataset(
+        {m: ("lead_time", results_median[m]) for m in metrics}
+        | {f"{m}_{q_lo_label}": ("lead_time", results_q_lo[m]) for m in metrics}
+        | {f"{m}_{q_hi_label}": ("lead_time", results_q_hi[m]) for m in metrics}
+        | {"n_valid": ("lead_time", n_valid_list)},
+        coords={"lead_time": lead_times},
     )
 
 
@@ -399,30 +521,98 @@ def compute_persistence_scores_by_lead_time(
 
     lead_times = ds["lead_time"].values
     results = {m: [] for m in metrics}
+    results_std = {m: [] for m in metrics}
     n_valid_list = []
 
     for lt in lead_times:
         lt_ns = np.timedelta64(int(pd.Timedelta(lt).total_seconds() * 1e9), "ns")
         lt_h = int(pd.Timedelta(lt).total_seconds() // 3600)
         try:
-            _, obs = to_valid_time(ds, var, lead_time=f"{lt_h}h")
+            pred, obs = to_valid_time(ds, var, lead_time=f"{lt_h}h")
         except Exception:
             for m in metrics:
                 results[m].append(np.nan)
+                results_std[m].append(np.nan)
             n_valid_list.append(0)
             continue
 
         init_times = obs["valid_time"].values - lt_ns
         pers = pers_da.reindex(valid_time=init_times)
         pers = pers.assign_coords(valid_time=obs["valid_time"].values)
+        pers = pers.where(np.isfinite(pred))
 
-        scores = compute_scores(pers, obs, metrics=metrics, aggregation="total")
+        scores_per_time = compute_scores(pers, obs, metrics=metrics, aggregation="region_time")
         for m in metrics:
-            results[m].append(float(scores[m].values))
-        n_valid_list.append(int(scores["n_valid"].values))
+            results[m].append(float(scores_per_time[m].mean().values))
+            results_std[m].append(float(scores_per_time[m].std().values))
+        n_valid_list.append(int(scores_per_time["n_valid"].sum().values))
 
     return xr.Dataset(
-        {m: ("lead_time", results[m]) for m in metrics} | {"n_valid": ("lead_time", n_valid_list)},
+        {m: ("lead_time", results[m]) for m in metrics}
+        | {f"{m}_std": ("lead_time", results_std[m]) for m in metrics}
+        | {"n_valid": ("lead_time", n_valid_list)},
+        coords={"lead_time": lead_times},
+    )
+
+
+def compute_climatology_scores_by_lead_time(
+    ds: xr.Dataset,
+    clim_da: xr.DataArray,
+    var: str = "LST",
+    metrics: list[str] | None = None,
+) -> xr.Dataset:
+    """Compute climatology baseline metrics at every lead_time.
+
+    For each lead time lt, climatology predicts clim(valid_time).
+    Unlike persistence, this does not depend on init_time.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        ForecastResult with dims (init_time, lead_time, ...).
+    clim_da : xr.DataArray
+        Climatology DataArray with dim ``valid_time``.
+    """
+    if metrics is None:
+        metrics = ["rmse"]
+
+    lead_times = ds["lead_time"].values
+    results = {m: [] for m in metrics}
+    results_std = {m: [] for m in metrics}
+    n_valid_list = []
+
+    for lt in lead_times:
+        lt_h = int(pd.Timedelta(lt).total_seconds() // 3600)
+        try:
+            pred, obs = to_valid_time(ds, var, lead_time=f"{lt_h}h")
+        except Exception:
+            for m in metrics:
+                results[m].append(np.nan)
+                results_std[m].append(np.nan)
+            n_valid_list.append(0)
+            continue
+
+        clim = clim_da.reindex(valid_time=obs["valid_time"].values)
+        if lt_h == int(pd.Timedelta(lead_times[0]).total_seconds() // 3600):
+            n_before = int(np.isfinite(clim).sum().values)
+            n_pred_valid = int(np.isfinite(pred).sum().values)
+        clim = clim.where(np.isfinite(pred))
+        if lt_h == int(pd.Timedelta(lead_times[0]).total_seconds() // 3600):
+            n_after = int(np.isfinite(clim).sum().values)
+            print(
+                f"  [clim mask check lt={lt_h}h] clim valid: {n_before}, pred valid: {n_pred_valid}, after masking: {n_after} (removed {n_before - n_after})"
+            )
+
+        scores_per_time = compute_scores(clim, obs, metrics=metrics, aggregation="region_time")
+        for m in metrics:
+            results[m].append(float(scores_per_time[m].mean().values))
+            results_std[m].append(float(scores_per_time[m].std().values))
+        n_valid_list.append(int(scores_per_time["n_valid"].sum().values))
+
+    return xr.Dataset(
+        {m: ("lead_time", results[m]) for m in metrics}
+        | {f"{m}_std": ("lead_time", results_std[m]) for m in metrics}
+        | {"n_valid": ("lead_time", n_valid_list)},
         coords={"lead_time": lead_times},
     )
 
@@ -455,6 +645,7 @@ def compute_scores_by_lead_time(
 
     lead_times = ds["lead_time"].values
     results = {m: [] for m in metrics}
+    results_std = {m: [] for m in metrics}
     n_valid_list = []
 
     for lt in lead_times:
@@ -464,15 +655,19 @@ def compute_scores_by_lead_time(
         except Exception:
             for m in metrics:
                 results[m].append(np.nan)
+                results_std[m].append(np.nan)
             n_valid_list.append(0)
             continue
 
-        scores = compute_scores(pred, obs, metrics=metrics, aggregation="total")
+        scores_per_time = compute_scores(pred, obs, metrics=metrics, aggregation="region_time")
         for m in metrics:
-            results[m].append(float(scores[m].values))
-        n_valid_list.append(int(scores["n_valid"].values))
+            results[m].append(float(scores_per_time[m].mean().values))
+            results_std[m].append(float(scores_per_time[m].std().values))
+        n_valid_list.append(int(scores_per_time["n_valid"].sum().values))
 
     return xr.Dataset(
-        {m: ("lead_time", results[m]) for m in metrics} | {"n_valid": ("lead_time", n_valid_list)},
+        {m: ("lead_time", results[m]) for m in metrics}
+        | {f"{m}_std": ("lead_time", results_std[m]) for m in metrics}
+        | {"n_valid": ("lead_time", n_valid_list)},
         coords={"lead_time": lead_times},
     )

@@ -37,6 +37,28 @@ def main(cfg: DictConfig) -> None:
 
     smoke = config.pop("smoke", False)
     tag = config.pop("tag", None)
+    hpo_path = config.pop("hpo_path", None)
+    use_hpo = config.pop("hpo", False)
+
+    if use_hpo and hpo_path:
+        _HPO_PARAM_MAP = {
+            "learning_rate": ("model", "learning_rate"),
+            "dropout": ("model", "dropout"),
+            "weight_decay": ("model", "weight_decay"),
+            "batch_size": ("training", "batch_size"),
+        }
+        with open(hpo_path) as f:
+            hpo = json.load(f)
+        params = hpo.get("params", {})
+        for hpo_key, (section, cfg_key) in _HPO_PARAM_MAP.items():
+            if hpo_key in params:
+                config[section][cfg_key] = params[hpo_key]
+        if "horizon" in params:
+            expected = f"h{int(params['horizon'])}"
+            actual = config.get("_horizon", "?")
+            if expected != actual:
+                print(f"WARNING: hpo_best was tuned for horizon={expected}, running with {actual}")
+        print(f">>> HPO params loaded from {hpo_path} (val_loss={hpo.get('val_loss', '?'):.4f})")
 
     # Build run name from model + experiment keys set by config groups
     name = f"{config['_model_name']}_{config['_experiment']}"

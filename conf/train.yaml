@@ -108,6 +108,8 @@ profiler: false
 # --- runtime flags (CLI overrides) ---
 smoke: false
 tag: null
+hpo_path: nas/hpo_best.json   # set hpo=true to load; override with hpo_path=<other.json>
+hpo: false
 
 hydra:
   run:

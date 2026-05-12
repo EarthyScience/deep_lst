@@ -1,38 +1,8 @@
 """Extract hourly and smoothed-hourly SEVIRI LST climatology for an eval region.
-
-Reads the preloaded SEVIRI eval zarr store (seviri_sampled_eval_{region}.zarr)
-and computes two climatological baselines from the training years.
-
-For training-site eval regions (e.g. train_KG_L_fullyear) the dedicated
-eval zarr store does not exist — use the training-region store instead:
-
-    python scripts/benchmarks/extract_seviri_climatology.py \\
-        --eval train_KG_L_fullyear \\
-        --store_spatial KG_L
-
-  hourly
-    For each (DOY, hour) in the test year: mean LST across all training-year
-    observations at that exact (DOY, hour).
-    Typical sample count per bin: n_train_years (≈ 6).
-
-  smoothed_hourly
-    For each (DOY, hour) in the test year: mean LST across all training-year
-    observations at that specific *hour* within [DOY − window, DOY + window]
-    (circular, wrapping at year boundaries).
-    Typical sample count per bin: n_train_years × (2·window + 1) (≈ 126).
-
-Both outputs have dims (valid_time, lat, lon) for dense eval regions, or
-(valid_time, pixel) for sparse training-site regions where the bounding-box
-grid would be too large. Output format matches the forecast (inference.py).
-
-Saved to
-  assets/climatology/hourly/climatology_{eval}.nc
-  assets/climatology/smoothed_hourly/climatology_{eval}.nc
-
 Usage
 -----
-python scripts/benchmarks/extract_seviri_climatology.py --eval dahra
-python scripts/benchmarks/extract_seviri_climatology.py --eval dahra \\
+uv run scripts/benchmarks/extract_seviri_climatology.py --eval train_MT --store MT --window_days 7
+uv run scripts/benchmarks/extract_seviri_climatology.py --eval dahra \\
     --test_year 2022 --window_days 10
 
 sbatch scripts/benchmarks/extract_seviri_climatology.sh dahra
@@ -239,8 +209,12 @@ def extract_climatology(
     )
 
     if sparse:
-        pixel_lats = lats[local_rows]
-        pixel_lons = lons[local_cols]
+        if "lat" in store:
+            pixel_lats = store["lat"][:]
+            pixel_lons = store["lon"][:]
+        else:
+            pixel_lats = lats[local_rows]
+            pixel_lons = lons[local_cols]
 
         def _make_ds(flat, description):
             return xr.Dataset(
