@@ -114,6 +114,7 @@ def acc_map(
     save_path: Path,
     eval_region: str = "",
     title: str = None,
+    cbar_label: str = "ACC  (anomaly correlation coefficient)",
 ) -> plt.Figure:
     """Single map of anomaly correlation coefficient (ACC) per pixel.
 
@@ -140,7 +141,7 @@ def acc_map(
     _add_map_features(ax)
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.04)
-    cbar.set_label("ACC  (anomaly correlation coefficient)", rotation=270, labelpad=22)
+    cbar.set_label(cbar_label, rotation=270, labelpad=22)
 
     suptitle = title or (f"ACC — {eval_region}" if eval_region else "ACC")
     ax.set_title(suptitle)

@@ -67,27 +67,25 @@ def diurnal_line(
     fig, ax = plt.subplots(figsize=(10, 4.5))
 
     for case, ds in diurnal_by_case.items():
-        if metric not in ds:
+        q50_key = f"{metric}_q50"
+        if metric not in ds and q50_key not in ds:
             print(f"Warning: metric '{metric}' not in dataset for case '{case}'. Skipping.")
             continue
 
         color = CASE_COLORS.get(case, _DEFAULT_COLOR)
-        vals = ds[metric].values.copy()
+        vals = ds[q50_key if q50_key in ds else metric].values.copy()
         vals[vals == 0] = np.nan  # hours with zero valid samples → NaN gap
 
         ls = CASE_LINESTYLES.get(case, BASELINE_LINESTYLE)
         ax.plot(hours, vals, color=color, linestyle=ls, linewidth=2, label=case, marker="o", markersize=4)
 
-        if show_std and "std" in ds:
-            std_vals = ds["std"].values.copy()
-            std_vals[~np.isfinite(vals)] = np.nan
-            ax.fill_between(
-                hours,
-                vals - std_vals,
-                vals + std_vals,
-                color=color,
-                alpha=0.15,
-            )
+        q05_key, q95_key = f"{metric}_q05", f"{metric}_q95"
+        if show_std and q05_key in ds and q95_key in ds:
+            lo = ds[q05_key].values.copy()
+            hi = ds[q95_key].values.copy()
+            lo[~np.isfinite(vals)] = np.nan
+            hi[~np.isfinite(vals)] = np.nan
+            ax.fill_between(hours, lo, hi, color=color, alpha=0.15)
 
     ax.set_xlabel("Hour of day (UTC)")
     ax.set_ylabel(ylabel or metric.upper() + " (K)")
@@ -144,18 +142,30 @@ def diurnal_mean_plot(
     plt.rcParams.update(RC)
 
     hours = np.arange(24)
-    pred_mean = diurnal_mean_ds["pred_mean"].values
-    obs_mean = diurnal_mean_ds["obs_mean"].values
-    pred_std = diurnal_mean_ds["pred_std"].values
-    obs_std = diurnal_mean_ds["obs_std"].values
+    pred_mean = diurnal_mean_ds["pred_mean_q50" if "pred_mean_q50" in diurnal_mean_ds else "pred_mean"].values
+    obs_mean = diurnal_mean_ds["obs_mean_q50" if "obs_mean_q50" in diurnal_mean_ds else "obs_mean"].values
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
 
     pred_color = CASE_COLORS.get(case_label, _PRED_COLOR) if case_label else _PRED_COLOR
     ax.plot(hours, obs_mean, color=_OBS_COLOR, linewidth=2, marker="o", markersize=4, label="SEVIRI LST")
     ax.plot(hours, pred_mean, color=pred_color, linewidth=2, marker="o", markersize=4, label="Deep LST", alpha=0.85)
-    ax.fill_between(hours, obs_mean - obs_std, obs_mean + obs_std, color=_OBS_COLOR, alpha=0.15)
-    ax.fill_between(hours, pred_mean - pred_std, pred_mean + pred_std, color=pred_color, alpha=0.15)
+    if "obs_mean_q05" in diurnal_mean_ds:
+        ax.fill_between(
+            hours,
+            diurnal_mean_ds["obs_mean_q05"].values,
+            diurnal_mean_ds["obs_mean_q95"].values,
+            color=_OBS_COLOR,
+            alpha=0.15,
+        )
+    if "pred_mean_q05" in diurnal_mean_ds:
+        ax.fill_between(
+            hours,
+            diurnal_mean_ds["pred_mean_q05"].values,
+            diurnal_mean_ds["pred_mean_q95"].values,
+            color=pred_color,
+            alpha=0.15,
+        )
 
     for label, bl_mean in (baselines_mean or {}).items():
         color = _BASELINE_COLORS.get(label, _DEFAULT_COLOR)

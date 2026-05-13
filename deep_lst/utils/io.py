@@ -91,15 +91,19 @@ class ExperimentPaths:
         """Resolve the dense evaluation pixel index file for *modality* and *eval name*."""
         return self.assets_root / modality / "spatial" / f"indices_eval_{name}.npz"
 
+    @staticmethod
+    def _eval_fname(eval_name: str) -> str:
+        return eval_name if eval_name.startswith("eval_") else f"eval_{eval_name}"
+
     def persistence_path(self, eval_name: str) -> Path:
-        return self.assets_root / "baselines" / "persistence" / f"{eval_name}.nc"
+        return self.assets_root / "baselines" / "persistence" / f"{self._eval_fname(eval_name)}.nc"
 
     def baseline_path(self, eval_name: str) -> Path:
-        return self.assets_root / "baselines" / "era5" / f"{eval_name}.nc"
+        return self.assets_root / "baselines" / "era5" / f"{self._eval_fname(eval_name)}.nc"
 
     def climatology_path(self, eval_name: str, variant: str) -> Path:
         """variant : "hourly" | "smoothed_hourly" """
-        return self.assets_root / "baselines" / f"climatology_{variant}" / f"{eval_name}.nc"
+        return self.assets_root / "baselines" / f"climatology_{variant}" / f"{self._eval_fname(eval_name)}.nc"
 
     def temporal_indices_path(self, split: str) -> Path:
         """Resolve the pre-computed temporal block index file for *split*.

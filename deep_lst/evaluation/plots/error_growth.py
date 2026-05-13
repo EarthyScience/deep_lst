@@ -38,12 +38,13 @@ def error_growth_plot(
     plt.rcParams.update(RC)
     lead_td = pd.TimedeltaIndex(ds_by_lead["lead_time"].values)
     lead_hours = [int(lt.total_seconds() / 3600) for lt in lead_td]
-    vals = ds_by_lead[metric].values
-    stds = ds_by_lead[f"{metric}_std"].values
+    vals = ds_by_lead[f"{metric}_q50"].values
+    lo = ds_by_lead[f"{metric}_q05"].values
+    hi = ds_by_lead[f"{metric}_q95"].values
 
     fig, ax = plt.subplots(figsize=(9, 4.5))
     model_color = _CASE_COLORS.get(case_label, _DEFAULT_COLOR)
-    ax.fill_between(lead_hours, vals + 2 * stds, vals - 2 * stds, color=model_color, alpha=0.5)
+    ax.fill_between(lead_hours, lo, hi, color=model_color, alpha=0.5)
     ax.plot(lead_hours, vals, color=model_color, linewidth=2, marker="o", markersize=5, label="Deep LST")
 
     ax.set_xlabel("Lead time (h)")
@@ -77,32 +78,35 @@ def error_growth_daily_plot(
     plt.rcParams.update(RC)
     lead_td = pd.TimedeltaIndex(ds_by_lead["lead_time"].values)
     lead_hours = np.array([int(lt.total_seconds() / 3600) for lt in lead_td])
-    vals = ds_by_lead[metric].values
-    stds = ds_by_lead[f"{metric}_std"].values
+    vals = ds_by_lead[f"{metric}_q50"].values
+    q_lo = ds_by_lead[f"{metric}_q05"].values
+    q_hi = ds_by_lead[f"{metric}_q95"].values
 
     DAY_BUCKETS = [(1, 24), (25, 48), (49, 72), (73, 96), (97, 120), (121, 144), (145, 168)]
-    day_labels, day_means, day_vars = [], [], []
+    day_labels, day_means, day_los, day_his = [], [], [], []
 
-    for day_idx, (lo, hi) in enumerate(DAY_BUCKETS, start=1):
-        mask = (lead_hours >= lo) & (lead_hours <= hi)
+    for day_idx, (blo, bhi) in enumerate(DAY_BUCKETS, start=1):
+        mask = (lead_hours >= blo) & (lead_hours <= bhi)
         if not mask.any():
             continue
-        day_labels.append(f"Day {day_idx}\n({lo}–{hi} h)")
+        day_labels.append(f"Day {day_idx}\n({blo}–{bhi} h)")
         day_means.append(float(np.nanmean(vals[mask])))
-        day_vars.append(float(np.nanmean(stds[mask])))
+        day_los.append(float(np.nanmean(q_lo[mask])))
+        day_his.append(float(np.nanmean(q_hi[mask])))
 
     if not day_means:
         return
 
     x = np.arange(len(day_means))
     day_means = np.array(day_means)
-    day_vars = np.array(day_vars)
+    day_los = np.array(day_los)
+    day_his = np.array(day_his)
 
     fig, ax = plt.subplots(figsize=(max(5, len(day_means) * 1.5), 4.5))
 
     model_color = _CASE_COLORS.get(case_label, _DEFAULT_COLOR)
     ax.plot(x, day_means, color=model_color, linewidth=2, marker="o", markersize=8, label="Deep LST")
-    ax.fill_between(x, day_means + 2 * day_vars, day_means - 2 * day_vars, color=model_color, alpha=0.5)
+    ax.fill_between(x, day_los, day_his, color=model_color, alpha=0.5)
 
     ax.set_xticks(x)
     ax.set_xticklabels(day_labels)
@@ -197,11 +201,9 @@ def skill_plot(
     fig, ax = plt.subplots(figsize=(max(5, len(x) * 1.2), 4.5))
 
     for ref_label, ds_ref in references.items():
-        skill = ds_ref[metric].values
-        q_lo_key = next(k for k in ds_ref.data_vars if k.startswith(f"{metric}_q") and not k.endswith("95"))
-        q_hi_key = next(k for k in ds_ref.data_vars if k.startswith(f"{metric}_q") and not k.endswith("05"))
-        skill_q_lo = ds_ref[q_lo_key].values
-        skill_q_hi = ds_ref[q_hi_key].values
+        skill = ds_ref[f"{metric}_q50"].values
+        skill_q_lo = ds_ref[f"{metric}_q05"].values
+        skill_q_hi = ds_ref[f"{metric}_q95"].values
 
         day_median, day_q_lo, day_q_hi = [], [], []
         for lo, hi in DAY_BUCKETS:
