@@ -52,9 +52,9 @@ def _mae(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
     return np.abs(obs - pred).mean(dim=dim, skipna=True)
 
 
-@_register("correlation")
-def _correlation(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
-    """Pearson r. Apply to anomalies (pred-clim, obs-clim) to get ACC."""
+@_register("anomaly_correlation")
+def _anomaly_correlation(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
+    """Pearson r of anomalies (pred-pred_mean, obs-obs_mean) to get ACC."""
     p = pred - pred.mean(dim=dim, skipna=True)
     o = obs - obs.mean(dim=dim, skipna=True)
     num = (p * o).sum(dim=dim, skipna=True)
@@ -66,6 +66,19 @@ def _correlation(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
 def _r2(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
     ss_res = ((obs - pred) ** 2).sum(dim=dim, skipna=True)
     obs_mean = obs.mean(dim=dim, skipna=True)
+    ss_tot = ((obs - obs_mean) ** 2).sum(dim=dim, skipna=True)
+    return 1.0 - ss_res / ss_tot
+
+
+@_register("nash_sufcliffe_efficiency")
+def _nash_sufcliffe_efficiency(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
+    """Nash-Sutcliffe Efficiency (NSE) = 1 - (SS_res / SS_tot), where:
+    SS_res = sum((obs - pred)²) and SS_tot = sum((obs - obs_mean)²).
+    The sum is the sum over the time dimension.
+    NSE ranges from -∞ to 1, where 1 indicates a perfect match between pred and obs.
+    """
+    ss_res = ((obs - pred) ** 2).sum(dim=dim, skipna=True)
+    obs_mean = obs.mean(dim=dim, skipna=True)  # total mean of obs across the time dimension
     ss_tot = ((obs - obs_mean) ** 2).sum(dim=dim, skipna=True)
     return 1.0 - ss_res / ss_tot
 
@@ -121,28 +134,6 @@ def to_valid_time(
     obs = obs.assign_coords(init_time=valid_times).rename({"init_time": "valid_time"})
 
     return pred, obs
-
-
-def compute_persistence_baseline(
-    ds: xr.Dataset,
-    var: str,
-    lead_time: str | np.timedelta64,
-) -> xr.DataArray:
-    """Return the initial observed LST as a persistence forecast.
-
-    For each init_time t₀, the persistence forecast at valid_time t₀ + lead_time
-    is the observed LST at t₀ (lead_time index 0), held constant.
-    """
-    init_obs = ds[f"{var}_obs"].isel(lead_time=0)
-    # Drop any pre-existing valid_time coordinate (may be present in forecast files)
-    # to avoid a name collision when we rename init_time → valid_time.
-    if "valid_time" in init_obs.coords:
-        init_obs = init_obs.drop_vars("valid_time")
-    # Ensure init_time is axis 0 — the forecast dataset may store pixel before init_time.
-    init_obs = init_obs.transpose("init_time", ...)
-    lt_delta = np.timedelta64(pd.Timedelta(lead_time).value, "ns")
-    valid_times = ds["init_time"].values + lt_delta
-    return init_obs.assign_coords(init_time=valid_times).rename({"init_time": "valid_time"})
 
 
 # ---------------------------------------------------------------------------

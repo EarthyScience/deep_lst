@@ -92,27 +92,14 @@ class ExperimentPaths:
         return self.assets_root / modality / "spatial" / f"indices_eval_{name}.npz"
 
     def persistence_path(self, eval_name: str) -> Path:
-        """Resolve the SEVIRI LST persistence baseline NetCDF for an eval region.
-
-        Saved under assets/seviri/baselines/ and shared across experiments.
-        Created by scripts/benchmarks/extract_seviri_persistence.py.
-        """
-        return self.assets_root / "seviri" / "baselines" / f"persistence_{eval_name}.nc"
+        return self.assets_root / "baselines" / "persistence" / f"{eval_name}.nc"
 
     def baseline_path(self, eval_name: str) -> Path:
-        """Resolve the ERA5 SKT baseline NetCDF for an eval region.
-
-        Saved under assets/era5/baselines/ and shared across all experiments.
-        """
-        return self.assets_root / "era5" / "baselines" / f"baseline_{eval_name}.nc"
+        return self.assets_root / "baselines" / "era5" / f"{eval_name}.nc"
 
     def climatology_path(self, eval_name: str, variant: str) -> Path:
-        """Resolve the SEVIRI climatology NetCDF for an eval region.
-
-        variant : "hourly" | "smoothed_hourly"
-        Saved under assets/climatology/{variant}/ and shared across experiments.
-        """
-        return self.assets_root / "climatology" / variant / f"climatology_{eval_name}.nc"
+        """variant : "hourly" | "smoothed_hourly" """
+        return self.assets_root / "baselines" / f"climatology_{variant}" / f"{eval_name}.nc"
 
     def temporal_indices_path(self, split: str) -> Path:
         """Resolve the pre-computed temporal block index file for *split*.
