@@ -67,6 +67,7 @@ def parse_args():
     p.add_argument("--group_labels", nargs="*", default=None)
     p.add_argument("--metric", default="rmse")
     p.add_argument("--lead_time", default="1h")
+    p.add_argument("--temporal", nargs="+", default=None)
     p.add_argument("--variable", default="LST")
     p.add_argument("--plots", nargs="+", default=["boxplot", "diurnal_delta", "power_spectrum"])
     p.add_argument("--output_dir", type=Path, default=None)

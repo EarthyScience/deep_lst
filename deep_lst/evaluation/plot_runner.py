@@ -18,6 +18,7 @@ from deep_lst.evaluation.plots.spectra import (
     temporal_power_spectrum_plot,
 )
 from deep_lst.evaluation.plots.timeseries import timeseries_plot
+from deep_lst.evaluation.plots.verification import activity_plot
 
 
 class PlotRunnerDiagnostics:
@@ -181,8 +182,8 @@ class PlotRunnerDiagnostics:
         )
 
     _SCORE_MAP_METRICS = {
-        "anomaly_correlation": "ACC",
-        "nash_sufcliffe_efficiency": "NSE",
+        "acc": "ACC",
+        "nse": "NSE",
     }
 
     def plot_score_map(self):
@@ -250,9 +251,17 @@ class PlotRunnerVerification:
         self.baselines = baseline_evaluators or {}
 
     def run(self, plots: list[str] | None = None):
-        # Eagerly compute scores once so that plot_error_growth / plot_skill_scores
-        # don't each re-read the full zarr (201 lead_times × spatial grid is multi-GB).
         self.ev.scores = self.ev.scores.compute()
+        self.scores_summary = self.ev.summarise(self.ev.scores)
+        self.skill_references = {}
+        self.climate_references = {}
+        for label, bl_ev in self.baselines.items():
+            bl_scores = getattr(bl_ev, "baseline_scores", None)
+            if bl_scores is not None:
+                self.skill_references[label] = self.ev.summarise(1 - self.ev.scores / bl_scores.compute())
+            cs = getattr(bl_ev, "climate_scores", None)
+            if cs is not None:
+                self.climate_references[label] = self.ev.summarise(cs.compute())
         requested = set(plots) if plots else None
         for name in sorted(dir(self)):
             if name.startswith("plot_"):
@@ -260,10 +269,9 @@ class PlotRunnerVerification:
                     getattr(self, name)()
 
     def plot_error_growth(self):
-        ds = self.ev.summarise(self.ev.scores)
         for m in self.ev.metrics:
             error_growth_plot(
-                ds,
+                self.scores_summary,
                 case_label=self.label,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_error_growth_{m}.pdf",
@@ -271,10 +279,9 @@ class PlotRunnerVerification:
             )
 
     def plot_error_growth_daily(self):
-        ds = self.ev.summarise(self.ev.scores)
         for m in self.ev.metrics:
             error_growth_daily_plot(
-                ds,
+                self.scores_summary,
                 case_label=self.label,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_error_growth_daily_{m}.pdf",
@@ -282,25 +289,37 @@ class PlotRunnerVerification:
             )
 
     def plot_skill_scores(self):
-        references = {}
-        for label, bl_ev in self.baselines.items():
-            bl_scores = getattr(bl_ev, "baseline_scores", None)
-            if bl_scores is None:
-                continue
-            # Force-compute baseline scores once per baseline (reads baseline zarr),
-            # then divide against the already in-memory self.ev.scores.
-            skill = self.ev.scores / bl_scores.compute()
-            references[label] = self.ev.summarise(skill)
-        if not references:
+        if not self.skill_references:
             return
         for m in self.ev.metrics:
             skill_plot(
-                references,
+                self.skill_references,
                 case_label=self.label,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_skill_{m}.pdf",
                 eval_region=self.ev.eval_name,
             )
+
+    def plot_climate_acc(self):
+        if not self.climate_references:
+            return
+        skill_plot(
+            self.climate_references,
+            case_label=self.label,
+            metric="acc",
+            save_path=self.plots_dir / f"{self.ev.var}_climate_acc.pdf",
+            eval_region=self.ev.eval_name,
+        )
+
+    def plot_climate_activity(self):
+        if not self.climate_references:
+            return
+        activity_plot(
+            self.climate_references,
+            case_label=self.label,
+            save_path=self.plots_dir / f"{self.ev.var}_climate_activity.pdf",
+            eval_region=self.ev.eval_name,
+        )
 
     def plot_spatial_power_spectrum(self):
         if "pixel" in self.ev.forecast_ds.dims:
@@ -309,7 +328,15 @@ class PlotRunnerVerification:
             return
         from deep_lst.evaluation.metrics import to_valid_time
 
-        pred, obs = to_valid_time(self.ev.forecast_ds, self.ev.var)
+        pred = to_valid_time(
+            self.ev.forecast_ds[f"{self.ev.forecast_ds.var}_pred"].sel(lead_time=self.ev.lead_time),
+            lead_time=self.ev.lead_time,
+        )
+        obs = to_valid_time(
+            self.ev.forecast_ds[f"{self.ev.forecast_ds.var}_obs"].sel(lead_time=self.ev.lead_time),
+            lead_time=self.ev.lead_time,
+        )
+
         lats = self.ev.forecast_ds["lat"].values
         lons = self.ev.forecast_ds["lon"].values
         dx_km = _grid_spacing_km(lats, lons)

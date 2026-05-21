@@ -1,4 +1,4 @@
-"""Cross-site summary plots: RMSE and ACC distributions across eval regions."""
+"""Cross-site summary plots: RMSE, ACC, and ACC+NSE distributions across eval regions."""
 
 from pathlib import Path
 
@@ -169,6 +169,91 @@ def cross_site_acc_boxplot(
     ax.set_xticklabels(regions, rotation=20, ha="right", fontweight="bold")
     ax.set_ylabel("Anomaly Correlation Coefficient", fontweight="bold")
     ax.axhline(0.5, color="gray", linewidth=0.8, linestyle="--", zorder=0, label="ACC=0.5")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=False)
+        print(f"Saved: {save_path}")
+
+    return fig
+
+
+def cross_site_skill_boxplot(
+    acc_vals_by_region: dict[str, np.ndarray],
+    nse_vals_by_region: dict[str, np.ndarray],
+    save_path: Path = None,
+    violin: bool = False,
+) -> plt.Figure:
+    """Side-by-side ACC and NSE violin/box plots per eval region.
+
+    Both metrics are clipped at -0.1 (lower bound). Reference lines at ACC=0.5
+    and NSE=0 are drawn.
+
+    Parameters
+    ----------
+    acc_vals_by_region : dict[str, np.ndarray]
+        ``{region_label: acc_per_pixel}`` — per-pixel ACC, NaN-free.
+    nse_vals_by_region : dict[str, np.ndarray]
+        ``{region_label: nse_per_pixel}`` — per-pixel NSE, NaN-free.
+    """
+    plt.rcParams.update(RC)
+
+    regions = list(acc_vals_by_region.keys())
+    box_width = 0.22
+    group_spacing = 2 * box_width + 0.25
+    offsets = np.array([-1, 1]) * (box_width / 2 + 0.02)
+
+    acc_color = DEFAULT_COLOR
+    nse_color = "orchid"
+
+    _bp_kw = dict(
+        widths=box_width,
+        patch_artist=True,
+        medianprops=dict(color="black", linewidth=1.5),
+        manage_ticks=False,
+    )
+
+    fig, ax = plt.subplots(figsize=(max(5, len(regions) * group_spacing * 1.3), 4.5))
+
+    half = group_spacing / 2
+    stripe_colors = ["#f5f5f5", "#ebebeb"]
+    for g_idx in range(len(regions)):
+        x_center = g_idx * group_spacing
+        ax.axvspan(x_center - half, x_center + half, color=stripe_colors[g_idx % 2], zorder=0)
+
+    legend_handles = []
+    for g_idx, region in enumerate(regions):
+        x_center = g_idx * group_spacing
+
+        acc_vals = acc_vals_by_region.get(region)
+        if acc_vals is not None and len(acc_vals) > 0:
+            clipped = np.clip(acc_vals, -0.1, None)
+            h = _draw(ax, clipped, x_center + offsets[0], acc_color, box_width, violin, _bp_kw)
+            if g_idx == 0:
+                h.set_label("ACC")
+                legend_handles.append(h)
+
+        nse_vals = nse_vals_by_region.get(region)
+        if nse_vals is not None and len(nse_vals) > 0:
+            clipped = np.clip(nse_vals, -0.1, None)
+            h = _draw(ax, clipped, x_center + offsets[1], nse_color, box_width, violin, _bp_kw)
+            if g_idx == 0:
+                h.set_label("NSE")
+                legend_handles.append(h)
+
+    ax.axhline(0.5, color=acc_color, linewidth=0.9, linestyle="--", zorder=0)
+    ax.axhline(0.0, color=nse_color, linewidth=0.9, linestyle="--", zorder=0)
+
+    ax.set_xticks([g * group_spacing for g in range(len(regions))])
+    ax.set_xticklabels(regions, rotation=20, ha="center", fontweight="bold")
+    ax.set_ylabel("Skill score", fontweight="bold")
+    ax.set_ylim(bottom=-0.1)
+    ax.legend(handles=legend_handles, loc="lower left", framealpha=0.9)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 

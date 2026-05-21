@@ -1,11 +1,3 @@
-"""Time-series plot for forecast evaluation.
-
-timeseries_plot(ds, var, lead_time, ...)
-    Plots region-mean pred and obs as a continuous time series over the full
-    test period at a given lead time.  Useful for a sanity-check of whether
-    the model tracks the diurnal cycle and multi-day variation.
-"""
-
 from pathlib import Path
 
 import matplotlib.dates as mdates
@@ -41,36 +33,11 @@ def timeseries_plot(
     show_std: bool = True,
     case_label: str | None = None,
 ) -> plt.Figure:
-    """Region-mean time series of pred vs obs at a fixed lead time.
-
-    Aggregation
-    -----------
-    - Selects the requested lead_time from the (init_time, lead_time) forecast.
-    - Converts to valid_time coordinates (valid_time = init_time + lead_time).
-    - Takes the nanmean over all lat/lon pixels → one value per timestep.
-    - If show_std=True, adds ± 1 spatial std shading (variability across pixels).
-
-    Parameters
-    ----------
-    ds : xr.Dataset
-        ForecastResult dataset with dims (init_time, lead_time, lat, lon).
-    var : str
-        Variable name, e.g. "LST".
-    lead_time : str
-        Lead time to select, e.g. "1h" or "3h".
-    baselines : dict[str, xr.DataArray], optional
-        Aligned baseline DataArrays keyed by display label (e.g. "ERA5",
-        "hourly clim"). Each plotted as a dashed reference line.
-    save_path : Path, optional
-    title : str, optional
-    eval_region : str
-        Used in default title.
-    show_std : bool
-        If True, draw ± 1 spatial std shading around pred and obs means.
-    """
+    """Region-mean time series of pred vs obs at a fixed lead time."""
     plt.rcParams.update(RC)
 
-    pred, obs = to_valid_time(ds, var, lead_time=lead_time)
+    pred = to_valid_time(ds[f"{var}_pred"].sel(lead_time=lead_time), lead_time=lead_time)
+    obs = to_valid_time(ds[f"{var}_obs"].sel(lead_time=lead_time), lead_time=lead_time)
 
     # Spatial mean and std (over all non-time dims: lat/lon for dense, pixel for sparse)
     spatial_dims = [d for d in pred.dims if d != "valid_time"]

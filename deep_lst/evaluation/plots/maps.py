@@ -225,12 +225,12 @@ def improvement_map_multi(
     cbar_ax = fig.add_axes([0.91, 0.15, 0.018, 0.7])
     cbar = fig.colorbar(ims[-1], cax=cbar_ax)
     cbar.set_label(
-        f"RMSE(baseline) − RMSE({model_label})  (K)\nPositive = {model_label} better",
+        "RMSE diff (K) - Positive = DeepLST better",
         rotation=270,
         labelpad=22,
     )
 
-    suptitle = title or (f"RMSE improvement: {model_label}" + (f" — {eval_region}" if eval_region else ""))
+    suptitle = title or (f"RMSE(baseline) − RMSE({model_label})")
     fig.suptitle(suptitle, y=1.02)
 
     save_path = Path(save_path)

@@ -4,12 +4,12 @@ Benchmark plots are skipped automatically when no --baselines are provided.
 
 Usage
 -----
-uv run scripts/evaluation/run_evaluation.py     \
-    --experiment mlp_rollout_L_KG_crps_lb6_bptt_v3 \\
-    --version version_0     \
-    --eval sahel_niger     \
-    --lead_time 6h     \
-    --temporal test_period_23 \\
+uv run scripts/evaluation/run_evaluation.py
+    --experiment mlp_rollout_L_KG_crps_lb6_bptt_v3
+    --version version_0
+    --eval sahel_niger
+    --lead_time 6h
+    --temporal test_period_23
     --baselines era5 clim_smooth persistence
 
 Available --baselines:
@@ -20,6 +20,9 @@ Available --baselines:
 """
 
 import argparse
+import multiprocessing
+import time
+from concurrent.futures import ProcessPoolExecutor
 
 from deep_lst.evaluation.evaluator import EvaluatorDiagnostics, EvaluatorVerification
 from deep_lst.evaluation.plot_runner import PlotRunnerDiagnostics, PlotRunnerVerification
@@ -33,6 +36,18 @@ BASELINE_LABELS = {
     "clim_smooth": "smoothed clim",
     "persistence": "persistence",
 }
+
+
+def _run_evaluator(cls_name, kwargs):
+    """Module-level worker for ProcessPoolExecutor (must be picklable)."""
+    cls = {"EvaluatorDiagnostics": EvaluatorDiagnostics, "EvaluatorVerification": EvaluatorVerification}[cls_name]
+    ev = cls(**kwargs)
+    ev.run()
+    for attr in ("scores", "grouped", "pred", "obs", "baseline_scores", "baseline_grouped", "baseline_aligned"):
+        val = getattr(ev, attr, None)
+        if val is not None and hasattr(val, "compute"):
+            setattr(ev, attr, val.compute())
+    return ev
 
 
 def _detect_case_label(experiment: str) -> str:
@@ -73,7 +88,7 @@ def run_evaluation():
     print(f"Case label : {label}")
     print(f"Baselines  : {args.baselines or '(none)'}")
 
-    evaluator_arguments = dict(
+    base_kwargs = dict(
         experiment=args.experiment,
         version=args.version,
         eval_name=args.eval,
@@ -83,28 +98,27 @@ def run_evaluation():
         consistent_mask=False,
         overwrite=args.overwrite,
     )
+    diag_extra = dict(aggregation="region_space", groupby="diurnal", lead_time=args.lead_time)
+    verif_extra = dict(aggregation="region_time")
+    baselines = args.baselines or []
 
-    def make_diag(baseline):
-        eval_diagnostics = EvaluatorDiagnostics(
-            **evaluator_arguments,
-            baseline=baseline,
-            aggregation="region_space",
-            groupby="diurnal",
-            lead_time=args.lead_time,
-        )
-        eval_diagnostics.run()
-        return eval_diagnostics
+    task_specs = {
+        ("Diag", None): ("EvaluatorDiagnostics", {**base_kwargs, **diag_extra, "baseline": None}),
+        ("Verif", None): ("EvaluatorVerification", {**base_kwargs, **verif_extra, "baseline": None}),
+    }
+    for b in baselines:
+        task_specs[("Diag", b)] = ("EvaluatorDiagnostics", {**base_kwargs, **diag_extra, "baseline": b})
+        task_specs[("Verif", b)] = ("EvaluatorVerification", {**base_kwargs, **verif_extra, "baseline": b})
 
-    def make_verif(baseline):
-        eval_verification = EvaluatorVerification(**evaluator_arguments, baseline=baseline, aggregation="region_time")
-        eval_verification.run()
-        return eval_verification
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=len(task_specs), mp_context=ctx) as pool:
+        futures = {key: pool.submit(_run_evaluator, cls_name, kw) for key, (cls_name, kw) in task_specs.items()}
+        results = {key: f.result() for key, f in futures.items()}
 
-    eval_diagnostics = make_diag(None)
-    eval_verification = make_verif(None)
-
-    baselines_diagnostics = {BASELINE_LABELS[baseline]: make_diag(baseline) for baseline in (args.baselines or [])}
-    baselines_verification = {BASELINE_LABELS[baseline]: make_verif(baseline) for baseline in (args.baselines or [])}
+    eval_diagnostics = results[("Diag", None)]
+    eval_verification = results[("Verif", None)]
+    baselines_diagnostics = {BASELINE_LABELS[b]: results[("Diag", b)] for b in baselines}
+    baselines_verification = {BASELINE_LABELS[b]: results[("Verif", b)] for b in baselines}
 
     PlotRunnerDiagnostics(eval_diagnostics, label, plots_dir, baselines_diagnostics).run(args.plots)
     PlotRunnerVerification(eval_verification, label, plots_dir, baselines_verification).run(args.plots)
@@ -113,4 +127,6 @@ def run_evaluation():
 
 
 if __name__ == "__main__":
+    start = time.time()
     run_evaluation()
+    print(f"Total runtime in minutes: {(time.time() - start) / 60:.1f}")

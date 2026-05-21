@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from deep_lst.evaluation.metrics import compute_grouped_scores, compute_scores, to_valid_time
+from deep_lst.evaluation.metrics import compute_grouped_scores, compute_scores, to_init_time, to_valid_time
 from deep_lst.utils import ExperimentPaths
 
 _BASELINE_REGISTRY: dict[str, tuple[callable, str]] = {
@@ -19,7 +19,18 @@ class Evaluator(ABC):
     """Shared: load, filter, baseline loading, saving."""
 
     def __init__(
-        self, experiment, version, eval_name, var, metrics, baseline, temporal, aggregation, consistent_mask, overwrite
+        self,
+        experiment,
+        version,
+        eval_name,
+        var,
+        metrics,
+        baseline,
+        temporal,
+        aggregation,
+        consistent_mask,
+        overwrite,
+        reduction_order: tuple = ("space", "time"),
     ):
         self.experiment = experiment
         self.version = version
@@ -30,13 +41,25 @@ class Evaluator(ABC):
         self.overwrite = overwrite
         self.temporal = temporal
         self.aggregation = aggregation
+        self.reduction_order = reduction_order
         self.consistent_mask = consistent_mask
         self.paths = ExperimentPaths()
 
-    def run(self):
-        self.forecast_ds = self._load_forecast()
-        self.forecast_ds = self._filter(self.forecast_ds)
+    def run(self, forecast_ds=None):
+        if forecast_ds is not None:
+            self.forecast_ds = forecast_ds
+        else:
+            self.forecast_ds = self._load_forecast()
+            self.forecast_ds = self._filter(self.forecast_ds)
+
+        self.pred = self.forecast_ds[f"{self.var}_pred"]
+        self.obs = self.forecast_ds[f"{self.var}_obs"]
+
         self.baseline_ds = self._load_baseline()  # raw, unaligned
+
+        if self.baseline_ds is not None:
+            self.baseline_ds = self._subset_pixels(self.baseline_ds, self.pred.isel(lead_time=0))
+
         self._compute()  # subclass sets self.metrics
 
     @abstractmethod
@@ -48,7 +71,7 @@ class Evaluator(ABC):
         path = self.paths.forecast_path(self.experiment, self.version, self.eval_name)
         if not path.exists():
             raise FileNotFoundError(f"Forecast not found: {path}")
-        return xr.open_zarr(path, chunks={})
+        return xr.open_zarr(path, chunks={"init_time": 500})
 
     def _filter(self, ds: xr.Dataset) -> xr.Dataset:
         filtered = ds
@@ -86,12 +109,6 @@ class Evaluator(ABC):
 
         return xr.open_dataset(path)[var_name]
 
-    def _save_metric(self, ds, path):
-        pass
-
-    def _to_valid_time(self, lead_time) -> tuple[xr.DataArray, xr.DataArray]:
-        return to_valid_time(self.forecast_ds, self.var, lead_time)
-
     def _align_baseline(self, valid_times: np.ndarray) -> xr.DataArray:
         return self.baseline_ds.reindex(valid_time=valid_times)
 
@@ -117,6 +134,21 @@ class Evaluator(ABC):
         idx = [lookup[(float(la), float(lo))] for la, lo in zip(p_lats, p_lons)]
         return baseline_ds.isel(pixel=idx)
 
+    def summarise(self, source: xr.Dataset, quantiles=(0.05, 0.50, 0.95)) -> xr.Dataset:
+        keep_dim = next((d for d in source.dims if d in ("lead_time", "hour", "month")), None)
+        first_metric = next(iter(source.data_vars.values()))
+        spatial_dims = [d for d in first_metric.dims if d != keep_dim]
+        if not spatial_dims:
+            return source
+        q_labels = [f"q{int(q * 100):02d}" for q in quantiles]
+        return xr.Dataset(
+            {
+                f"{metric}_{ql}": source[metric].quantile(q, dim=spatial_dims).drop_vars("quantile")
+                for metric in source.data_vars
+                for q, ql in zip(quantiles, q_labels)
+            }
+        )
+
 
 class EvaluatorDiagnostics(Evaluator):
     """Fixed lead time → valid_time space. Standard metrics, diurnal, spatial."""
@@ -135,115 +167,101 @@ class EvaluatorDiagnostics(Evaluator):
         consistent_mask,
         overwrite,
         lead_time,
+        reduction_order: tuple = ("space", "time"),
     ):
         super().__init__(
-            experiment, version, eval_name, var, metrics, baseline, temporal, aggregation, consistent_mask, overwrite
+            experiment,
+            version,
+            eval_name,
+            var,
+            metrics,
+            baseline,
+            temporal,
+            aggregation,
+            consistent_mask,
+            overwrite,
+            reduction_order=reduction_order,
         )
         self.lead_time = lead_time
         self.groupby = groupby
 
     def _compute(self):
-        self.pred, self.obs = self._to_valid_time(self.lead_time)
-        self._compute_scores_forecast()
-        self._compute_scores_baseline()
+        self.pred = to_valid_time(self.pred.sel(lead_time=self.lead_time), self.lead_time)
+        self.obs = to_valid_time(self.obs.sel(lead_time=self.lead_time), self.lead_time)
 
-    def _compute_scores_forecast(self):
-        self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
-        self.grouped = compute_grouped_scores(self.pred, self.obs, self.metrics, self.aggregation, self.groupby)
-
-    def _compute_scores_baseline(self):
-        if self.baseline_ds is None:
-            self.baseline_scores = self.baseline_grouped = None
-            return
-
-        bl = self._align_baseline(self.obs["valid_time"].values)
-        bl = self._subset_pixels(bl, self.pred)
-        bl = bl.where(np.isfinite(self.pred))
-        self.baseline_aligned = bl
-
-        self.baseline_scores = compute_scores(bl, self.obs, self.metrics, self.aggregation)
-
-        self.baseline_grouped = compute_grouped_scores(bl, self.obs, self.metrics, self.aggregation, self.groupby)
-
-    def summarise(self, source: xr.Dataset, quantiles=(0.05, 0.50, 0.95)) -> xr.Dataset:
-        group_dim = next(d for d in source.dims if d in ("hour", "month"))
-        spatial_dims = [d for d in source.dims if d != group_dim]
-        if not spatial_dims:
-            return source
-        q_labels = [f"q{int(q * 100):02d}" for q in quantiles]
-        return xr.Dataset(
-            {
-                f"{m}_{ql}": source[m].quantile(q, dim=spatial_dims).drop_vars("quantile")
-                for m in source.data_vars
-                if m != "n_valid"
-                for q, ql in zip(quantiles, q_labels)
-            }
+        self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation, self.reduction_order)
+        self.grouped = compute_grouped_scores(
+            self.pred, self.obs, self.metrics, self.aggregation, self.groupby, self.reduction_order
         )
+
+        if self.baseline_ds is not None:
+            aligned = self._align_baseline(self.obs["valid_time"].values)
+            aligned_masked = aligned.where(np.isfinite(self.pred))
+            self.baseline_aligned = aligned_masked  # save for later
+
+            self.baseline_scores = compute_scores(
+                aligned_masked, self.obs, self.metrics, self.aggregation, self.reduction_order
+            )
+            self.baseline_grouped = compute_grouped_scores(
+                aligned_masked, self.obs, self.metrics, self.aggregation, self.groupby, self.reduction_order
+            )
+
+        else:
+            self.baseline_scores = None
+            self.baseline_grouped = None
 
 
 class EvaluatorVerification(Evaluator):
-    """Full (init_time, lead_time) space. Error growth, skill scores."""
+    """Full (init_time, lead_time) space. Error growth, skill scores, climate metrics."""
+
+    _CLIMATE_BASELINES = ("clim_smooth", "clim_hourly")
+    _ANOMALY_METRICS = ["activity", "acc"]
 
     def _compute(self):
-        self._compute_scores_forecast()
-        self._compute_scores_baseline()
-        self._compute_skill_scores()
-
-    def _align_baseline(self, valid_times) -> xr.DataArray:
-        aligned = super()._align_baseline(valid_times)
-        return aligned.assign_coords(valid_time=self.forecast_ds["init_time"].values).rename(
-            {"valid_time": "init_time"}
-        )
-
-    def _compute_scores_forecast(self):
         lead_times = self.forecast_ds["lead_time"].values
-        slices = []
+        score_slices, baseline_slices, climate_slices = [], [], []
+
         for lead_time in lead_times:
-            pred_lt = self.forecast_ds[f"{self.var}_pred"].sel(lead_time=lead_time)
-            obs_lt = self.forecast_ds[f"{self.var}_obs"].sel(lead_time=lead_time)
-            slices.append(compute_scores(pred_lt, obs_lt, self.metrics, aggregation=self.aggregation))
-        self.scores = xr.concat(slices, dim=pd.Index(lead_times, name="lead_time"))
+            pred_lt = self.pred.sel(lead_time=lead_time)
+            obs_lt = self.obs.sel(lead_time=lead_time)
+            score_slices.append(compute_scores(pred_lt, obs_lt, self.metrics, self.aggregation))
 
-    def _compute_scores_baseline(self):
-        if self.baseline_ds is None:
-            self.baseline_scores = None
-            return
+            if self.baseline_ds is not None:
+                baseline_aligned = self._process_baseline(pred_lt, lead_time)
+                baseline_slices.append(compute_scores(baseline_aligned, obs_lt, self.metrics, self.aggregation))
 
-        lead_times = self.forecast_ds["lead_time"].values
-        slices = []
-        for lead_time in lead_times:
-            pred_lt = self.forecast_ds[f"{self.var}_pred"].sel(lead_time=lead_time)
-            obs_lt = self.forecast_ds[f"{self.var}_obs"].sel(lead_time=lead_time)
+                if self.baseline in self._CLIMATE_BASELINES:
+                    pred_anom = pred_lt - baseline_aligned
+                    obs_anom = obs_lt - baseline_aligned
+                    climate_slices.append(compute_scores(pred_anom, obs_anom, self._ANOMALY_METRICS, self.aggregation))
 
-            lead_time_hour = int(pd.Timedelta(lead_time).total_seconds() // 3600)
-            _, obs_valid_time = self._to_valid_time(f"{lead_time_hour}h")
-            aligned = self._align_baseline(obs_valid_time["valid_time"].values)
-            aligned = self._subset_pixels(aligned, pred_lt)
+        lt_index = pd.Index(lead_times, name="lead_time")
+        self.scores = xr.concat(score_slices, dim=lt_index)
+        self.baseline_scores = xr.concat(baseline_slices, dim=lt_index) if baseline_slices else None
+        self.climate_scores = xr.concat(climate_slices, dim=lt_index) if climate_slices else None
+        self.skill_scores = self.scores / self.baseline_scores if self.baseline_scores is not None else None
 
-            # mask to valid times for fair comparison.
-            masked = aligned.where(np.isfinite(pred_lt))
+    def _process_baseline(self, pred_lt, lead_time) -> xr.DataArray:
+        lead_time_hour = int(pd.Timedelta(lead_time).total_seconds() // 3600)
+        lt_str = f"{lead_time_hour}h"
+        valid_times = pred_lt["init_time"].values + np.timedelta64(lead_time_hour, "h")
+        aligned = self._align_baseline(valid_times)
+        aligned = to_init_time(aligned, lt_str)
+        return aligned.where(np.isfinite(pred_lt))
 
-            slices.append(compute_scores(masked, obs_lt, self.metrics, aggregation=self.aggregation))
-        self.baseline_scores = xr.concat(slices, dim=pd.Index(lead_times, name="lead_time"))
 
-    def _compute_skill_scores(self):
-        if self.baseline_scores is not None:
-            self.skill_scores = self.scores / self.baseline_scores
-
-    def summarise(
-        self,
-        source: xr.Dataset,  # self.scores, self.baseline_scores[label], or self.skill_scores[label]
-        quantiles: tuple[float, ...] = (0.05, 0.50, 0.95),
-        period=None,
-    ) -> xr.Dataset:
-        ds = source if period is None else source.sel(init_time=period)
-        q_labels = [f"q{int(q * 100):02d}" for q in quantiles]
-        return xr.Dataset(
-            {
-                f"{m}_{ql}": ds[m].quantile(q, dim="init_time").drop_vars("quantile")
-                for m in ds.data_vars
-                if m != "n_valid"
-                for q, ql in zip(quantiles, q_labels)
-            },
-            coords={"lead_time": self.forecast_ds["lead_time"].values},
-        )
+def run_evaluators_across_sites(
+    ev_kwargs: dict,
+    eval_names: list[str],
+    baseline: str | None = None,
+) -> dict[str, EvaluatorDiagnostics]:
+    """Run EvaluatorDiagnostics for each eval region, skipping missing forecasts."""
+    results = {}
+    for eval_region in eval_names:
+        try:
+            evaluator = EvaluatorDiagnostics(**ev_kwargs, eval_name=eval_region, baseline=baseline)
+            evaluator.run()
+            results[eval_region] = evaluator
+        except FileNotFoundError:
+            print(f"  [skip] {eval_region}: forecast not found")
+    return results

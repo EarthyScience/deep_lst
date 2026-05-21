@@ -6,7 +6,8 @@ all sites on a shared x-axis.
 Plots generated
 ---------------
 cross_site_rmse_boxplot   Paired boxplots: model + baselines per region
-cross_site_acc_boxplot    Per-pixel ACC distribution per region
+cross_site_acc_boxplot    Per-timestep ACC distribution per region
+cross_site_skill_boxplot  Side-by-side ACC and NSE per region
 
 Usage
 -----
@@ -16,31 +17,28 @@ uv run scripts/evaluation/run_across_sites.py \\
     --baseline era5 clim_smooth \\
     --lead_time 3h
 
-Available --baseline:  era5  clim_hourly  clim_smooth  persistence
+Available --baseline:        era5  clim_hourly  clim_smooth  persistence
+Available --reduction_order: space_then_time  time_then_space
 """
 
 import argparse
 
 import numpy as np
 
-from deep_lst.evaluation.evaluator import EvaluatorDiagnostics
-from deep_lst.evaluation.metrics import compute_scores
-from deep_lst.evaluation.plots.across_sites import cross_site_acc_boxplot, cross_site_rmse_boxplot
+from deep_lst.evaluation.evaluator import run_evaluators_across_sites
+from deep_lst.evaluation.plots.across_sites import (
+    cross_site_acc_boxplot,
+    cross_site_rmse_boxplot,
+    cross_site_skill_boxplot,
+)
 from deep_lst.utils import ExperimentPaths
 
 PATHS = ExperimentPaths()
 
-BASELINE_LABELS = {
+_BASELINES = {
     "era5": "ERA5",
-    "clim_hourly": "hourly clim",
-    "clim_smooth": "smoothed clim",
-    "persistence": "persistence",
-}
-
-_BASELINE_PLOT_LABEL = {
-    "ERA5": "ERA5",
-    "hourly clim": "Climatology",
-    "smoothed clim": "Climatology (smooth)",
+    "clim_hourly": "Climatology",
+    "clim_smooth": "Climatology (smooth)",
     "persistence": "Persistence",
 }
 
@@ -68,6 +66,11 @@ _REGION_DISPLAY = {
     "yangambi": "Yangambi",
 }
 
+_REDUCTION_ORDER_MAP = {
+    "space_then_time": ("space", "time"),
+    "time_then_space": ("time", "space"),
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -78,87 +81,80 @@ def parse_args():
     p.add_argument("--version", required=True)
     p.add_argument("--baseline", nargs="+", default=["era5"])
     p.add_argument("--lead_time", default="3h")
+    p.add_argument("--temporal", nargs="+", default=None)
     p.add_argument("--evals", nargs="+", default=_ALL_EVALS)
     p.add_argument("--metric", default="rmse")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--violin", action="store_true")
+    p.add_argument(
+        "--reduction_order",
+        choices=list(_REDUCTION_ORDER_MAP),
+        default="space_then_time",
+        help="Reduction order used when aggregation='total' (stored on the evaluator).",
+    )
     return p.parse_args()
 
 
 def run_across_sites():
     args = parse_args()
-    out_dir = PATHS.results_dir(args.experiment, args.version, "across_sites")
+    reduction_order = _REDUCTION_ORDER_MAP[args.reduction_order]
+
+    period = "_".join(args.temporal) if args.temporal else "all"
+    out_dir = PATHS.results_plots_dir(args.experiment, args.version, "across_sites") / period
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Experiment : {args.experiment} / {args.version}")
-    print(f"Baselines  : {args.baseline}   Lead time: {args.lead_time}")
+    print(f"Experiment      : {args.experiment} / {args.version}")
+    print(f"Baselines       : {args.baseline}   Lead time: {args.lead_time}")
+    print(f"Reduction order : {args.reduction_order}")
 
-    model_vals: dict[str, np.ndarray] = {}
-    acc_vals: dict[str, np.ndarray] = {}
-    baselines_vals: dict[str, dict[str, np.ndarray]] = {
-        BASELINE_LABELS[b]: {} for b in args.baseline if b in BASELINE_LABELS
-    }
-
+    # aggregation="region_time" → scores have shape (valid_time,), one value per timestep.
+    # All metrics come from ev.scores / ev.baseline_scores; no compute_scores in this script.
     ev_kwargs = dict(
         experiment=args.experiment,
         version=args.version,
         var="LST",
-        metrics=["rmse"],
-        temporal=None,
-        aggregation="region_space",
+        metrics=["rmse", "acc", "nse"],
+        temporal=args.temporal,
+        aggregation="region_time",
         groupby="diurnal",
         consistent_mask=False,
         overwrite=False,
         lead_time=args.lead_time,
+        reduction_order=reduction_order,
     )
 
-    for eval_region in args.evals:
-        try:
-            ev = EvaluatorDiagnostics(**ev_kwargs, eval_name=eval_region, baseline=None)
-            ev.run()
-        except FileNotFoundError:
-            print(f"  [skip] {eval_region}: forecast not found")
-            continue
+    model_evs = run_evaluators_across_sites(ev_kwargs, args.evals, baseline=None)
+    baseline_evs = {b: run_evaluators_across_sites(ev_kwargs, args.evals, baseline=b) for b in args.baseline}
 
-        rmse = compute_scores(ev.pred, ev.obs, ["rmse"], "region_time")["rmse"].values
-        model_vals[eval_region] = rmse[np.isfinite(rmse)]
+    model_rmse, acc_vals, nse_vals = {}, {}, {}
+    for region, evaluator in model_evs.items():
+        rmse = evaluator.scores["rmse"].values
+        model_rmse[region] = rmse[np.isfinite(rmse)]
+        acc = evaluator.scores["acc"].values.ravel()
+        if np.isfinite(acc).any():
+            acc_vals[region] = acc[np.isfinite(acc)]
+        nse = evaluator.scores["nse"].values.ravel()
+        if np.isfinite(nse).any():
+            nse_vals[region] = nse[np.isfinite(nse)]
 
-        acc_flat = compute_scores(ev.pred, ev.obs, ["anomaly_correlation"], "region_space")[
-            "anomaly_correlation"
-        ].values.ravel()
-        if np.isfinite(acc_flat).any():
-            acc_vals[eval_region] = acc_flat[np.isfinite(acc_flat)]
+    baselines_rmse = {}
+    for baseline, evaluator in baseline_evs.items():
+        label = _BASELINES[baseline]
+        baselines_rmse[label] = {
+            region: ev_bl.baseline_scores["rmse"].values[np.isfinite(ev_bl.baseline_scores["rmse"].values)]
+            for region, ev_bl in evaluator.items()
+        }
 
-        print(f"  [ok] {eval_region}: {len(model_vals[eval_region])} timesteps")
-
-        for b_key in args.baseline:
-            if b_key not in BASELINE_LABELS:
-                print(f"  [warn] unknown baseline {b_key!r}")
-                continue
-            try:
-                ev_bl = EvaluatorDiagnostics(**ev_kwargs, eval_name=eval_region, baseline=b_key)
-                ev_bl.run()
-            except FileNotFoundError:
-                print(f"  [skip] {eval_region}/{b_key}: baseline not found")
-                continue
-            bl_rmse = compute_scores(ev_bl.baseline_aligned, ev_bl.obs, ["rmse"], "region_time")["rmse"].values
-            baselines_vals[BASELINE_LABELS[b_key]][eval_region] = bl_rmse[np.isfinite(bl_rmse)]
-
-    if not model_vals:
-        print("No model metrics found. Exiting.")
-        return
-
-    model_vals = {_REGION_DISPLAY.get(r, r): v for r, v in model_vals.items()}
+    # --- apply display names ---
+    model_rmse = {_REGION_DISPLAY.get(r, r): v for r, v in model_rmse.items()}
     acc_vals = {_REGION_DISPLAY.get(r, r): v for r, v in acc_vals.items()}
-    baselines_vals = {
-        _BASELINE_PLOT_LABEL.get(bl, bl): {_REGION_DISPLAY.get(r, r): v for r, v in rv.items()}
-        for bl, rv in baselines_vals.items()
-    }
+    nse_vals = {_REGION_DISPLAY.get(r, r): v for r, v in nse_vals.items()}
+    baselines_rmse = {bl: {_REGION_DISPLAY.get(r, r): v for r, v in rv.items()} for bl, rv in baselines_rmse.items()}
 
-    bl_str = "_".join(BASELINE_LABELS.get(b, b) for b in args.baseline)
+    bl_str = "_".join(_BASELINES.get(b, b) for b in args.baseline)
     cross_site_rmse_boxplot(
-        model_vals_by_region=model_vals,
-        baselines_vals_by_region=baselines_vals,
+        model_vals_by_region=model_rmse,
+        baselines_vals_by_region=baselines_rmse,
         model_label="Deep LST",
         metric=args.metric,
         save_path=out_dir / f"cross_site_{args.metric}_lt{args.lead_time}_vs_{bl_str}.pdf",
@@ -173,7 +169,17 @@ def run_across_sites():
             violin=args.violin,
         )
     else:
-        print("  [skip] ACC plot: no ACC values computed (grid data required)")
+        print("  [skip] ACC plot: no finite ACC values")
+
+    if acc_vals or nse_vals:
+        cross_site_skill_boxplot(
+            acc_vals_by_region=acc_vals,
+            nse_vals_by_region=nse_vals,
+            save_path=out_dir / f"cross_site_skill_lt{args.lead_time}.pdf",
+            violin=args.violin,
+        )
+    else:
+        print("  [skip] skill plot: no finite ACC/NSE values")
 
     print("\nDone.")
 

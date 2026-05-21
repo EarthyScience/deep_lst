@@ -174,11 +174,10 @@ def skill_plot(
     save_path,
     eval_region: str,
 ) -> None:
-    """Skill score (median per-time model/ref RMSE ratio) vs lead time, daily buckets.
+    """Skill score vs lead time, daily buckets.
 
-    Each dataset in ``references`` must come from compute_skill_scores_by_lead_time
-    and contain {metric}, {metric}_q05, {metric}_q95.
-    SS < 1 means the model beats the reference; SS = 1 is the break-even line.
+    Values in ``references`` are plotted directly — apply any transformation
+    (e.g. ``1 - ratio``) before passing. 0 is marked as the break-even line.
     """
     plt.rcParams.update(RC)
     first = next(iter(references.values()))
@@ -222,11 +221,12 @@ def skill_plot(
         ax.plot(x, day_median, color=c, linewidth=2, marker="o", markersize=8, label=display_label)
         ax.fill_between(x, day_q_lo, day_q_hi, color=c, alpha=0.3)
 
-    ax.set_ylim(0, None)
+    ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.set_ylim(None, 1)
     ax.set_xticks(x)
     ax.set_xticklabels(day_labels, fontweight="bold")
-    ax.set_ylabel(f"Skill ({metric.upper()})", fontweight="bold")
-    ax.legend(title="Reference", loc="upper right", bbox_to_anchor=(1.01, 1.0), borderaxespad=0, framealpha=0.9)
+    ax.set_ylabel(f"Skill Score ({metric.upper()})", fontweight="bold")
+    ax.legend(title="Reference", loc="lower left", borderaxespad=0, framealpha=0.9)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     plt.tight_layout()

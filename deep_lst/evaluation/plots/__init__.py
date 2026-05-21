@@ -12,7 +12,7 @@ from deep_lst.evaluation.plots.error_growth import (
 from deep_lst.evaluation.plots.maps import bias_maps, improvement_map
 from deep_lst.evaluation.plots.sweep import sweep_overview
 from deep_lst.evaluation.plots.timeseries import timeseries_plot
-from deep_lst.evaluation.plots.verification import error_vs_leadtime, plume_diagram, regression_parity
+from deep_lst.evaluation.plots.verification import regression_parity
 
 __all__ = [
     "sweep_overview",
@@ -24,8 +24,6 @@ __all__ = [
     "error_growth_daily_plot",
     "skill_plot",
     "regression_parity",
-    "plume_diagram",
-    "error_vs_leadtime",
     "cross_site_rmse_boxplot",
     "cross_site_acc_boxplot",
 ]
