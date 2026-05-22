@@ -13,7 +13,6 @@ PATHS = ExperimentPaths()
 
 def _load_samples(
     path: str,
-    modality_id: str,
     start_time: str | None = None,
     end_time: str | None = None,
     temporal_indices_path: str | list | None = None,
@@ -21,17 +20,13 @@ def _load_samples(
     lookback: int = 0,
 ) -> np.ndarray:
     data = np.load(path)
-    space_idx = data.get(f"{modality_id}_indices", data.get("mapping"))
-    if space_idx is None:
-        raise KeyError(f"No spatial index key found in {path}")
+    space_idx = data["mapping"]
+    order = np.argsort(data["src_indices"], kind="stable")
+    space_idx = space_idx[order]
 
     if temporal_indices_path is not None:
-        if isinstance(temporal_indices_path, list | tuple):
-            time_idx = np.unique(
-                np.concatenate([np.load(p)["time_indices"].astype(np.int64) for p in temporal_indices_path])
-            )
-        else:
-            time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64)
+        time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64)
+
         if horizon > 0:
             time_idx = time_idx[time_idx <= time_idx.max() - horizon]
         if lookback > 0:

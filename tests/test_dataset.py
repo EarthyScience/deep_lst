@@ -11,9 +11,7 @@ import torch
 from tensordict import TensorDict
 
 pytest.importorskip("eodata", reason="eodata not installed — skipping dataset tests")
-from deep_lst.dataset.dataset import MultimodalDataset, UnimodalDataset
-
-# ── mock reader ───────────────────────────────────────────────────────────────
+from deep_lst.dataset.dataset import MultimodalDataset, UnimodalDataset, _load_samples
 
 
 class MockReader:
@@ -31,7 +29,16 @@ class MockReader:
         )
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+def _write_spatial(tmp_path, mapping, src_indices):
+    path = tmp_path / "spatial.npz"
+    np.savez(path, mapping=np.asarray(mapping, dtype=np.int64), src_indices=np.asarray(src_indices, dtype=np.int64))
+    return path
+
+
+def _write_temporal(tmp_path, values):
+    path = tmp_path / "temporal.npz"
+    np.savez(path, time_indices=np.array(values, dtype=np.int64))
+    return path
 
 
 def make_indices(n_spatial: int, n_time: int) -> np.ndarray:
@@ -42,7 +49,46 @@ def make_indices(n_spatial: int, n_time: int) -> np.ndarray:
     return np.stack([s.ravel(), t.ravel()], axis=1)
 
 
-# ── UnimodalDataset ───────────────────────────────────────────────────────────
+def test_load_samples_sorted(tmp_path):
+    mapping_sorted = src_indices = [10, 20, 40, 50]
+    spatial = _write_spatial(tmp_path, mapping_sorted, src_indices)
+    temporal = _write_temporal(tmp_path, [0, 1, 2])  # single time index for simplicity
+
+    samples = _load_samples(spatial, temporal_indices_path=temporal)
+
+    # 4 pixels × 3 timesteps, space-first meshgrid
+    assert samples.shape == (4 * 3, 2)
+    pixel_indices = samples[:, 0].reshape(4, 3)[:, 0]
+    assert pixel_indices.tolist() == mapping_sorted
+
+
+def test_load_samples_unsorted(tmp_path):
+    mapping_unsorted = src_indices = [50, 10, 40, 20]
+    sorted_mapping = [10, 20, 40, 50]
+    spatial = _write_spatial(tmp_path, mapping_unsorted, src_indices)
+    temporal = _write_temporal(tmp_path, [0, 1, 2])  # single time index for simplicity
+
+    samples = _load_samples(spatial, temporal_indices_path=temporal)
+
+    # 4 pixels × 3 timesteps, space-first meshgrid
+    assert samples.shape == (4 * 3, 2)
+    pixel_indices = samples[:, 0].reshape(4, 3)[:, 0]
+    assert pixel_indices.tolist() == sorted_mapping
+
+
+def test_load_samples_crossmodal_alignment(tmp_path):
+    spatial_sev = _write_spatial(tmp_path, [50, 10, 40, 20], [50, 10, 40, 20])
+    spatial_era = _write_spatial(tmp_path, [500, 100, 400, 200], [50, 10, 40, 20])
+    temporal = _write_temporal(tmp_path, [0, 1, 2])
+
+    seviri_samples = _load_samples(spatial_sev, temporal_indices_path=temporal)
+    era5_samples = _load_samples(spatial_era, temporal_indices_path=temporal)
+
+    sev_src_sorted = np.sort(np.load(spatial_sev)["src_indices"])
+    era_src_sorted = np.sort(np.load(spatial_era)["src_indices"])
+
+    assert np.array_equal(sev_src_sorted, era_src_sorted)
+    assert np.array_equal(seviri_samples[:, 0], era5_samples[:, 0])
 
 
 def test_unimodal_len():
@@ -91,9 +137,6 @@ def test_unimodal_single_sample():
     assert len(ds) == 1
     ds[0]
     assert reader.calls == [(7, 42)]
-
-
-# ── MultimodalDataset ─────────────────────────────────────────────────────────
 
 
 def test_multimodal_len():
