@@ -11,7 +11,7 @@ import torch
 from tensordict import TensorDict
 
 pytest.importorskip("eodata", reason="eodata not installed — skipping dataset tests")
-from deep_lst.dataset.dataset import MultimodalDataset, UnimodalDataset, _load_samples
+from deep_lst.dataset.dataset import MultimodalDataset, UnimodalDataset, load_samples
 
 
 class MockReader:
@@ -54,7 +54,7 @@ def test_load_samples_sorted(tmp_path):
     spatial = _write_spatial(tmp_path, mapping_sorted, src_indices)
     temporal = _write_temporal(tmp_path, [0, 1, 2])  # single time index for simplicity
 
-    samples = _load_samples(spatial, temporal_indices_path=temporal)
+    samples = load_samples(spatial, temporal_indices_path=temporal)
 
     # 4 pixels × 3 timesteps, space-first meshgrid
     assert samples.shape == (4 * 3, 2)
@@ -68,7 +68,7 @@ def test_load_samples_unsorted(tmp_path):
     spatial = _write_spatial(tmp_path, mapping_unsorted, src_indices)
     temporal = _write_temporal(tmp_path, [0, 1, 2])  # single time index for simplicity
 
-    samples = _load_samples(spatial, temporal_indices_path=temporal)
+    samples = load_samples(spatial, temporal_indices_path=temporal)
 
     # 4 pixels × 3 timesteps, space-first meshgrid
     assert samples.shape == (4 * 3, 2)
@@ -81,14 +81,22 @@ def test_load_samples_crossmodal_alignment(tmp_path):
     spatial_era = _write_spatial(tmp_path, [500, 100, 400, 200], [50, 10, 40, 20])
     temporal = _write_temporal(tmp_path, [0, 1, 2])
 
-    seviri_samples = _load_samples(spatial_sev, temporal_indices_path=temporal)
-    era5_samples = _load_samples(spatial_era, temporal_indices_path=temporal)
+    seviri_samples = load_samples(spatial_sev, temporal_indices_path=temporal)
+    era5_samples = load_samples(spatial_era, temporal_indices_path=temporal)
 
     sev_src_sorted = np.sort(np.load(spatial_sev)["src_indices"])
     era_src_sorted = np.sort(np.load(spatial_era)["src_indices"])
 
     assert np.array_equal(sev_src_sorted, era_src_sorted)
     assert np.array_equal(seviri_samples[:, 0], era5_samples[:, 0])
+
+
+def test_load_indices_missing_key_raises(tmp_path):
+    path = tmp_path / "bad_spatial.npz"
+    np.savez(path, wrong_key=np.array([1, 2, 3]))
+    temporal = _write_temporal(tmp_path, [1])
+    with pytest.raises(KeyError, match="mapping"):
+        load_samples(path, temporal_indices_path=temporal)
 
 
 def test_unimodal_len():

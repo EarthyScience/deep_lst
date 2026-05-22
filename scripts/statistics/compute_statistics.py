@@ -1,58 +1,3 @@
-"""
-Compute per-variable normalisation statistics for a sampled EOZarr store.
-
-Statistics (mean, std, min, max) are computed via Welford's online algorithm
-over a spatial × temporal index mesh, then written to two places:
-  1. assets/{modality}/statistics/statistics_{spatial}.npz  — for legacy loaders
-  2. zarr array attributes (or root group for computed vars) — for training
-
-Which indices are used
-----------------------
-spatial   Name of the spatial index file, e.g. KGLC_L.
-          Resolves to: assets/{modality}/spatial/indices_{spatial}.npz
-          The spatial key read from the file is '{modality}_indices', with
-          'mapping' as fallback (older files).
-
-temporal  Name of the temporal index file (default: train).
-          Resolves to: assets/temporal/time_indices_{temporal}.npz
-
-The statistics label stored in the zarr store equals spatial, so training
-configs that reference label='KGLC_L' will load the right statistics.
-
-Which variables are included
------------------------------
-Controlled by conf/statistics.yaml (the Hydra config for this script).
-The config lists inputs/diagnostics/prognostics per modality.
-Only CONTINUOUS variables (per the reader's torch schema) receive statistics;
-CATEGORICAL variables (lsm, LWMASK, LANDCOV) are loaded but skipped.
-Computed variables (solar_zenith, doy_sin, doy_cos) have no backing zarr
-array — their statistics are stored on the root group of the store instead.
-
-Typical usage
--------------
-Single GPU (development / small stores):
-    python scripts/statistics/compute_statistics.py \\
-        store_path=/path/to/seviri_sampled_KGLC_L.zarr \\
-        modality=seviri \\
-        spatial=KGLC_L \\
-        temporal=train \\
-        preload=true
-
-Multi-GPU via torchrun (recommended for large stores):
-    torchrun --nproc_per_node=4 scripts/statistics/compute_statistics.py \\
-        store_path=/path/to/seviri_sampled_KGLC_L.zarr \\
-        modality=seviri \\
-        spatial=KGLC_L \\
-        temporal=train \\
-        preload=true
-
-Nested sampling strategy
-------------------------
-For nested splits (S ⊂ M ⊂ L), compute statistics once on the largest set (L)
-and use that label for all levels — the distribution is representative for all.
-Run once per modality × spatial strategy, not once per size level.
-"""
-
 import os
 
 import hydra
@@ -66,26 +11,8 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DistributedSampler
 from tqdm import tqdm
 
-from deep_lst.dataset.dataset import UnimodalDataset
+from deep_lst.dataset.dataset import UnimodalDataset, load_samples
 from deep_lst.utils.io import ExperimentPaths, save_statistics_npz
-
-
-def _load_indices(modality: str, spatial_path, temporal_path) -> np.ndarray:
-    """Load spatial and temporal indices and return a meshed (N_space * N_time, 2) array."""
-    spatial_data = np.load(spatial_path)
-    spatial_idx = spatial_data.get(f"{modality}_indices", spatial_data.get("mapping"))
-    if spatial_idx is None:
-        raise KeyError(
-            f"Spatial index file {spatial_path!r} contains neither "
-            f"'{modality}_indices' nor 'mapping'. "
-            f"Available keys: {list(spatial_data.keys())}"
-        )
-
-    temporal_idx = np.load(temporal_path)["time_indices"].astype(np.int64)
-
-    space, time = np.meshgrid(spatial_idx, temporal_idx, indexing="ij")
-    indices = np.stack([space.ravel(), time.ravel()], axis=1)  # (N_space * N_time, 2)
-    return indices
 
 
 def calculate_all_statistics(
@@ -218,7 +145,6 @@ def main(cfg: DictConfig) -> None:
     else:
         from eodata.data_reader.seviri import SeviriReader as ReaderCls
 
-    # ── reader kwargs from config ─────────────────────────────────────────────
     paths = ExperimentPaths()
     reader_kwargs = {
         "inputs": modality_cfg["inputs"],
@@ -231,12 +157,10 @@ def main(cfg: DictConfig) -> None:
         "preload": config["preload"],
     }
 
-    # ── indices ───────────────────────────────────────────────────────────────
     store = EOZarrStore(config["store_path"], mode="r+")
-    indices = _load_indices(
-        modality,
-        spatial_path=paths.spatial_indices_path(modality, config["spatial"]),
-        temporal_path=paths.temporal_indices_path(config["temporal"]),
+    indices = load_samples(
+        path=paths.spatial_indices_path(modality, config["spatial"]),
+        temporal_indices_path=paths.temporal_indices_path(config["temporal"]),
     )
 
     rank = int(os.environ.get("RANK", 0))
@@ -248,7 +172,6 @@ def main(cfg: DictConfig) -> None:
         print(f"Total samples: {len(indices):,}")
         print(f"Label        : {label}")
 
-    # ── compute statistics ────────────────────────────────────────────────────
     increment_variables = modality_cfg.get("increment_variables", [])
     if rank == 0 and increment_variables:
         print(f"Computing regular + increment statistics for: {increment_variables}")

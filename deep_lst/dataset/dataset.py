@@ -11,7 +11,7 @@ from deep_lst.utils.io import ExperimentPaths
 PATHS = ExperimentPaths()
 
 
-def _load_samples(
+def load_samples(
     path: str,
     start_time: str | None = None,
     end_time: str | None = None,
@@ -75,9 +75,8 @@ class UnimodalDataset(Dataset):
             temporal_paths = PATHS.temporal_indices_path(temporal_split)
         else:
             temporal_paths = None
-        indices = _load_samples(
+        indices = load_samples(
             PATHS.spatial_indices_path(kwargs["spatial"]),
-            modality_id,
             start_time=kwargs.get("start_time"),
             end_time=kwargs.get("end_time"),
             temporal_indices_path=temporal_paths,
@@ -132,9 +131,8 @@ class MultimodalDataset(Dataset):
         else:
             temporal_paths = None
         indices = {
-            mod: _load_samples(
+            mod: load_samples(
                 PATHS.spatial_indices_path(mod, kwargs["spatial"]),
-                mod,
                 start_time=kwargs.get("start_time"),
                 end_time=kwargs.get("end_time"),
                 temporal_indices_path=temporal_paths,
