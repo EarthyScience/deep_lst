@@ -172,3 +172,48 @@ def compute_grouped_scores(
     ds = xr.concat(slices, dim=pd.Index(dim_values, name=dim_name))
 
     return ds
+
+
+def compute_class_scores(
+    pred: xr.DataArray,
+    obs: xr.DataArray,
+    class_coord: str,
+    metrics: list[str] | None = None,
+    groupby: str | None = None,
+    aggregation: str = "total",
+    reduction_order: tuple = ("space", "time"),
+) -> xr.Dataset:
+    if class_coord not in pred.coords:
+        raise ValueError(f"Class coordinate '{class_coord}' not found in data coords.")
+
+    class_bins = np.unique(pred[class_coord].values)
+    class_bins = class_bins[class_bins != -1]  # Exclude invalid class bin if present
+    slices = []
+    for class_bin in class_bins:
+        pred_class = pred.where(pred.coords[class_coord] == class_bin)
+        obs_class = obs.where(obs.coords[class_coord] == class_bin)
+
+        if groupby is not None:
+            scores = compute_grouped_scores(
+                pred_class,
+                obs_class,
+                metrics,
+                aggregation=aggregation,
+                groupby=groupby,
+                reduction_order=reduction_order,
+            )
+        else:
+            scores = compute_scores(
+                pred_class, obs_class, metrics, aggregation=aggregation, reduction_order=reduction_order
+            )
+            dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in set(pred_class.dims)] or None
+            scores = scores.assign(
+                {
+                    "pred_mean": pred_class.mean(dim=dim, skipna=True),
+                    "obs_mean": obs_class.mean(dim=dim, skipna=True),
+                }
+            )
+        slices.append(scores)
+
+    ds = xr.concat(slices, dim=pd.Index(class_bins, name=class_coord))
+    return ds

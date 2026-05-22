@@ -140,56 +140,6 @@ class Forecast:
         if self.sparse:
             print(f"Sparse output mode (fill={fill:.4f} < {_SPARSE_FILL_THRESHOLD})")
 
-    def predict(self) -> ForecastResult:
-        """Run inference and return results."""
-        predict_dispatch = {
-            "DiagnosticMSE": self._predict_diagnostic,
-            "DiagnosticCRPS": self._predict_diagnostic,
-            "RolloutMSE": self._predict_rollout,
-            "RolloutCRPS": self._predict_rollout,
-        }
-        predict_fn = predict_dispatch.get(self.prediction_mode)
-        if predict_fn is None:
-            raise ValueError(f"Unknown prediction_mode: {self.prediction_mode}. Known: {list(predict_dispatch)}")
-
-        preds_flat, obs_flat = predict_fn(
-            self.model,
-            self.device,
-            self.loader,
-            self.td_keys,
-            normaliser=self.normaliser,
-            **self.config["seviri"],
-        )
-
-        if self.apply_consistent_mask and self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
-            preds_flat, obs_flat = self._apply_consistent_mask(preds_flat, obs_flat)
-
-        first_var = list(preds_flat.keys())[0]
-        time_horizon = preds_flat[first_var].shape[1]
-        n_spatial = len(self.unique_spatial_idx)
-        n_time = preds_flat[first_var].shape[0] // n_spatial
-
-        predictions, observations = self._remap(preds_flat, obs_flat, n_spatial, n_time, time_horizon)
-
-        if self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
-            predictions, observations, time_horizon = self._prepend_nan_lead(
-                predictions, observations, n_spatial, n_time, time_horizon
-            )
-
-        lead_times = pd.timedelta_range(start="0h", periods=time_horizon, freq="h")
-        init_times = pd.date_range(start="2000-01-01", periods=n_time, freq="h")
-        pixel_lats, pixel_lons = self._pixel_coords()
-
-        return ForecastResult(
-            predictions=predictions,
-            observations=observations,
-            init_times=init_times,
-            lead_times=lead_times,
-            lats=pixel_lats,
-            lons=pixel_lons,
-            sparse=self.sparse,
-        )
-
     def predict_with_time_index(self, time_idx: np.ndarray) -> ForecastResult:
         """Run inference and map init_times from explicit T1H time indices."""
         predict_dispatch = {

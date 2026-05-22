@@ -17,6 +17,7 @@ deep_lst/raw
 
 seed.md
 run_inference.log
+run_inference_setup.log
 
 # Python-generated files
 __pycache__/

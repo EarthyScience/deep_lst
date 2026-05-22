@@ -8,6 +8,7 @@ from deep_lst.evaluation.metrics import compute_scores
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import error_growth_daily_plot, error_growth_plot, skill_plot
 from deep_lst.evaluation.plots.fingerprint import fingerprint_plot, improvement_da
+from deep_lst.evaluation.plots.init_time import plot_init_vs_lead
 from deep_lst.evaluation.plots.maps import acc_map, improvement_map_multi
 from deep_lst.evaluation.plots.scores import error_overview_plot
 from deep_lst.evaluation.plots.spectra import (
@@ -251,17 +252,19 @@ class PlotRunnerVerification:
         self.baselines = baseline_evaluators or {}
 
     def run(self, plots: list[str] | None = None):
-        self.ev.scores = self.ev.scores.compute()
         self.scores_summary = self.ev.summarise(self.ev.scores)
         self.skill_references = {}
         self.climate_references = {}
+        self.climate_scores_raw = {}
         for label, bl_ev in self.baselines.items():
-            bl_scores = getattr(bl_ev, "baseline_scores", None)
-            if bl_scores is not None:
-                self.skill_references[label] = self.ev.summarise(1 - self.ev.scores / bl_scores.compute())
+            skill = getattr(bl_ev, "skill_scores", None)
+            if skill is not None:
+                self.skill_references[label] = self.ev.summarise(1 - skill)
             cs = getattr(bl_ev, "climate_scores", None)
             if cs is not None:
-                self.climate_references[label] = self.ev.summarise(cs.compute())
+                cs_computed = cs.compute()
+                self.climate_scores_raw[label] = cs_computed
+                self.climate_references[label] = self.ev.summarise(cs_computed)
         requested = set(plots) if plots else None
         for name in sorted(dir(self)):
             if name.startswith("plot_"):
@@ -349,3 +352,13 @@ class PlotRunnerVerification:
             save_path=self.plots_dir / f"{self.ev.var}_spatial_power_spectrum.pdf",
             eval_region=self.ev.eval_name,
         )
+
+    def plot_init_lead_heatmap(self):
+        if not self.climate_scores_raw:
+            return
+        for label, scores in self.climate_scores_raw.items():
+            plot_init_vs_lead(
+                scores,
+                metric="acc",
+                save_path=self.plots_dir / f"{self.ev.var}_init_lead_heatmap_acc.pdf",
+            )

@@ -43,7 +43,16 @@ def _run_evaluator(cls_name, kwargs):
     cls = {"EvaluatorDiagnostics": EvaluatorDiagnostics, "EvaluatorVerification": EvaluatorVerification}[cls_name]
     ev = cls(**kwargs)
     ev.run()
-    for attr in ("scores", "grouped", "pred", "obs", "baseline_scores", "baseline_grouped", "baseline_aligned"):
+    for attr in (
+        "scores",
+        "grouped",
+        "pred",
+        "obs",
+        "baseline_scores",
+        "baseline_grouped",
+        "baseline_aligned",
+        "skill_scores",
+    ):
         val = getattr(ev, attr, None)
         if val is not None and hasattr(val, "compute"):
             setattr(ev, attr, val.compute())

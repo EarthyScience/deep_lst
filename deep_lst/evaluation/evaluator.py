@@ -2,9 +2,12 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
+import shapely
 import xarray as xr
+from eodata.grids import build_seviri_grid
 
 from deep_lst.evaluation.metrics import compute_grouped_scores, compute_scores, to_init_time, to_valid_time
+from deep_lst.evaluation.spatial import build_local_grid
 from deep_lst.utils import ExperimentPaths
 
 _BASELINE_REGISTRY: dict[str, tuple[callable, str]] = {
@@ -52,6 +55,8 @@ class Evaluator(ABC):
             self.forecast_ds = self._load_forecast()
             self.forecast_ds = self._filter(self.forecast_ds)
 
+        self.forecast_ds = self._attach_class_coords(self.forecast_ds)
+
         self.pred = self.forecast_ds[f"{self.var}_pred"]
         self.obs = self.forecast_ds[f"{self.var}_obs"]
 
@@ -95,6 +100,40 @@ class Evaluator(ABC):
             )
 
         return filtered
+
+    def _attach_class_coords(self, ds: xr.Dataset) -> xr.Dataset:
+        path = self.paths.eval_indices_path("seviri", self.eval_name)
+        if not path.exists():
+            raise FileNotFoundError(f"Eval indices not found for {self.eval_name}: {path}")
+        indices_ds = np.load(path)
+        class_keys = ["kg_class", "kg_major"]
+
+        coords = {}
+        if "pixel" in ds.dims:
+            seviri_grid = build_seviri_grid()
+            points = shapely.points(ds["lon"].values, ds["lat"].values)
+            forecast_src = np.asarray(seviri_grid.centers_tree.nearest(geometry=points))
+            npz_src = indices_ds["src_indices"]
+            npz_pos = {int(s): i for i, s in enumerate(npz_src)}
+            lookup = np.array([npz_pos[int(s)] for s in forecast_src], dtype=np.int64)
+            for key in class_keys:
+                if key in indices_ds.files:
+                    coords[key] = (("pixel",), indices_ds[key][lookup])
+        else:
+            src_indices = indices_ds["src_indices"]
+            _, _, local_rows, local_cols, grid_shape = build_local_grid(src_indices)
+            if grid_shape != (ds.sizes["lat"], ds.sizes["lon"]):
+                raise ValueError(
+                    f"Grid shape mismatch: expected {grid_shape}, got {(ds.sizes['lat'], ds.sizes['lon'])}"
+                )
+            for key in class_keys:
+                if key in indices_ds.files:
+                    class_values = indices_ds[key]
+                    grid = np.full(grid_shape, -1, dtype=class_values.dtype)
+                    grid[local_rows, local_cols] = class_values
+                    coords[key] = (("lat", "lon"), grid)
+        ds = ds.assign_coords(coords)
+        return ds
 
     def _load_baseline(self) -> xr.DataArray | None:
         if self.baseline is None:
@@ -197,7 +236,7 @@ class EvaluatorDiagnostics(Evaluator):
         if self.baseline_ds is not None:
             aligned = self._align_baseline(self.obs["valid_time"].values)
             aligned_masked = aligned.where(np.isfinite(self.pred))
-            self.baseline_aligned = aligned_masked  # save for later
+            self.baseline_aligned = aligned_masked
 
             self.baseline_scores = compute_scores(
                 aligned_masked, self.obs, self.metrics, self.aggregation, self.reduction_order
@@ -205,8 +244,8 @@ class EvaluatorDiagnostics(Evaluator):
             self.baseline_grouped = compute_grouped_scores(
                 aligned_masked, self.obs, self.metrics, self.aggregation, self.groupby, self.reduction_order
             )
-
         else:
+            self.baseline_aligned = None
             self.baseline_scores = None
             self.baseline_grouped = None
 
@@ -219,27 +258,29 @@ class EvaluatorVerification(Evaluator):
 
     def _compute(self):
         lead_times = self.forecast_ds["lead_time"].values
-        score_slices, baseline_slices, climate_slices = [], [], []
 
-        for lead_time in lead_times:
-            pred_lt = self.pred.sel(lead_time=lead_time)
-            obs_lt = self.obs.sel(lead_time=lead_time)
-            score_slices.append(compute_scores(pred_lt, obs_lt, self.metrics, self.aggregation))
+        self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
 
-            if self.baseline_ds is not None:
-                baseline_aligned = self._process_baseline(pred_lt, lead_time)
-                baseline_slices.append(compute_scores(baseline_aligned, obs_lt, self.metrics, self.aggregation))
+        baseline_slices = []
+        if self.baseline_ds is not None:
+            for lead_time in lead_times:
+                pred_lt = self.pred.sel(lead_time=lead_time)
+                baseline_slices.append(self._process_baseline(pred_lt, lead_time))
 
-                if self.baseline in self._CLIMATE_BASELINES:
-                    pred_anom = pred_lt - baseline_aligned
-                    obs_anom = obs_lt - baseline_aligned
-                    climate_slices.append(compute_scores(pred_anom, obs_anom, self._ANOMALY_METRICS, self.aggregation))
+            lt_index = pd.Index(lead_times, name="lead_time")
+            baseline_full = xr.concat(baseline_slices, dim=lt_index)
+            self.baseline_scores = compute_scores(baseline_full, self.obs, self.metrics, self.aggregation)
 
-        lt_index = pd.Index(lead_times, name="lead_time")
-        self.scores = xr.concat(score_slices, dim=lt_index)
-        self.baseline_scores = xr.concat(baseline_slices, dim=lt_index) if baseline_slices else None
-        self.climate_scores = xr.concat(climate_slices, dim=lt_index) if climate_slices else None
-        self.skill_scores = self.scores / self.baseline_scores if self.baseline_scores is not None else None
+            if self.baseline in self._CLIMATE_BASELINES:
+                pred_anom = self.pred - baseline_full
+                obs_anom = self.obs - baseline_full
+                self.climate_scores = compute_scores(pred_anom, obs_anom, self._ANOMALY_METRICS, self.aggregation)
+
+            self.skill_scores = self.scores / self.baseline_scores
+        else:
+            self.baseline_scores = None
+            self.climate_scores = None
+            self.skill_scores = None
 
     def _process_baseline(self, pred_lt, lead_time) -> xr.DataArray:
         lead_time_hour = int(pd.Timedelta(lead_time).total_seconds() // 3600)

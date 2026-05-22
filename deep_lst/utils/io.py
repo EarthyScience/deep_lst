@@ -89,6 +89,8 @@ class ExperimentPaths:
 
     def eval_indices_path(self, modality: str, name: str) -> Path:
         """Resolve the dense evaluation pixel index file for *modality* and *eval name*."""
+        if name.startswith("train_"):
+            return self.assets_root / modality / "spatial" / f"indices_{name.removeprefix('train_')}.npz"
         return self.assets_root / modality / "spatial" / f"indices_eval_{name}.npz"
 
     @staticmethod

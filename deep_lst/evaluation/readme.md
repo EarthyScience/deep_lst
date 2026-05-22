@@ -53,14 +53,18 @@ then GPU array jobs fill it in parallel chunks.
 ### Dense eval region (e.g. `dahra`)
 
 ```bash
-SETUP=$(sbatch --parsable scripts/inference/run_inference_setup.sh \
-    experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
-    eval=dahra inference_horizon=200 best=true)
+for eval in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa; do
 
-sbatch --dependency=afterok:${SETUP} --array=0-3 \
-    scripts/inference/run_inference_array.sh \
-    experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
-    eval=dahra inference_horizon=200 best=true
+SETUP=$(sbatch --parsable scripts/inference/run_inference_setup.sh
+    experiment=mlp_rollout_L_KG_mse_lb6_bptt_v3 version=version_0
+    eval=${eval} inference_horizon=200 best=true)
+
+sbatch --dependency=afterok:${SETUP} --array=0-3
+    scripts/inference/run_inference_array.sh
+    experiment=mlp_rollout_L_KG_mse_lb6_bptt_v3 version=version_0
+    eval=${eval} inference_horizon=200 best=true
+
+done
 ```
 
 ### Sparse training-site region (e.g. `train_KG_S`)
