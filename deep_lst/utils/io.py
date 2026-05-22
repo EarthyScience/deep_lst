@@ -93,6 +93,9 @@ class ExperimentPaths:
             return self.assets_root / modality / "spatial" / f"indices_{name.removeprefix('train_')}.npz"
         return self.assets_root / modality / "spatial" / f"indices_eval_{name}.npz"
 
+    def eval_meta_path(self, modality: str) -> Path:
+        return self.assets_root / modality / "spatial" / "eval_meta.json"
+
     @staticmethod
     def _eval_fname(eval_name: str) -> str:
         return eval_name if eval_name.startswith("eval_") else f"eval_{eval_name}"

@@ -25,7 +25,7 @@ import argparse
 
 import numpy as np
 
-from deep_lst.evaluation.evaluator import run_evaluators_across_sites
+from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, run_evaluators_across_sites
 from deep_lst.evaluation.plots.across_sites import (
     cross_site_acc_boxplot,
     cross_site_rmse_boxplot,
@@ -108,12 +108,11 @@ def run_across_sites():
     print(f"Reduction order : {args.reduction_order}")
 
     # aggregation="region_time" → scores have shape (valid_time,), one value per timestep.
-    # All metrics come from ev.scores / ev.baseline_scores; no compute_scores in this script.
+    # All metrics come from ev.scores / ev.baseline_scores / ev.climate_scores; no compute_scores in this script.
     ev_kwargs = dict(
         experiment=args.experiment,
         version=args.version,
         var="LST",
-        metrics=["rmse", "acc", "nse"],
         temporal=args.temporal,
         aggregation="region_time",
         groupby="diurnal",
@@ -126,16 +125,25 @@ def run_across_sites():
     model_evs = run_evaluators_across_sites(ev_kwargs, args.evals, baseline=None)
     baseline_evs = {b: run_evaluators_across_sites(ev_kwargs, args.evals, baseline=b) for b in args.baseline}
 
+    # Proper (anomaly) ACC requires a climate baseline; pick the first one passed.
+    climate_baseline = next((b for b in args.baseline if b in CLIMATE_BASELINES), None)
+    acc_source_evs = baseline_evs[climate_baseline] if climate_baseline else None
+    if acc_source_evs is None:
+        print("  [warn] No climate baseline in --baseline; ACC will be skipped.")
+
     model_rmse, acc_vals, nse_vals = {}, {}, {}
     for region, evaluator in model_evs.items():
         rmse = evaluator.scores["rmse"].values
         model_rmse[region] = rmse[np.isfinite(rmse)]
-        acc = evaluator.scores["acc"].values.ravel()
-        if np.isfinite(acc).any():
-            acc_vals[region] = acc[np.isfinite(acc)]
         nse = evaluator.scores["nse"].values.ravel()
         if np.isfinite(nse).any():
             nse_vals[region] = nse[np.isfinite(nse)]
+        if acc_source_evs is not None and region in acc_source_evs:
+            cs = acc_source_evs[region].climate_scores
+            if cs is not None and "acc" in cs:
+                acc = cs["acc"].values.ravel()
+                if np.isfinite(acc).any():
+                    acc_vals[region] = acc[np.isfinite(acc)]
 
     baselines_rmse = {}
     for baseline, evaluator in baseline_evs.items():

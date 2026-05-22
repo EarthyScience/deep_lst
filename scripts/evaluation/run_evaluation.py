@@ -52,6 +52,10 @@ def _run_evaluator(cls_name, kwargs):
         "baseline_grouped",
         "baseline_aligned",
         "skill_scores",
+        "climate_scores",
+        "climate_grouped",
+        "pred_anom",
+        "obs_anom",
     ):
         val = getattr(ev, attr, None)
         if val is not None and hasattr(val, "compute"):
@@ -77,7 +81,6 @@ def parse_args():
     p.add_argument("--eval", required=True)
     p.add_argument("--variable", default="LST")
     p.add_argument("--lead_time", default="1h")
-    p.add_argument("--metrics", nargs="+", default=["rmse"])
     p.add_argument("--baselines", nargs="*", default=None)
     p.add_argument("--temporal", nargs="+", default=None)
     p.add_argument("--overwrite", action="store_true")
@@ -102,7 +105,6 @@ def run_evaluation():
         version=args.version,
         eval_name=args.eval,
         var=args.variable,
-        metrics=args.metrics,
         temporal=args.temporal,
         consistent_mask=False,
         overwrite=args.overwrite,

@@ -1,16 +1,23 @@
+import json
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
 
-from deep_lst.evaluation.evaluator import EvaluatorDiagnostics, EvaluatorVerification
-from deep_lst.evaluation.metrics import compute_scores
+from deep_lst.evaluation.evaluator import (
+    ANOMALY_METRICS,
+    CLIMATE_BASELINES,
+    RAW_METRICS,
+    EvaluatorDiagnostics,
+    EvaluatorVerification,
+)
+from deep_lst.evaluation.metrics import compute_class_scores, compute_grouped_scores, compute_scores
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import error_growth_daily_plot, error_growth_plot, skill_plot
 from deep_lst.evaluation.plots.fingerprint import fingerprint_plot, improvement_da
 from deep_lst.evaluation.plots.init_time import plot_init_vs_lead
 from deep_lst.evaluation.plots.maps import acc_map, improvement_map_multi
-from deep_lst.evaluation.plots.scores import error_overview_plot
+from deep_lst.evaluation.plots.scores import category_score_violinplot, error_overview_plot
 from deep_lst.evaluation.plots.spectra import (
     _grid_spacing_km,
     compute_spatial_power_spectrum,
@@ -21,6 +28,21 @@ from deep_lst.evaluation.plots.spectra import (
 from deep_lst.evaluation.plots.timeseries import timeseries_plot
 from deep_lst.evaluation.plots.verification import activity_plot
 
+_MONTH_LABELS = {
+    1: "Jan",
+    2: "Feb",
+    3: "Mar",
+    4: "Apr",
+    5: "May",
+    6: "Jun",
+    7: "Jul",
+    8: "Aug",
+    9: "Sep",
+    10: "Oct",
+    11: "Nov",
+    12: "Dec",
+}
+
 
 class PlotRunnerDiagnostics:
     def __init__(
@@ -29,11 +51,28 @@ class PlotRunnerDiagnostics:
         label: str,
         plots_dir: Path,
         baseline_evaluators: dict[str, EvaluatorDiagnostics] | None = None,
+        class_coords: tuple[str, ...] = ("kg_class", "kg_major"),
     ):
         self.ev = evaluator
         self.label = label
         self.plots_dir = Path(plots_dir)
         self.baselines = baseline_evaluators or {}  # {display_label: EvaluatorDiagnostics}
+        self.class_coords = class_coords
+
+        # The primary evaluator runs with baseline=None and cannot compute
+        # anomalies on its own. Copy them across from the climate-baseline
+        # evaluator (same model pred/obs, with clim_smooth subtracted) so
+        # self.ev exposes climate_scores/climate_grouped/pred_anom/obs_anom
+        # for all downstream anomaly plots.
+        clim_ev = next(
+            (bl for bl in self.baselines.values() if bl.baseline in CLIMATE_BASELINES),
+            None,
+        )
+        if clim_ev is not None and clim_ev.climate_scores is not None:
+            self.ev.pred_anom = clim_ev.pred_anom
+            self.ev.obs_anom = clim_ev.obs_anom
+            self.ev.climate_scores = clim_ev.climate_scores
+            self.ev.climate_grouped = clim_ev.climate_grouped
 
     def run(self, plots: list[str] | None = None):
         requested = set(plots) if plots else None
@@ -113,28 +152,156 @@ class PlotRunnerDiagnostics:
         )
 
     def plot_grouped_scores(self):
+        # Raw-field metrics: from self.ev.grouped (rmse, mae, bias, nse).
         summarised = self.ev.summarise(self.ev.grouped)
-        for m in self.ev.metrics:
+        for m in RAW_METRICS:
+            if m not in self.ev.grouped:
+                continue
             diurnal_line(
                 {self.label: summarised},
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_grouped_{m}.pdf",
                 title=f"{self.ev.eval_name} — {m.upper()} ({self.ev.groupby})",
             )
+        # Anomaly metrics: from self.ev.climate_grouped (acc, activity).
+        if self.ev.climate_grouped is None:
+            return
+        summarised_anom = self.ev.summarise(self.ev.climate_grouped)
+        for m in ANOMALY_METRICS:
+            if m not in self.ev.climate_grouped:
+                continue
+            diurnal_line(
+                {self.label: summarised_anom},
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_grouped_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} ({self.ev.groupby})",
+            )
+
+    def _class_labels(self) -> dict[str, dict]:
+        if getattr(self, "_class_labels_cache", None) is not None:
+            return self._class_labels_cache
+        meta_path = self.ev.paths.eval_meta_path("seviri")
+        try:
+            meta = json.loads(meta_path.read_text())
+            labels = {coord: meta.get(f"{coord}_labels", {}) for coord in self.class_coords}
+        except FileNotFoundError:
+            labels = {coord: {} for coord in self.class_coords}
+        self._class_labels_cache = labels
+        return labels
+
+    def plot_monthly_score_violin(self):
+        # Raw-field metrics
+        raw_scores = compute_grouped_scores(
+            self.ev.pred, self.ev.obs, RAW_METRICS, aggregation="region_time", groupby="monthly"
+        )
+        for m in RAW_METRICS:
+            if m not in raw_scores:
+                continue
+            category_score_violinplot(
+                raw_scores,
+                metric=m,
+                category_dim="month",
+                case_label=self.label,
+                category_labels=_MONTH_LABELS,
+                xlabel="Month",
+                title=f"{self.ev.eval_name} — {m.upper()} by month (lead_time={self.ev.lead_time})",
+                save_path=self.plots_dir / f"{self.ev.var}_monthly_score_violin_{m}.pdf",
+            )
+        # Anomaly metrics
+        if self.ev.pred_anom is None:
+            return
+        anom_scores = compute_grouped_scores(
+            self.ev.pred_anom, self.ev.obs_anom, ANOMALY_METRICS, aggregation="region_time", groupby="monthly"
+        )
+        for m in ANOMALY_METRICS:
+            if m not in anom_scores:
+                continue
+            category_score_violinplot(
+                anom_scores,
+                metric=m,
+                category_dim="month",
+                case_label=self.label,
+                category_labels=_MONTH_LABELS,
+                xlabel="Month",
+                title=f"{self.ev.eval_name} — {m.upper()} by month (lead_time={self.ev.lead_time})",
+                save_path=self.plots_dir / f"{self.ev.var}_monthly_score_violin_{m}.pdf",
+            )
+
+    def plot_class_score_violin(self):
+        available = [c for c in self.class_coords if c in self.ev.pred.coords]
+        labels_by_coord = self._class_labels()
+        for class_coord in available:
+            labels = labels_by_coord.get(class_coord) or None
+            # Raw-field metrics
+            raw_scores = compute_class_scores(
+                self.ev.pred, self.ev.obs, class_coord=class_coord, metrics=RAW_METRICS, aggregation="region_time"
+            )
+            for m in RAW_METRICS:
+                if m not in raw_scores:
+                    continue
+                category_score_violinplot(
+                    raw_scores,
+                    metric=m,
+                    category_dim=class_coord,
+                    case_label=self.label,
+                    category_labels=labels,
+                    xlabel=class_coord,
+                    title=f"{self.ev.eval_name} — {m.upper()} by {class_coord} (lead_time={self.ev.lead_time})",
+                    save_path=self.plots_dir / f"{self.ev.var}_class_score_violin_{class_coord}_{m}.pdf",
+                )
+            # Anomaly metrics
+            if self.ev.pred_anom is None:
+                continue
+            anom_scores = compute_class_scores(
+                self.ev.pred_anom,
+                self.ev.obs_anom,
+                class_coord=class_coord,
+                metrics=ANOMALY_METRICS,
+                aggregation="region_time",
+            )
+            for m in ANOMALY_METRICS:
+                if m not in anom_scores:
+                    continue
+                category_score_violinplot(
+                    anom_scores,
+                    metric=m,
+                    category_dim=class_coord,
+                    case_label=self.label,
+                    category_labels=labels,
+                    xlabel=class_coord,
+                    title=f"{self.ev.eval_name} — {m.upper()} by {class_coord} (lead_time={self.ev.lead_time})",
+                    save_path=self.plots_dir / f"{self.ev.var}_class_score_violin_{class_coord}_{m}.pdf",
+                )
 
     # --- benchmark (silently skip if no baselines) ---
 
     def plot_error_overview(self):
         if not self.baselines:
             return
-        region_time = {self.label: compute_scores(self.ev.pred, self.ev.obs, self.ev.metrics, "region_time")}
+        # Raw-field metrics: model + every baseline as side-by-side boxes.
+        raw_cases = {self.label: compute_scores(self.ev.pred, self.ev.obs, RAW_METRICS, "region_time")}
         for label, bl_ev in self.baselines.items():
             bl = getattr(bl_ev, "baseline_aligned", None)
             if bl is not None:
-                region_time[label] = compute_scores(bl, self.ev.obs, self.ev.metrics, "region_time")
-        for m in self.ev.metrics:
+                raw_cases[label] = compute_scores(bl, self.ev.obs, RAW_METRICS, "region_time")
+        for m in RAW_METRICS:
+            if m not in raw_cases[self.label]:
+                continue
             error_overview_plot(
-                region_time,
+                raw_cases,
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_error_overview_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} (lead_time={self.ev.lead_time})",
+            )
+        # Anomaly metrics: only the model (no meaningful per-baseline anomaly).
+        if self.ev.pred_anom is None:
+            return
+        anom_cases = {self.label: compute_scores(self.ev.pred_anom, self.ev.obs_anom, ANOMALY_METRICS, "region_time")}
+        for m in ANOMALY_METRICS:
+            if m not in anom_cases[self.label]:
+                continue
+            error_overview_plot(
+                anom_cases,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_error_overview_{m}.pdf",
                 title=f"{self.ev.eval_name} — {m.upper()} (lead_time={self.ev.lead_time})",
@@ -191,7 +358,13 @@ class PlotRunnerDiagnostics:
         if "pixel" in self.ev.forecast_ds.dims:
             return
         for m, label in self._SCORE_MAP_METRICS.items():
-            score = compute_scores(self.ev.pred, self.ev.obs, [m], "region_space")[m]
+            if m in ANOMALY_METRICS:
+                if self.ev.pred_anom is None:
+                    continue
+                pred_in, obs_in = self.ev.pred_anom, self.ev.obs_anom
+            else:
+                pred_in, obs_in = self.ev.pred, self.ev.obs
+            score = compute_scores(pred_in, obs_in, [m], "region_space")[m]
             acc_map(
                 acc=score,
                 cbar_label=label,
@@ -221,6 +394,7 @@ class PlotRunnerDiagnostics:
     def plot_grouped_comparison(self):
         if not self.baselines:
             return
+        # Raw-field metrics: model + every baseline.
         cases = {self.label: self.ev.summarise(self.ev.grouped)}
         cases.update(
             {
@@ -229,9 +403,24 @@ class PlotRunnerDiagnostics:
                 if getattr(bl_ev, "baseline_grouped", None) is not None
             }
         )
-        for m in self.ev.metrics:
+        for m in RAW_METRICS:
+            if m not in self.ev.grouped:
+                continue
             diurnal_line(
                 cases,
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_grouped_comparison_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} comparison ({self.ev.groupby})",
+            )
+        # Anomaly metrics: only the model line.
+        if self.ev.climate_grouped is None:
+            return
+        anom_cases = {self.label: self.ev.summarise(self.ev.climate_grouped)}
+        for m in ANOMALY_METRICS:
+            if m not in self.ev.climate_grouped:
+                continue
+            diurnal_line(
+                anom_cases,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_grouped_comparison_{m}.pdf",
                 title=f"{self.ev.eval_name} — {m.upper()} comparison ({self.ev.groupby})",
@@ -272,7 +461,9 @@ class PlotRunnerVerification:
                     getattr(self, name)()
 
     def plot_error_growth(self):
-        for m in self.ev.metrics:
+        for m in RAW_METRICS:
+            if m not in self.ev.scores:
+                continue
             error_growth_plot(
                 self.scores_summary,
                 case_label=self.label,
@@ -282,7 +473,9 @@ class PlotRunnerVerification:
             )
 
     def plot_error_growth_daily(self):
-        for m in self.ev.metrics:
+        for m in RAW_METRICS:
+            if m not in self.ev.scores:
+                continue
             error_growth_daily_plot(
                 self.scores_summary,
                 case_label=self.label,
@@ -294,7 +487,9 @@ class PlotRunnerVerification:
     def plot_skill_scores(self):
         if not self.skill_references:
             return
-        for m in self.ev.metrics:
+        for m in RAW_METRICS:
+            if m not in self.ev.scores:
+                continue
             skill_plot(
                 self.skill_references,
                 case_label=self.label,

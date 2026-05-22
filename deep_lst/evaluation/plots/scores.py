@@ -121,6 +121,87 @@ def score_boxplots(
     return fig
 
 
+def category_score_violinplot(
+    scores: xr.Dataset,
+    metric: str,
+    category_dim: str,
+    case_label: str | None = None,
+    category_labels: dict | None = None,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
+    title: str | None = None,
+    save_path: Path | None = None,
+) -> plt.Figure:
+    """Violin plot of a per-timestep score across a category dim (e.g. month or class).
+
+    Parameters
+    ----------
+    scores : xr.Dataset
+        Output of ``compute_grouped_scores(..., aggregation="region_time")`` or
+        ``compute_class_scores(..., aggregation="region_time")``. Must contain
+        ``metric`` with dims ``(category_dim, valid_time)``.
+    metric : str
+        Variable in ``scores`` to plot.
+    category_dim : str
+        Name of the categorical dim (e.g. ``"month"`` or ``"kg_class"``).
+    case_label : str, optional
+        Used to look up a colour from CASE_COLORS.
+    category_labels : dict, optional
+        Map category value → display label for x-tick labels.
+    """
+    plt.rcParams.update(RC)
+
+    if metric not in scores:
+        raise ValueError(f"metric '{metric}' not in dataset (have: {list(scores.data_vars)})")
+
+    categories = scores[category_dim].values
+    color = CASE_COLORS.get(case_label, _DEFAULT_COLOR)
+
+    fig, ax = plt.subplots(figsize=(max(5, len(categories) * 0.8), 5))
+
+    for i, cat in enumerate(categories):
+        vals = scores[metric].sel({category_dim: cat}).values
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            continue
+        vp = ax.violinplot(vals, positions=[i], widths=0.7, showmedians=True, showextrema=True)
+        for body in vp["bodies"]:
+            body.set_facecolor(color)
+            body.set_alpha(0.65)
+        for part in ("cmins", "cmaxes", "cbars"):
+            vp[part].set_color(color)
+            vp[part].set_linewidth(1.0)
+        vp["cmedians"].set_color("black")
+        vp["cmedians"].set_linewidth(1.5)
+
+    def _label(c):
+        if category_labels is None:
+            return str(c)
+        return str(category_labels.get(c, category_labels.get(str(c), c)))
+
+    tick_labels = [_label(c) for c in categories]
+    ax.set_xticks(range(len(categories)))
+    ax.set_xticklabels(tick_labels, rotation=0 if category_dim == "month" else 30, ha="center")
+    ax.set_xlabel(xlabel or category_dim)
+    ax.set_ylabel(ylabel or (f"{metric.upper()} (K)" if metric in ("rmse", "mae", "bias") else metric.upper()))
+    ax.grid(axis="y", alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if title:
+        ax.set_title(title)
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Saved: {save_path}")
+
+    return fig
+
+
 def error_overview_plot(
     scores_by_case: dict[str, xr.Dataset],
     metric: str = "rmse",

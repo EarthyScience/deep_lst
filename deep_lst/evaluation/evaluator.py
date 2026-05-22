@@ -17,6 +17,12 @@ _BASELINE_REGISTRY: dict[str, tuple[callable, str]] = {
     "persistence": (lambda p, n: p.persistence_path(n), "LST"),
 }
 
+# Single source of truth for what gets computed and plotted.
+# Change these tuples to add/remove metrics across the whole pipeline.
+RAW_METRICS = ("mae", "rmse", "bias", "nse")
+ANOMALY_METRICS = ("acc", "activity")
+CLIMATE_BASELINES = ("clim_smooth", "clim_hourly")
+
 
 class Evaluator(ABC):
     """Shared: load, filter, baseline loading, saving."""
@@ -27,7 +33,6 @@ class Evaluator(ABC):
         version,
         eval_name,
         var,
-        metrics,
         baseline,
         temporal,
         aggregation,
@@ -39,7 +44,6 @@ class Evaluator(ABC):
         self.version = version
         self.eval_name = eval_name
         self.var = var
-        self.metrics = [metrics] if isinstance(metrics, str) else metrics
         self.baseline = baseline
         self.overwrite = overwrite
         self.temporal = temporal
@@ -65,7 +69,7 @@ class Evaluator(ABC):
         if self.baseline_ds is not None:
             self.baseline_ds = self._subset_pixels(self.baseline_ds, self.pred.isel(lead_time=0))
 
-        self._compute()  # subclass sets self.metrics
+        self._compute()
 
     @abstractmethod
     def _compute(self):
@@ -190,7 +194,14 @@ class Evaluator(ABC):
 
 
 class EvaluatorDiagnostics(Evaluator):
-    """Fixed lead time → valid_time space. Standard metrics, diurnal, spatial."""
+    """Fixed lead time → valid_time space. Standard metrics, diurnal, spatial.
+
+    Stores two independent score datasets:
+      self.scores         — raw-field metrics over RAW_METRICS (rmse/mae/bias/nse)
+      self.climate_scores — anomaly metrics over ANOMALY_METRICS (acc/activity),
+                            populated only when a climate baseline is loaded; else None.
+    Same separation applies to self.grouped vs self.climate_grouped.
+    """
 
     def __init__(
         self,
@@ -198,7 +209,6 @@ class EvaluatorDiagnostics(Evaluator):
         version,
         eval_name,
         var,
-        metrics,
         baseline,
         temporal,
         aggregation,
@@ -213,7 +223,6 @@ class EvaluatorDiagnostics(Evaluator):
             version,
             eval_name,
             var,
-            metrics,
             baseline,
             temporal,
             aggregation,
@@ -228,10 +237,15 @@ class EvaluatorDiagnostics(Evaluator):
         self.pred = to_valid_time(self.pred.sel(lead_time=self.lead_time), self.lead_time)
         self.obs = to_valid_time(self.obs.sel(lead_time=self.lead_time), self.lead_time)
 
-        self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation, self.reduction_order)
+        self.scores = compute_scores(self.pred, self.obs, RAW_METRICS, self.aggregation, self.reduction_order)
         self.grouped = compute_grouped_scores(
-            self.pred, self.obs, self.metrics, self.aggregation, self.groupby, self.reduction_order
+            self.pred, self.obs, RAW_METRICS, self.aggregation, self.groupby, self.reduction_order
         )
+
+        self.pred_anom = None
+        self.obs_anom = None
+        self.climate_scores = None
+        self.climate_grouped = None
 
         if self.baseline_ds is not None:
             aligned = self._align_baseline(self.obs["valid_time"].values)
@@ -239,11 +253,21 @@ class EvaluatorDiagnostics(Evaluator):
             self.baseline_aligned = aligned_masked
 
             self.baseline_scores = compute_scores(
-                aligned_masked, self.obs, self.metrics, self.aggregation, self.reduction_order
+                aligned_masked, self.obs, RAW_METRICS, self.aggregation, self.reduction_order
             )
             self.baseline_grouped = compute_grouped_scores(
-                aligned_masked, self.obs, self.metrics, self.aggregation, self.groupby, self.reduction_order
+                aligned_masked, self.obs, RAW_METRICS, self.aggregation, self.groupby, self.reduction_order
             )
+
+            if self.baseline in CLIMATE_BASELINES:
+                self.pred_anom = self.pred - self.baseline_aligned
+                self.obs_anom = self.obs - self.baseline_aligned
+                self.climate_scores = compute_scores(
+                    self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation, self.reduction_order
+                )
+                self.climate_grouped = compute_grouped_scores(
+                    self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation, self.groupby, self.reduction_order
+                )
         else:
             self.baseline_aligned = None
             self.baseline_scores = None
@@ -251,36 +275,37 @@ class EvaluatorDiagnostics(Evaluator):
 
 
 class EvaluatorVerification(Evaluator):
-    """Full (init_time, lead_time) space. Error growth, skill scores, climate metrics."""
+    """Full (init_time, lead_time) space. Error growth, skill scores, climate metrics.
 
-    _CLIMATE_BASELINES = ("clim_smooth", "clim_hourly")
-    _ANOMALY_METRICS = ["activity", "acc"]
+    Stores raw-field and anomaly scores as fully separate datasets, mirroring
+    EvaluatorDiagnostics (see its docstring).
+    """
 
     def _compute(self):
         lead_times = self.forecast_ds["lead_time"].values
 
-        self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
+        self.scores = compute_scores(self.pred, self.obs, RAW_METRICS, self.aggregation)
 
-        baseline_slices = []
+        self.baseline_scores = None
+        self.climate_scores = None
+        self.skill_scores = None
+
         if self.baseline_ds is not None:
+            baseline_slices = []
             for lead_time in lead_times:
                 pred_lt = self.pred.sel(lead_time=lead_time)
                 baseline_slices.append(self._process_baseline(pred_lt, lead_time))
 
             lt_index = pd.Index(lead_times, name="lead_time")
             baseline_full = xr.concat(baseline_slices, dim=lt_index)
-            self.baseline_scores = compute_scores(baseline_full, self.obs, self.metrics, self.aggregation)
+            self.baseline_scores = compute_scores(baseline_full, self.obs, RAW_METRICS, self.aggregation)
 
-            if self.baseline in self._CLIMATE_BASELINES:
+            if self.baseline in CLIMATE_BASELINES:
                 pred_anom = self.pred - baseline_full
                 obs_anom = self.obs - baseline_full
-                self.climate_scores = compute_scores(pred_anom, obs_anom, self._ANOMALY_METRICS, self.aggregation)
+                self.climate_scores = compute_scores(pred_anom, obs_anom, ANOMALY_METRICS, self.aggregation)
 
             self.skill_scores = self.scores / self.baseline_scores
-        else:
-            self.baseline_scores = None
-            self.climate_scores = None
-            self.skill_scores = None
 
     def _process_baseline(self, pred_lt, lead_time) -> xr.DataArray:
         lead_time_hour = int(pd.Timedelta(lead_time).total_seconds() // 3600)
