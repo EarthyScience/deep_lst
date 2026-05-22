@@ -1,10 +1,4 @@
-# deep_lst/losses/__init__.py
-from .crps import DiagnosticCRPS, RolloutCRPS
-from .mse import DiagnosticMSE, RolloutMSE
-
-__all__ = [
-    "DiagnosticMSE",
-    "RolloutMSE",
-    "DiagnosticCRPS",
-    "RolloutCRPS",
-]
+from .diagnostic import DiagnosticCRPS as DiagnosticCRPS
+from .diagnostic import DiagnosticMSE as DiagnosticMSE
+from .rollout import RolloutCRPS as RolloutCRPS
+from .rollout import RolloutMSE as RolloutMSE

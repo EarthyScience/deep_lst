@@ -24,7 +24,7 @@ train_dataset:
     normalization: zscore
     row_extent: 721
     col_extent: 1440
-    lookback: 0
+    lookback: 24
     patch_size: 1
     statistics: ${_statistics}
   seviri:
@@ -32,7 +32,7 @@ train_dataset:
     normalization: zscore
     row_extent: 3201
     col_extent: 3201
-    lookback: 0
+    lookback: 24
     patch_size: 1
     statistics: ${_statistics}
 
@@ -47,7 +47,7 @@ val_dataset:
     normalization: zscore
     row_extent: 721
     col_extent: 1440
-    lookback: 0
+    lookback: 24
     patch_size: 1
     statistics: ${_statistics}
   seviri:
@@ -55,7 +55,7 @@ val_dataset:
     normalization: zscore
     row_extent: 3201
     col_extent: 3201
-    lookback: 0
+    lookback: 24
     patch_size: 1
     statistics: ${_statistics}
 
@@ -70,7 +70,7 @@ test_dataset:
     normalization: zscore
     row_extent: 721
     col_extent: 1440
-    lookback: 0
+    lookback: 24
     patch_size: 1
     statistics: ${_statistics}
   seviri:
@@ -78,7 +78,7 @@ test_dataset:
     normalization: zscore
     row_extent: 3201
     col_extent: 3201
-    lookback: 0
+    lookback: 24
     patch_size: 1
     statistics: ${_statistics}
 

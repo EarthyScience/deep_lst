@@ -85,11 +85,6 @@ def nse(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
     return 1.0 - ss_res / ss_tot
 
 
-# ---------------------------------------------------------------------------
-# Time coordinate conversion
-# ---------------------------------------------------------------------------
-
-
 def to_valid_time(da: xr.Dataset, lead_time: str | np.timedelta64 | None = None) -> xr.DataArray:
     """Select a lead time and convert init_time → valid_time."""
     lt_delta = np.timedelta64(pd.Timedelta(lead_time).value, "ns")
@@ -102,11 +97,6 @@ def to_init_time(da: xr.Dataset, lead_time: str | np.timedelta64 | None = None) 
     lt_delta = np.timedelta64(pd.Timedelta(lead_time).value, "ns")
     init_times = da["valid_time"].values - lt_delta
     return da.assign_coords(valid_time=init_times).rename({"valid_time": "init_time"})
-
-
-# ---------------------------------------------------------------------------
-# Core scoring
-# ---------------------------------------------------------------------------
 
 
 def compute_scores(

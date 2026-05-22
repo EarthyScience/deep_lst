@@ -129,9 +129,6 @@ def main(cfg: DictConfig) -> None:
 
     label = config["spatial"]  # e.g. 'KGLC_L'
 
-    # ── device ────────────────────────────────────────────────────────────────
-    # init_process_group is deferred until after preloading (inside
-    # calculate_all_statistics), so derive device/rank from env vars directly.
     if torch.cuda.is_available() and "LOCAL_RANK" in os.environ:
         device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
     elif torch.cuda.is_available():
@@ -139,7 +136,6 @@ def main(cfg: DictConfig) -> None:
     else:
         device = torch.device("cpu")
 
-    # ── reader class ──────────────────────────────────────────────────────────
     if modality == "era5":
         from eodata.data_reader.era5 import Era5Reader as ReaderCls
     else:
@@ -189,20 +185,14 @@ def main(cfg: DictConfig) -> None:
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
 
-    # ── save (rank 0 only) ────────────────────────────────────────────────────
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         for var_name, var_stats in all_stats.items():
             print(f"  {var_name}: mean={var_stats['mean']:.4f}  std={var_stats['std']:.4f}")
 
-        # Save to npz (for compatibility with existing training configs)
         out_path = paths.statistics_path(modality, label)
         save_statistics_npz(all_stats, out_path)
         print(f"\nSaved statistics npz → {out_path}")
 
-        # Embed statistics in the zarr store under the experiment label.
-        # Computed variables (solar_zenith, doy_sin, doy_cos) and increment
-        # variables have no backing zarr array — set_statistics stores them
-        # on the root group automatically.
         for var_name, var_stats in all_stats.items():
             store.set_statistics(modality, var_name, var_stats, label=label, overwrite=True)
         print(f"Embedded statistics in zarr store (label='{label}')")

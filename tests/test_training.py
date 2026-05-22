@@ -15,8 +15,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from deep_lst.losses.crps import DiagnosticCRPS, RolloutCRPS
-from deep_lst.losses.mse import DiagnosticMSE, RolloutMSE
+from deep_lst.losses import DiagnosticCRPS, DiagnosticMSE, RolloutCRPS, RolloutMSE
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 
 # ── shared fixtures ───────────────────────────────────────────────────────────
@@ -500,3 +499,129 @@ def test_rollout_crps_timestep_weights_supported(rollout_crps_model, rollout_bat
     loss_uniform = _make_rollout_crps(timestep_weights=[1.0, 1.0])(lit, rollout_batch, stage="train")
     loss_decaying = _make_rollout_crps(timestep_weights=[4.0, 1.0])(lit, rollout_batch, stage="train")
     assert not torch.isclose(loss_uniform, loss_decaying)
+
+
+# ── characterization tests: pin numerical baselines for refactor safety ───────
+# Each test seeds, builds a deterministic batch + model, and asserts the loss
+# equals a recorded value. Any silent numerical drift during refactoring fails.
+# If you deliberately change loss behavior, regenerate the baselines.
+
+
+def test_diagnostic_mse_numerical_baseline():
+    torch.manual_seed(0)
+    model = MultiModalMLP(in_keys=IN_KEYS, out_keys=DIAG_OUT_KEYS, config=MODEL_CONFIG)
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, 1) for k in IN_KEYS + DIAG_KEYS + DIAG_OUT_KEYS},
+        batch_size=[BATCH_SIZE],
+    )
+    loss_fn = DiagnosticMSE(in_keys=IN_KEYS, diagnostic_keys=DIAG_KEYS, diagnostic_out_keys=DIAG_OUT_KEYS)
+    loss = loss_fn(_FakeLitModule(model), batch, stage="train")
+    assert loss.item() == pytest.approx(0.5416700839996338, abs=1e-7)
+
+
+def test_diagnostic_crps_numerical_baseline():
+    torch.manual_seed(0)
+    model = MultiModalMLP(in_keys=IN_KEYS, out_keys=CRPS_OUT_KEYS, config=MODEL_CONFIG)
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, 1) for k in IN_KEYS + DIAG_KEYS + CRPS_OUT_KEYS},
+        batch_size=[BATCH_SIZE],
+    )
+    loss_fn = DiagnosticCRPS(in_keys=IN_KEYS, diagnostic_keys=DIAG_KEYS, diagnostic_out_keys=DIAG_OUT_KEYS)
+    loss = loss_fn(_FakeLitModule(model), batch, stage="train")
+    assert loss.item() == pytest.approx(0.2240876853466034, abs=1e-7)
+
+
+def test_rollout_mse_numerical_baseline():
+    torch.manual_seed(0)
+    model = MultiModalMLP(
+        in_keys=ROLLOUT_IN_KEYS + PROG_KEYS,
+        out_keys=PROG_OUT_KEYS,
+        config={**MODEL_CONFIG, "hidden_sizes": [16, 8]},
+    )
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, ROLLOUT_T, 1) for k in ROLLOUT_IN_KEYS + PROG_KEYS},
+        batch_size=[BATCH_SIZE],
+    )
+    loss_fn = RolloutMSE(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=PROG_KEYS,
+        prognostic_out_keys=PROG_OUT_KEYS,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )
+    loss = loss_fn(_RolloutLitModule(model), batch, stage="train")
+    assert loss.item() == pytest.approx(0.6564374566078186, abs=1e-7)
+
+
+def test_rollout_crps_numerical_baseline():
+    torch.manual_seed(0)
+    model = MultiModalMLP(
+        in_keys=ROLLOUT_IN_KEYS + PROG_KEYS,
+        out_keys=ROLLOUT_CRPS_OUT_KEYS,
+        config={**MODEL_CONFIG, "hidden_sizes": [16, 8]},
+    )
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, ROLLOUT_T, 1) for k in ROLLOUT_IN_KEYS + PROG_KEYS},
+        batch_size=[BATCH_SIZE],
+    )
+    loss_fn = RolloutCRPS(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=PROG_KEYS,
+        prognostic_out_keys=PROG_OUT_KEYS,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )
+    loss = loss_fn(_RolloutLitModule(model), batch, stage="train")
+    assert loss.item() == pytest.approx(0.6212354898452759, abs=1e-7)
+
+
+# ── multi-prognostic-key regression: catches "return-inside-loop" bug class ──
+
+
+def test_rollout_mse_two_prognostic_keys_baseline():
+    prog_keys = [("seviri", "LST"), ("seviri", "AL-BB-DH")]
+    prog_out_keys = [("seviri", "LST_pred"), ("seviri", "AL-BB-DH_pred")]
+    torch.manual_seed(0)
+    model = MultiModalMLP(
+        in_keys=ROLLOUT_IN_KEYS + prog_keys,
+        out_keys=prog_out_keys,
+        config={**MODEL_CONFIG, "hidden_sizes": [16, 8]},
+    )
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, ROLLOUT_T, 1) for k in ROLLOUT_IN_KEYS + prog_keys},
+        batch_size=[BATCH_SIZE],
+    )
+    loss_fn = RolloutMSE(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=prog_keys,
+        prognostic_out_keys=prog_out_keys,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )
+    loss = loss_fn(_RolloutLitModule(model), batch, stage="train")
+    assert loss.item() == pytest.approx(1.1886848211288452, abs=1e-7)
+
+
+def test_rollout_crps_two_prognostic_keys_baseline():
+    prog_keys = [("seviri", "LST"), ("seviri", "AL-BB-DH")]
+    prog_out_keys = [("seviri", "LST_pred"), ("seviri", "AL-BB-DH_pred")]
+    sigma_out_keys = [("seviri", "LST_log_sigma_pred"), ("seviri", "AL-BB-DH_log_sigma_pred")]
+    torch.manual_seed(0)
+    model = MultiModalMLP(
+        in_keys=ROLLOUT_IN_KEYS + prog_keys,
+        out_keys=prog_out_keys + sigma_out_keys,
+        config={**MODEL_CONFIG, "hidden_sizes": [16, 8]},
+    )
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, ROLLOUT_T, 1) for k in ROLLOUT_IN_KEYS + prog_keys},
+        batch_size=[BATCH_SIZE],
+    )
+    loss_fn = RolloutCRPS(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=prog_keys,
+        prognostic_out_keys=prog_out_keys,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )
+    loss = loss_fn(_RolloutLitModule(model), batch, stage="train")
+    assert loss.item() == pytest.approx(0.918150782585144, abs=1e-7)
