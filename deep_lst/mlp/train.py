@@ -160,6 +160,7 @@ def main(cfg: DictConfig) -> None:
         **td_keys,
         inc_variances=inc_variances,
         detach_rollout=config["model"].get("detach_rollout", True),
+        incremental_loss=config["model"].get("incremental_loss", False),
     )
 
     ngpu = torch.cuda.device_count()

@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from tensordict import TensorDict
 
-from deep_lst.losses.common import gaussian_crps, sigma_key
+from deep_lst.losses.common import LossAccumulator, gaussian_crps, sigma_key
 
 
 class RolloutLoss(ABC):
@@ -37,40 +37,18 @@ class RolloutLoss(ABC):
             return self._zero_loss(batch.device)
 
         prognostics = self._initilise_progonostic_states(batch, spatial_mask, lookback)
-        loss, weight_sum, var_losses, var_weight_sums = self._init_accumulators(batch.device)
+        loss = LossAccumulator(device=batch.device)
 
         for t in range(1, horizon + 1):
             w = self._timestep_weight(t)
             tstep_td = self._build_step_td(batch, prognostics, spatial_mask, lookback, t, context_vars)
             out = lit_module.model(tstep_td)
-            loss, weight_sum, prognostics = self._step_prognostic(
-                out,
-                batch,
-                prognostics,
-                spatial_mask,
-                lookback,
-                t,
-                w,
-                loss,
-                weight_sum,
-                var_losses,
-                var_weight_sums,
-            )
-            loss, weight_sum = self._step_diagnostic(
-                out,
-                batch,
-                spatial_mask,
-                lookback,
-                t,
-                w,
-                loss,
-                weight_sum,
-            )
+            prognostics = self._step_prognostic(out, batch, prognostics, spatial_mask, lookback, t, w, loss)
+            self._step_diagnostic(out, batch, spatial_mask, lookback, t, w, loss)
 
-        if weight_sum > 0:
-            loss = loss / weight_sum
-        self._log(lit_module, stage, loss, weight_sum, var_losses, var_weight_sums)
-        return loss
+        loss.finalize()
+        loss.log_to(lit_module, stage)
+        return loss.finalize()
 
     def _read_runtime_config(self, config):
         horizon = config["train_dataset"]["seviri"]["horizon"]
@@ -88,13 +66,6 @@ class RolloutLoss(ABC):
 
     def _initilise_progonostic_states(self, batch, spatial_mask, lookback):
         return {key: batch[key][:, lookback][spatial_mask] for key in self.prognostic_keys}
-
-    def _init_accumulators(self, device):
-        loss = torch.tensor(0.0, device=device)
-        weight_sum = 0.0
-        var_losses = {key[1]: torch.tensor(0.0, device=device) for key in self.prognostic_keys}
-        var_weight_sums = {key[1]: 0.0 for key in self.prognostic_keys}
-        return loss, weight_sum, var_losses, var_weight_sums
 
     def _timestep_weight(self, t):
         return self.timestep_weights[t - 1] if self.timestep_weights else 1.0
@@ -128,9 +99,7 @@ class RolloutLoss(ABC):
 
         return tstep_td
 
-    def _step_prognostic(
-        self, out, batch, prog, spatial_mask, lookback, t, w, loss, weight_sum, var_losses, var_weight_sums
-    ):
+    def _step_prognostic(self, out, batch, prog, spatial_mask, lookback, t, w, loss):
         for key, out_key in zip(self.prognostic_keys, self.prognostic_out_keys):
             pred_increment = out[out_key]
             y_hat = prog[key] + pred_increment
@@ -140,10 +109,8 @@ class RolloutLoss(ABC):
 
             if frac >= self.min_valid_fraction:
                 sigma2_inc = self.inc_variances.get(key[1], 1.0)
-                var_loss = self._prognostic_loss(out, out_key, y_hat, target, target_valid, batch) / sigma2_inc
-                loss += w * var_loss
-                var_losses[key[1]] += w * var_loss
-                var_weight_sums[key[1]] += w
+                state_loss = self._prognostic_loss(out, out_key, y_hat, target, target_valid, batch) / sigma2_inc
+                loss.add(f"state_{key[1]}", state_loss, weight=w)
 
                 if self.incremental_loss:
                     target_prev = batch[key][:, lookback + t - 1, ...][spatial_mask]
@@ -151,44 +118,25 @@ class RolloutLoss(ABC):
                     inc_valid = target_valid & torch.isfinite(target_increment).all(dim=-1)
 
                     if inc_valid.sum() > 0:
-                        loss += (
-                            w
-                            * self._incremental_loss(out, out_key, pred_increment, target_increment, inc_valid, batch)
+                        inc_loss = (
+                            self._incremental_loss(out, out_key, pred_increment, target_increment, inc_valid, batch)
                             / sigma2_inc
                         )
-                weight_sum += w
+                        loss.add(f"increment_{key[1]}", inc_loss, weight=w)
 
-            # Update prognostic state (detach for standard rollout; keep graph for BPTT)
             new_prog = y_hat.detach() if self.detach_rollout else y_hat
             prog[key] = new_prog
 
-        return loss, weight_sum, prog
+        return prog
 
-    def _step_diagnostic(self, out, batch, spatial_mask, lookback, t, w, loss, weight_sum):
+    def _step_diagnostic(self, out, batch, spatial_mask, lookback, t, w, loss):
         for key, out_key in zip(self.diagnostic_keys, self.diagnostic_out_keys):
             target = batch[key][:, lookback + t, ...][spatial_mask]
             target_valid = torch.isfinite(target).all(dim=-1)
-
             frac = target_valid.sum().float() / max(target_valid.numel(), 1)
             if frac >= self.min_valid_fraction:
-                loss += w * self._diagnostic_loss(out, out_key, target, target_valid, batch)
-                weight_sum += w
-
-        return loss, weight_sum
-
-    def _log(self, lit_module, stage, loss, weight_sum, var_losses, var_weight_sums):
-        for var_name, var_loss in var_losses.items():
-            if var_weight_sums[var_name] > 0:
-                lit_module.log(
-                    f"{stage}_loss_{var_name}",
-                    var_loss / var_weight_sums[var_name],
-                    on_step=False,
-                    on_epoch=True,
-                    sync_dist=True,
-                )
-
-        lit_module.log(f"{stage}_loss_step", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        lit_module.log(f"{stage}_weight_sum", weight_sum, sync_dist=True)
+                diag_loss = self._diagnostic_loss(out, out_key, target, target_valid, batch)
+                loss.add(f"diag_{key[1]}", diag_loss, weight=w)
 
     def _zero_loss(self, device):
         print("  WARNING: No initially valid pixels!")

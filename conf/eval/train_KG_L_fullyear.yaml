@@ -1,7 +1,0 @@
-# @package _global_
-eval_name: train_KG_L_fullyear
-spatial_indices: KG_L
-
-test_dataset:
-  spatial: KG_L
-  temporal: test

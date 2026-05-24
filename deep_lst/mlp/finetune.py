@@ -150,7 +150,13 @@ def main(cfg: DictConfig) -> None:
         out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
         config=config["model"],
     )
-    lit_module = LitModelModule(model, config, **td_keys, inc_variances=inc_variances)
+    lit_module = LitModelModule(
+        model,
+        config,
+        **td_keys,
+        inc_variances=inc_variances,
+        incremental_loss=config["model"].get("incremental_loss", False),
+    )
 
     state = torch.load(ckpt_path, map_location="cpu")
     lit_module.load_state_dict(state["state_dict"])
