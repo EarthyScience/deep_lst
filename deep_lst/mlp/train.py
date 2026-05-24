@@ -1,3 +1,7 @@
+"""
+To test with resolved config: python deep_lst/mlp/train.py loss=crps horizon=h6 --cfg job --resolve
+"""
+
 import json
 import os
 import subprocess

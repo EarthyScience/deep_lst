@@ -37,47 +37,43 @@ Metrics: `results/{experiment}/{version}/{eval}/metrics_*.nc`
 ## Step 1 — Inference
 
 Inference uses a two-phase approach: a CPU setup job creates the output zarr store,
-then GPU array jobs fill it in parallel chunks.
+then a GPU array job fills it in parallel chunks. `scripts/inference/run_inference.sh`
+submits both with automatic `afterok` dependency — no manual wiring needed.
 
 **Key parameters**
 
 | Parameter | Required | Notes |
 |---|---|---|
-| `experiment` | yes | e.g. `mlp_rollout_L_KG_mse_h3_v1` |
-| `version` | yes | e.g. `version_0` |
+| `experiment` | yes | e.g. `mlp_rollout_L_KG_mse_h6_v4` |
+| `version` | no | defaults to `version_0` |
 | `eval` | yes | eval config name — see `conf/eval/` |
 | `inference_horizon` | yes | rollout horizon in hours; must be ≥ trained horizon |
 | `best` | no | `true` = load `best.ckpt`; default loads `last.ckpt` |
-| `--array=0-N` | yes | N+1 GPU chunks; 4 chunks is a good default |
+| `--array=0-N` | no | N+1 GPU chunks; defaults to `0-3` |
+| `--time=`, `--mem=`, `--gres=`, `--partition=` | no | SLURM overrides for the array job |
 
 ### Dense eval region (e.g. `dahra`)
 
 ```bash
-for eval in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa; do
-
-SETUP=$(sbatch --parsable scripts/inference/run_inference_setup.sh
-    experiment=mlp_rollout_L_KG_mse_lb6_bptt_v3 version=version_0
-    eval=${eval} inference_horizon=200 best=true)
-
-sbatch --dependency=afterok:${SETUP} --array=0-3
-    scripts/inference/run_inference_array.sh
-    experiment=mlp_rollout_L_KG_mse_lb6_bptt_v3 version=version_0
-    eval=${eval} inference_horizon=200 best=true
-
+for eval in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa yangambi bouamir; do
+    bash scripts/inference/run_inference.sh \
+        experiment=mlp_rollout_L_KG_mse_h6_v4 \
+        version=version_0 \
+        eval=${eval} \
+        inference_horizon=200 \
+        best=true
 done
 ```
 
-### Sparse training-site region (e.g. `train_KG_S`)
+### Sparse training-site region (e.g. `train_KG_L_fullyear`)
 
 ```bash
-SETUP=$(sbatch --parsable scripts/inference/run_inference_setup.sh \
-    experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
-    eval=train_KG_S inference_horizon=200 best=true)
-
-sbatch --dependency=afterok:${SETUP} --array=0-3 \
-    scripts/inference/run_inference_array.sh \
-    experiment=mlp_rollout_L_KG_crps_lb6_bptt_v3 version=version_0 \
-    eval=train_KG_S inference_horizon=200 best=true
+bash scripts/inference/run_inference.sh \
+    experiment=mlp_rollout_L_KG_mse_h6_v4 \
+    version=version_0 \
+    eval=train_KG_L_fullyear \
+    inference_horizon=200 \
+    best=true
 ```
 
 Output: `results/{experiment}/{version}/{eval}/forecast.zarr`

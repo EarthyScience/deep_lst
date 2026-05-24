@@ -625,3 +625,27 @@ def test_rollout_crps_two_prognostic_keys_baseline():
     )
     loss = loss_fn(_RolloutLitModule(model), batch, stage="train")
     assert loss.item() == pytest.approx(0.918150782585144, abs=1e-7)
+
+
+def test_rollout_crps_incremental_loss_raises():
+    """CRPS + incremental_loss must fail loudly until a separate sigma_inc head exists."""
+    torch.manual_seed(0)
+    model = MultiModalMLP(
+        in_keys=ROLLOUT_IN_KEYS + PROG_KEYS,
+        out_keys=ROLLOUT_CRPS_OUT_KEYS,
+        config={**MODEL_CONFIG, "hidden_sizes": [16, 8]},
+    )
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, ROLLOUT_T, 1) for k in ROLLOUT_IN_KEYS + PROG_KEYS},
+        batch_size=[BATCH_SIZE],
+    )
+    loss_fn = RolloutCRPS(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=PROG_KEYS,
+        prognostic_out_keys=PROG_OUT_KEYS,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+        incremental_loss=True,
+    )
+    with pytest.raises(NotImplementedError, match="CRPS"):
+        loss_fn(_RolloutLitModule(model), batch, stage="train")

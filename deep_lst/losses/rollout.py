@@ -228,6 +228,8 @@ class RolloutCRPS(RolloutLoss):
         return gaussian_crps(out[out_key][valid], log_sigma[valid], target[valid]).mean()
 
     def _incremental_loss(self, out, out_key, pred_inc, target_inc, valid, batch):
-        # Preserves current behavior (uses next-state log_sigma). Fix later.
-        log_sigma = out[sigma_key(out_key)]
-        return gaussian_crps(pred_inc[valid], log_sigma[valid], target_inc[valid]).mean()
+        raise NotImplementedError(
+            "CRPS + incremental_loss is not implemented: would require a separate "
+            "log_sigma head for the increment. Use MSE for incremental_loss, or fix "
+            "this hook by adding a sigma_inc head to the model."
+        )
