@@ -2,6 +2,8 @@ import eodata
 import numpy as np
 from eodata.eo_zarr import EOZarrStore
 from eodata.grids import T1H
+from eodata.grids.majortom import MajorTomLandGrid
+from eodata.grids.spatial import IndexedSubsetGrid
 from eodata.util.misc import assemble_statistics_from_npz
 from tensordict import TensorDict
 from torch.utils.data import Dataset
@@ -87,7 +89,18 @@ class UnimodalDataset(Dataset):
 
         if kwargs[modality_id].get("preload", False):
             store_spatial = kwargs.get("sampled_spatial", kwargs["spatial"])
-            store = EOZarrStore(PATHS.sampled_store_path(modality_id, store_spatial), mode="r+")
+            mapping = np.load(PATHS.spatial_indices_path(modality_id, store_spatial))["mapping"]
+            sampled_grid = IndexedSubsetGrid(
+                MajorTomLandGrid(5),  # TEMPORARY: matches the current (misleading) store names
+                mapping,
+                name=f"{modality_id.upper()}_sampled_{store_spatial}",
+            )
+            store = EOZarrStore(
+                PATHS.sampled_store_path(modality_id, store_spatial),
+                spatial_grid=sampled_grid,
+                time_grid=T1H,
+                mode="r+",
+            )
         else:
             store = EOZarrStore(PATHS.store_path(modality_id), mode="r+")
 
@@ -146,7 +159,15 @@ class MultimodalDataset(Dataset):
         for mod in modality_ids:
             if kwargs[mod].get("preload", False):
                 store_spatial = kwargs.get("sampled_spatial", kwargs["spatial"])
-                store = EOZarrStore(PATHS.sampled_store_path(mod, store_spatial), mode="r+")
+                mapping = np.load(PATHS.spatial_indices_path(mod, store_spatial))["mapping"]
+                sampled_grid = IndexedSubsetGrid(
+                    MajorTomLandGrid(5),  # TEMPORARY: matches the current (misleading) store names
+                    mapping,
+                    name=f"{mod.upper()}_sampled_{store_spatial}",
+                )
+                store = EOZarrStore(
+                    PATHS.sampled_store_path(mod, store_spatial), spatial_grid=sampled_grid, time_grid=T1H, mode="r+"
+                )
             else:
                 store = EOZarrStore(PATHS.store_path(mod), mode="r+")
             reader = eodata.get_data_reader(mod, store=store, **kwargs[mod])
