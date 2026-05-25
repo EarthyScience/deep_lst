@@ -13,7 +13,7 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import loggers as lgrs
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.profilers import AdvancedProfiler  # noqa: F401
 
 from deep_lst.dataset.data_module import LitDataModule
@@ -111,7 +111,7 @@ def main(cfg: DictConfig) -> None:
     # --- checkpointing: best (by val metric) + last ---
     callbacks = []
     if not smoke and config["csv_logger"]:
-        monitor = config["model"].get("checkpoint_monitor", "val_loss")
+        monitor = config["model"].get("checkpoint_monitor", "val_loss_step_epoch")
         ckpt_dir = run_dir / "checkpoints"
         callbacks = [
             ModelCheckpoint(
@@ -124,15 +124,22 @@ def main(cfg: DictConfig) -> None:
                 verbose=True,
             ),
         ]
+    if config["early_stopping"]:
+        callbacks.append(
+            EarlyStopping(
+                monitor=config["model"].get("checkpoint_monitor", "val_loss_step_epoch"),
+                mode="min",
+                patience=10,
+                min_delta=5e-4,
+                verbose=True,
+            )
+        )
 
     data_module = LitDataModule(**config)
     data_module.setup()
 
     td_keys = get_keys_from_config(config["train_dataset"])
 
-    # Build context keys: each context var contributes (lookback * C) features.
-    # C=1 for all MLP prognostic variables (the MLP operates on masked flat pixels).
-    # Option B: values + validity mask → 2 * lookback features per context var.
     lookback = config["train_dataset"]["seviri"]["lookback"]
     context_vars = config["train_dataset"]["seviri"].get("context_vars", [])
     in_feature_sizes: dict = {}

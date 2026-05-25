@@ -1,18 +1,4 @@
-"""Hyperparameter optimisation sweep for mlp_rollout_S_KG_crps_lb6_bptt_v3.
-
-Tunes: learning_rate, batch_size, dropout, weight_decay using Optuna TPE.
-Uses size=S training data for speed.
-
-Outputs (all written to deep_lst/nas/):
-    hpo.db            — Optuna SQLite study (persistent across restarts)
-    hpo_results.csv   — All trial results
-    hpo_best.json     — Best hyperparameters
-
-Usage:
-    python deep_lst/nas/hpo.py                      # 50 trials (default)
-    HPO_N_TRIALS=100 python deep_lst/nas/hpo.py     # custom trial count
-    sbatch deep_lst/nas/run_hpo.sh                  # via SLURM
-"""
+"""Hyperparameter optimisation sweep."""
 
 import copy
 import json
@@ -41,7 +27,7 @@ HPO_VAL_BATCHES = 100
 def objective(
     trial: optuna.Trial,
     base_config: dict,
-    data_modules: dict,
+    data_module: LitDataModule,
     td_keys: dict,
     in_feature_sizes: dict,
     inc_variances: dict,
@@ -53,17 +39,13 @@ def objective(
     config["model"]["weight_decay"] = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
     config["training"]["batch_size"] = trial.suggest_categorical("batch_size", [32, 64, 128, 256, 512])
 
-    horizon = trial.suggest_categorical("horizon", [3, 6, 12])
     print(
         f"[Trial {trial.number}] lr={config['model']['learning_rate']:.2e}  "
         f"dropout={config['model']['dropout']:.2f}  "
         f"wd={config['model']['weight_decay']:.2e}  "
-        f"bs={config['training']['batch_size']}  horizon={horizon}",
+        f"bs={config['training']['batch_size']}",
         flush=True,
     )
-    for split in ["train_dataset", "val_dataset"]:
-        for modality in ["era5", "seviri"]:
-            config[split][modality]["horizon"] = horizon
 
     config["training"]["max_epochs"] = HPO_EPOCHS
     config["training"]["limit_train_batches"] = HPO_TRAIN_BATCHES
@@ -82,8 +64,8 @@ def objective(
         config,
         **td_keys,
         inc_variances=inc_variances,
-        detach_rollout=config["model"].get("detach_rollout", True),
-        incremental_loss=config["model"].get("incremental_loss", False),
+        detach_rollout=config["model"].get("detach_rollout", False),
+        incremental_loss=config["model"].get("incremental_loss", True),
     )
 
     ngpu = torch.cuda.device_count()
@@ -100,9 +82,9 @@ def objective(
         logger=False,
         enable_progress_bar=False,
     )
-    trainer.fit(model_module, datamodule=data_modules[horizon])
+    trainer.fit(model_module, datamodule=data_module)
 
-    val_loss = trainer.callback_metrics.get("val_loss_step")
+    val_loss = trainer.callback_metrics.get("val_loss_step_epoch")
     if val_loss is None:
         raise optuna.TrialPruned()
     return float(val_loss)
@@ -117,29 +99,18 @@ def main():
             config_name="train",
             overrides=[
                 "model=mlp_rollout",
-                "loss=crps",
+                "loss=mse",
                 "stratification=KG",
                 "size=L",  # L statistics for correct V3 normalization
-                "horizon=h6",
-                "lookback=lb6",
-                "model.detach_rollout=false",
-                "model.scheduler_T0=160000",
+                "model.warmup_steps=300",
             ],
         )
     config = OmegaConf.to_container(cfg, resolve=True)
     config.pop("smoke", None)
     config.pop("tag", None)
 
-    # Build one data module per horizon — reused across all trials for that horizon
-    data_modules: dict[int, LitDataModule] = {}
-    for h in [3, 6, 12]:
-        cfg_h = copy.deepcopy(config)
-        for split in ["train_dataset", "val_dataset"]:
-            for modality in ["era5", "seviri"]:
-                cfg_h[split][modality]["horizon"] = h
-        dm = LitDataModule(**cfg_h)
-        dm.setup()
-        data_modules[h] = dm
+    dm = LitDataModule(**config)
+    dm.setup()
 
     # td_keys and inc_variances are horizon-independent
     td_keys = get_keys_from_config(config["train_dataset"])
@@ -166,13 +137,13 @@ def main():
         direction="minimize",
         pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
         storage=storage,
-        study_name="mlp_rollout_S_KG_crps_lb6_bptt_v3_hpo",
+        study_name="mlp_rollout_L_KG_mse_h4_inc_v4_hpo",
         load_if_exists=True,
     )
 
     n_trials = int(os.environ.get("HPO_N_TRIALS", "100"))
     study.optimize(
-        lambda trial: objective(trial, config, data_modules, td_keys, in_feature_sizes, inc_variances),
+        lambda trial: objective(trial, config, dm, td_keys, in_feature_sizes, inc_variances),
         n_trials=n_trials,
     )
 

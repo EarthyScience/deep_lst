@@ -978,6 +978,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "rasterio" },
     { name = "rio-stac" },
+    { name = "scipy" },
     { name = "shapely" },
     { name = "stacathome" },
     { name = "streamlit" },
@@ -1012,6 +1013,7 @@ requires-dist = [
     { name = "pyarrow" },
     { name = "rasterio", specifier = "==1.4.3" },
     { name = "rio-stac", specifier = "==0.11.0" },
+    { name = "scipy" },
     { name = "shapely" },
     { name = "stacathome", git = "https://github.com/EarthyScience/stacathome.git?rev=main" },
     { name = "streamlit" },
@@ -1029,6 +1031,7 @@ provides-extras = ["cpu", "cu128"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cartopy", specifier = ">=0.25.0" },
     { name = "coverage" },
     { name = "ipykernel" },
     { name = "pre-commit" },

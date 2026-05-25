@@ -3,7 +3,7 @@ import importlib
 import torch
 import torch.nn as nn
 from pytorch_lightning import LightningModule
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from deep_lst.utils.io import ExperimentPaths
 
@@ -111,10 +111,16 @@ class LitModelModule(LightningModule):
             eps=1e-8,
             weight_decay=self.config["model"].get("weight_decay", 1e-4),
         )
-        t0 = self.config["model"].get("scheduler_T0", 80000)
-        warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=20000)  # ~5 epochs
-        cosine = CosineAnnealingWarmRestarts(optimizer, T_0=t0, T_mult=1, eta_min=1e-6)
-        scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[20000])
+
+        total_steps = self.config["training"]["max_epochs"] * self.config["training"]["limit_train_batches"]
+        warmup_steps = self.config["model"].get("warmup_steps", 20000)
+
+        if warmup_steps > 0:
+            warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
+            cosine = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps, eta_min=1e-6)
+            scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_steps])
+        else:
+            scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
 
         return {
             "optimizer": optimizer,

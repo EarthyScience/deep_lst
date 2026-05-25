@@ -4,7 +4,7 @@ defaults:
   - loss: mse
   - stratification: KG
   - size: L
-  - horizon: h3
+  - horizon: h4
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    ${_stratification}_${_size}
@@ -89,7 +89,7 @@ test_dataset:
     statistics: ${_statistics}
 
 training:
-  max_epochs: 50
+  max_epochs: 75
   batch_size: 512
   num_workers: 24
   pin_memory: true
@@ -103,6 +103,7 @@ training:
 wandb_logger: true
 csv_logger: true
 profiler: false
+early_stopping: true
 
 # --- runtime flags (CLI overrides) ---
 smoke: false

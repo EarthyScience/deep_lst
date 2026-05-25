@@ -92,7 +92,7 @@ class UnimodalDataset(Dataset):
             store = EOZarrStore(PATHS.store_path(modality_id), mode="r+")
 
         # Instantiate reader
-        reader = eodata.get_data_reader(modality_id, eozarr_store=store, **kwargs[modality_id])
+        reader = eodata.get_data_reader(modality_id, store=store, **kwargs[modality_id])
         reader.set_normalizer(statistics=statistics)
 
         if kwargs[modality_id].get("preload", False):
@@ -149,7 +149,7 @@ class MultimodalDataset(Dataset):
                 store = EOZarrStore(PATHS.sampled_store_path(mod, store_spatial), mode="r+")
             else:
                 store = EOZarrStore(PATHS.store_path(mod), mode="r+")
-            reader = eodata.get_data_reader(mod, eozarr_store=store, **kwargs[mod])
+            reader = eodata.get_data_reader(mod, store=store, **kwargs[mod])
             reader.set_normalizer(
                 statistics=assemble_statistics_from_npz(PATHS.statistics_path(mod, kwargs[mod]["statistics"]))
             )

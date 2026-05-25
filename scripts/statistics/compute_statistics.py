@@ -56,7 +56,7 @@ def calculate_all_statistics(
         safe_indices = indices
         unified_kwargs = reader_kwargs
 
-    reader = reader_cls(eozarr_store=store, **unified_kwargs)
+    reader = reader_cls(store=store, **unified_kwargs)
     if unified_kwargs.get("preload", False):
         reader.preload()
 

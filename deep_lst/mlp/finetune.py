@@ -25,7 +25,7 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import loggers as lgrs
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
@@ -120,7 +120,7 @@ def main(cfg: DictConfig) -> None:
     # --- checkpointing ---
     callbacks = []
     if not smoke and config["csv_logger"]:
-        monitor = config["model"].get("checkpoint_monitor", "val_loss")
+        monitor = config["model"].get("checkpoint_monitor", "val_loss_step_epoch")
         ckpt_dir = run_dir / "checkpoints"
         callbacks = [
             ModelCheckpoint(
@@ -133,12 +133,31 @@ def main(cfg: DictConfig) -> None:
                 verbose=True,
             ),
         ]
+    if config["early_stopping"]:
+        callbacks.append(
+            EarlyStopping(
+                monitor=config["model"].get("checkpoint_monitor", "val_loss_step_epoch"),
+                mode="min",
+                patience=10,
+                min_delta=5e-4,
+                verbose=True,
+            )
+        )
 
     # --- build model from new config, then load pre-trained weights ---
     data_module = LitDataModule(**config)
     data_module.setup()
 
     td_keys = get_keys_from_config(config["train_dataset"])
+
+    lookback = config["train_dataset"]["seviri"]["lookback"]
+    context_vars = config["train_dataset"]["seviri"].get("context_vars", [])
+    in_feature_sizes: dict = {}
+    if lookback > 0:
+        for var in context_vars:
+            ctx_key = ("seviri", f"{var}_ctx")
+            td_keys["in_keys"].append(ctx_key)
+            in_feature_sizes[ctx_key] = 2 * lookback  # values + validity mask
 
     inc_variances: dict[str, float] = {}
     for modality, mod_cfg in config["train_dataset"].items():
@@ -149,6 +168,7 @@ def main(cfg: DictConfig) -> None:
         in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
         out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
         config=config["model"],
+        in_feature_sizes=in_feature_sizes,
     )
     lit_module = LitModelModule(
         model,
@@ -159,7 +179,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     state = torch.load(ckpt_path, map_location="cpu")
-    lit_module.load_state_dict(state["state_dict"])
+    lit_module.load_state_dict(state["state_dict"], strict=False)
     print(f"Weights loaded. Starting finetuning as: {config['name']}")
 
     # --- trainer ---

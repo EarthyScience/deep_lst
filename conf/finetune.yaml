@@ -1,117 +1,17 @@
 defaults:
+  - train         # pull in everything from train.yaml
   - _self_          # base applies first; groups below have higher priority
-  - model: mlp_rollout
-  - loss: mse
-  - stratification: KG
-  - size: L
-  - horizon: h3
 
-# --- derived keys (resolved lazily by OmegaConf) ---
-_spatial:    ${_stratification}_${_size}
-_statistics: ${_stratification}_${_size}
-_experiment: ${_size}_${_stratification}_${_loss}_${_horizon}_v1
+# --- finetune-specific keys ---
+from_run: ???
+checkpoint: best
 
-modality_ids: [era5, seviri]
+model:
+  learning_rate: 2e-5
+  warmup_steps: 0
 
-train_dataset:
-  spatial: ${_spatial}
-  temporal: train
-  era5:
-    modality_id: era5
-    inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
-    prognostics: []
-    diagnostics: []
-    normalization: zscore
-    row_extent: 721
-    col_extent: 1440
-    lookback: 24
-    patch_size: 1
-    statistics: ${_statistics}
-  seviri:
-    modality_id: seviri
-    normalization: zscore
-    row_extent: 3201
-    col_extent: 3201
-    lookback: 24
-    patch_size: 1
-    statistics: ${_statistics}
-
-val_dataset:
-  spatial: ${_spatial}
-  temporal: val
-  era5:
-    modality_id: era5
-    inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
-    prognostics: []
-    diagnostics: []
-    normalization: zscore
-    row_extent: 721
-    col_extent: 1440
-    lookback: 24
-    patch_size: 1
-    statistics: ${_statistics}
-  seviri:
-    modality_id: seviri
-    normalization: zscore
-    row_extent: 3201
-    col_extent: 3201
-    lookback: 24
-    patch_size: 1
-    statistics: ${_statistics}
-
-test_dataset:
-  spatial: ${_spatial}
-  temporal: test_period_00
-  era5:
-    modality_id: era5
-    inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
-    prognostics: []
-    diagnostics: []
-    normalization: zscore
-    row_extent: 721
-    col_extent: 1440
-    lookback: 24
-    patch_size: 1
-    statistics: ${_statistics}
-  seviri:
-    modality_id: seviri
-    normalization: zscore
-    row_extent: 3201
-    col_extent: 3201
-    lookback: 24
-    patch_size: 1
-    statistics: ${_statistics}
-
-training:
-  max_epochs: 80
-  batch_size: 512
-  num_workers: 24
-  pin_memory: true
-  prefetch_factor: 2
-  limit_train_batches: 4000
-  limit_val_batches: 500
-  limit_test_batches: 1.0
-  overfit_batches: 0.0
-
+# (optional analysis block if you actually use it)
 analysis:
   batch_size: 512
   num_workers: 8
   pin_memory: true
-
-wandb_logger: true
-csv_logger: true
-profiler: false
-
-# --- finetune-specific params ---
-from_run: ???     # required: experiment/version to load weights from, e.g. mlp_rollout_L_KG_mse_h3_v1/version_0
-checkpoint: best  # best or last
-smoke: false
-tag: null
-
-hydra:
-  run:
-    dir: ${hydra:runtime.cwd}
-  output_subdir: null
-  job_logging:
-    root:
-      level: WARNING

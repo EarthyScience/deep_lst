@@ -33,4 +33,4 @@ model:
   activation: relu
   use_residual: true
   step_loss: ${_step_loss_mse}
-  checkpoint_monitor: val_loss
+  checkpoint_monitor: val_loss_step_epoch

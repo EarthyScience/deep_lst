@@ -1,21 +1,21 @@
 # @package _global_
 
-_horizon: h3
+_horizon: h24
 
 train_dataset:
   era5:
-    horizon: 3
+    horizon: 24
   seviri:
-    horizon: 3
+    horizon: 24
 
 val_dataset:
   era5:
-    horizon: 3
+    horizon: 24
   seviri:
-    horizon: 3
+    horizon: 24
 
 test_dataset:
   era5:
-    horizon: 3
+    horizon: 24
   seviri:
-    horizon: 3
+    horizon: 24
