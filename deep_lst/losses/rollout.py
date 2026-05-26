@@ -30,6 +30,9 @@ class RolloutLoss(ABC):
         self.inc_variances: dict[str, float] = kwargs.get("inc_variances") or {}
 
     def __call__(self, lit_module, batch, stage):
+        self.lit_module = lit_module  # Store reference for logging inside loss functions
+        self.stage = stage
+
         horizon, lookback, context_vars = self._read_runtime_config(lit_module.config)
         spatial_mask = self._spatial_mask(batch, lookback)
 
@@ -110,6 +113,11 @@ class RolloutLoss(ABC):
             if frac >= self.min_valid_fraction:
                 sigma2_inc = self.inc_variances.get(key[1], 1.0)
                 state_loss = self._prognostic_loss(out, out_key, y_hat, target, target_valid, batch) / sigma2_inc
+
+                self.lit_module.log(
+                    f"{self.stage}_loss_state_{key[1]}_t{t}", state_loss, on_step=False, on_epoch=True, sync_dist=True
+                )
+
                 loss.add(f"state_{key[1]}", state_loss, weight=w)
 
                 if self.incremental_loss:
@@ -136,6 +144,9 @@ class RolloutLoss(ABC):
             frac = target_valid.sum().float() / max(target_valid.numel(), 1)
             if frac >= self.min_valid_fraction:
                 diag_loss = self._diagnostic_loss(out, out_key, target, target_valid, batch)
+                self.lit_module.log(
+                    f"{self.stage}_loss_diag_{key[1]}_t{t}", diag_loss, on_step=False, on_epoch=True, sync_dist=True
+                )
                 loss.add(f"diag_{key[1]}", diag_loss, weight=w)
 
     def _zero_loss(self, device):

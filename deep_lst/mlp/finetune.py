@@ -138,7 +138,7 @@ def main(cfg: DictConfig) -> None:
             EarlyStopping(
                 monitor=config["model"].get("checkpoint_monitor", "val_loss_step_epoch"),
                 mode="min",
-                patience=10,
+                patience=7,
                 min_delta=5e-4,
                 verbose=True,
             )

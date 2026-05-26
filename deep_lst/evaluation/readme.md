@@ -69,7 +69,7 @@ done
 
 ```bash
 bash scripts/inference/run_inference.sh \
-    experiment=mlp_rollout_L_KG_mse_h6_inc_v4 \
+    experiment=mlp_rollout_L_KG_mse_h4_v4 \
     version=version_0 \
     eval=train_KG_L \
     inference_horizon=200 \
