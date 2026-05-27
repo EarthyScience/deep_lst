@@ -649,3 +649,50 @@ def test_rollout_crps_incremental_loss_raises():
     )
     with pytest.raises(NotImplementedError, match="CRPS"):
         loss_fn(_RolloutLitModule(model), batch, stage="train")
+
+
+class _FakeClimatology(torch.nn.Module):
+    """Minimal stand-in: returns a deterministic (B, T_total) clim window."""
+
+    def __init__(self, t_total: int):
+        super().__init__()
+        self.register_buffer("dummy", torch.zeros(1))  # ensures .device works
+        self.t_total = t_total
+
+    def lookup_window(self, spatial_idx, time_idx):
+        return torch.arange(self.t_total).float()[None, :] * 0.1 + spatial_idx.float()[:, None] * 0.01
+
+
+class _RolloutLitModuleAnomaly(_RolloutLitModule):
+    def __init__(self, model):
+        super().__init__(model)
+        self.config = {**ROLLOUT_CONFIG, "model": {"predict_anomaly": True}}
+        self.climatology = _FakeClimatology(ROLLOUT_T)
+
+
+def test_rollout_mse_anomaly_numerical_baseline():
+    torch.manual_seed(0)
+    model = MultiModalMLP(
+        in_keys=ROLLOUT_IN_KEYS + PROG_KEYS,
+        out_keys=PROG_OUT_KEYS,
+        config={**MODEL_CONFIG, "hidden_sizes": [16, 8]},
+    )
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, ROLLOUT_T, 1) for k in ROLLOUT_IN_KEYS + PROG_KEYS}
+        | {
+            "spatial_idx": torch.arange(BATCH_SIZE, dtype=torch.long),
+            "time_idx": torch.full((BATCH_SIZE,), 1, dtype=torch.long),
+        },
+        batch_size=[BATCH_SIZE],
+    )
+    loss_fn = RolloutMSE(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=PROG_KEYS,
+        prognostic_out_keys=PROG_OUT_KEYS,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )
+    loss = loss_fn(_RolloutLitModuleAnomaly(model), batch, stage="train")
+    print(loss.item())
+    # Pin the baseline once it runs cleanly — replace XXX after first run
+    assert loss.item() == pytest.approx(0.6564374566078186, abs=1e-7)

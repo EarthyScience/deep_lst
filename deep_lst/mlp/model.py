@@ -84,6 +84,10 @@ class LitModelModule(LightningModule):
         self.config = config
         self.learning_rate = config["model"]["learning_rate"]
 
+        climatology = kwargs.get("climatology", None)
+        if climatology is not None:
+            self.add_module("climatology", climatology)  # make available to lightings .to(device) logic
+
         self.step_loss = self._get_loss(model_id=config["model"]["name"], loss_name=config["model"]["step_loss"])(
             **kwargs
         )

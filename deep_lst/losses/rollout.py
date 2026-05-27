@@ -30,7 +30,7 @@ class RolloutLoss(ABC):
         self.inc_variances: dict[str, float] = kwargs.get("inc_variances") or {}
 
     def __call__(self, lit_module, batch, stage):
-        self.lit_module = lit_module  # Store reference for logging inside loss functions
+        self.lit_module = lit_module
         self.stage = stage
 
         horizon, lookback, context_vars = self._read_runtime_config(lit_module.config)
@@ -39,6 +39,17 @@ class RolloutLoss(ABC):
         if spatial_mask is None or spatial_mask.sum() == 0:
             return self._zero_loss(batch.device)
 
+        predict_anomaly = lit_module.config["model"].get("predict_anomaly", False)
+        if predict_anomaly:
+            clim_window = lit_module.climatology.lookup_window(batch["spatial_idx"], batch["time_idx"])
+            clim_used = clim_window[:, lookback : lookback + horizon + 1]
+            clim_valid = torch.isfinite(clim_used).all(dim=1)
+            while clim_valid.ndim < spatial_mask.ndim:
+                clim_valid = clim_valid.unsqueeze(-1)
+            spatial_mask = spatial_mask & clim_valid
+        else:
+            clim_window = None
+
         prognostics = self._initilise_progonostic_states(batch, spatial_mask, lookback)
         loss = LossAccumulator(device=batch.device)
 
@@ -46,7 +57,9 @@ class RolloutLoss(ABC):
             w = self._timestep_weight(t)
             tstep_td = self._build_step_td(batch, prognostics, spatial_mask, lookback, t, context_vars)
             out = lit_module.model(tstep_td)
-            prognostics = self._step_prognostic(out, batch, prognostics, spatial_mask, lookback, t, w, loss)
+            prognostics = self._step_prognostic(
+                out, batch, prognostics, spatial_mask, lookback, t, w, loss, clim_window
+            )
             self._step_diagnostic(out, batch, spatial_mask, lookback, t, w, loss)
 
         loss.finalize()
@@ -74,7 +87,6 @@ class RolloutLoss(ABC):
         return self.timestep_weights[t - 1] if self.timestep_weights else 1.0
 
     def _build_step_td(self, batch, prog, spatial_mask, lookback, t, context_vars):
-        # Build input TensorDict at valid pixels
         tstep_td = TensorDict({}, batch_size=[spatial_mask.sum().item()])
         for key in self.in_keys:
             if key[1].endswith("_ctx"):
@@ -102,12 +114,24 @@ class RolloutLoss(ABC):
 
         return tstep_td
 
-    def _step_prognostic(self, out, batch, prog, spatial_mask, lookback, t, w, loss):
+    def _step_prognostic(self, out, batch, prog, spatial_mask, lookback, t, w, loss, clim_window=None):
         for key, out_key in zip(self.prognostic_keys, self.prognostic_out_keys):
             pred_increment = out[out_key]
-            y_hat = prog[key] + pred_increment
-            target = batch[key][:, lookback + t, ...][spatial_mask]
+            target_slice = batch[key][:, lookback + t, ...]
+
+            apply_shift = clim_window is not None and key[1] == "LST"
+            if apply_shift:
+                pad = (1,) * (target_slice.ndim - 1)
+                clim_t = clim_window[:, lookback + t].view(-1, *pad)[spatial_mask]
+                clim_tprev = clim_window[:, lookback + t - 1].view(-1, *pad)[spatial_mask]
+                delta_clim = clim_t - clim_tprev
+                y_hat = prog[key] + pred_increment + delta_clim
+            else:
+                y_hat = prog[key] + pred_increment
+
+            target = target_slice[spatial_mask]
             target_valid = torch.isfinite(target).all(dim=-1)
+
             frac = target_valid.sum().float() / max(target_valid.numel(), 1)
 
             if frac >= self.min_valid_fraction:
@@ -123,6 +147,9 @@ class RolloutLoss(ABC):
                 if self.incremental_loss:
                     target_prev = batch[key][:, lookback + t - 1, ...][spatial_mask]
                     target_increment = target - target_prev
+                    if apply_shift:
+                        target_increment = target_increment - delta_clim
+
                     inc_valid = target_valid & torch.isfinite(target_increment).all(dim=-1)
 
                     if inc_valid.sum() > 0:

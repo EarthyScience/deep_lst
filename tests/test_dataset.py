@@ -1,10 +1,3 @@
-"""Tests for UnimodalDataset and MultimodalDataset.
-
-Uses a lightweight mock reader — no zarr stores, no real data.
-The mock records every get_data_single call so tests can assert
-that the correct (spatial_idx, time_idx) pairs are forwarded.
-"""
-
 import numpy as np
 import pytest
 import torch
@@ -197,3 +190,20 @@ def test_multimodal_single_modality():
     assert len(ds) == 4
     sample = ds[0]
     assert "era5" in sample
+
+
+def test_multimodal_indices_consistent_across_modalities():
+    """Document the invariant: all modalities must share (spatial, time) per idx.
+    MultimodalDataset relies on this — see __getitem__ where the top-level
+    spatial_idx/time_idx are sourced from a single reference modality."""
+    indices = {
+        "seviri": np.array([[10, 100], [20, 200]]),
+        "era5": np.array([[10, 100], [20, 200]]),
+    }
+    readers = {"seviri": MockReader(), "era5": MockReader()}
+    ds = MultimodalDataset(reader=readers, indices=indices)
+
+    for idx in range(len(ds)):
+        ref = ds.indices["seviri"][idx]
+        for m in ds.readers:
+            assert np.array_equal(ds.indices[m][idx], ref), f"Modality {m} diverges from seviri at idx={idx}"

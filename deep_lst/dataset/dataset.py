@@ -1,5 +1,6 @@
 import eodata
 import numpy as np
+import torch
 from eodata.eo_zarr import EOZarrStore
 from eodata.grids import T1H
 from eodata.grids.majortom import MajorTomLandGrid
@@ -61,7 +62,8 @@ class UnimodalDataset(Dataset):
     def __getitem__(self, idx):
         p_index, t_index = self.indices[idx]
         sample = self.reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
-
+        sample["spatial_idx"] = torch.tensor(p_index, dtype=torch.long)
+        sample["time_idx"] = torch.tensor(t_index, dtype=torch.long)
         return sample
 
     @classmethod
@@ -131,6 +133,12 @@ class MultimodalDataset(Dataset):
         for modality, reader in self.readers.items():
             p_index, t_index = self.indices[modality][idx]
             data[modality] = reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
+
+        ref_mod = "seviri"
+        p_index, t_index = self.indices[ref_mod][idx]
+
+        data["spatial_idx"] = torch.tensor(p_index, dtype=torch.long)
+        data["time_idx"] = torch.tensor(t_index, dtype=torch.long)
 
         return data
 
