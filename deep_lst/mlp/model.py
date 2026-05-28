@@ -180,11 +180,30 @@ def load_model(
         paths.best_checkpoint(experiment, version) if prefer_best else paths.latest_checkpoint(experiment, version)
     )
 
+    climatology = None
+    if config["model"].get("predict_anomaly", False):
+        from eodata.converter.variables import STORE_TIME_RANGE
+        from eodata.util.misc import assemble_statistics_from_npz
+
+        from deep_lst.dataset.climatology import ClimatologyLookup
+
+        spatial = config["train_dataset"]["spatial"]
+        stats = assemble_statistics_from_npz(
+            paths.statistics_path("seviri", config["train_dataset"]["seviri"]["statistics"])
+        )
+        climatology = ClimatologyLookup(
+            clim_path=paths.climatology_path(f"train_{spatial}", "smoothed_hourly"),
+            spatial_idx_path=paths.spatial_indices_path("seviri", spatial),
+            lookback=config["train_dataset"]["seviri"]["lookback"],
+            horizon=config["train_dataset"]["seviri"]["horizon"],
+            state_mean=float(stats["LST"]["mean"]),
+            state_std=float(stats["LST"]["std"]),
+            store_time_range=STORE_TIME_RANGE,
+            variable="LST",
+        )
+
     lit_module = LitModelModule.load_from_checkpoint(
-        ckpt_path,
-        model=model,
-        config=config,
-        **td_keys,
+        ckpt_path, model=model, config=config, **td_keys, climatology=climatology
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -7,11 +7,9 @@ from_run: ???
 checkpoint: best
 
 model:
-  learning_rate: 2e-5
+  learning_rate: 5e-5
   warmup_steps: 0
+  # detach_rollout: false
 
-# (optional analysis block if you actually use it)
-analysis:
-  batch_size: 512
-  num_workers: 8
-  pin_memory: true
+training:
+  max_epochs: 25

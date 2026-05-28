@@ -148,6 +148,25 @@ def main(cfg: DictConfig) -> None:
     data_module = LitDataModule(**config)
     data_module.setup()
 
+    climatology = None
+    if config["model"].get("predict_anomaly", False):
+        from eodata.converter.variables import STORE_TIME_RANGE
+
+        from deep_lst.dataset.climatology import ClimatologyLookup
+
+        spatial = config["train_dataset"]["spatial"]
+        lst_norm = data_module.train_dataset.readers["seviri"].normalizers["LST"]
+        climatology = ClimatologyLookup(
+            clim_path=paths.climatology_path(f"train_{spatial}", "smoothed_hourly"),
+            spatial_idx_path=paths.spatial_indices_path("seviri", spatial),
+            lookback=config["train_dataset"]["seviri"]["lookback"],
+            horizon=config["train_dataset"]["seviri"]["horizon"],
+            state_mean=float(lst_norm.mean),
+            state_std=float(lst_norm.std),
+            store_time_range=STORE_TIME_RANGE,
+            variable="LST",
+        )
+
     td_keys = get_keys_from_config(config["train_dataset"])
 
     lookback = config["train_dataset"]["seviri"]["lookback"]
@@ -175,7 +194,9 @@ def main(cfg: DictConfig) -> None:
         config,
         **td_keys,
         inc_variances=inc_variances,
+        detach_rollout=config["model"].get("detach_rollout", True),
         incremental_loss=config["model"].get("incremental_loss", False),
+        climatology=climatology,
     )
 
     state = torch.load(ckpt_path, map_location="cpu")
