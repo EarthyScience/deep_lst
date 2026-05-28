@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from deep_lst.evaluation.spatial import build_local_grid
 from deep_lst.utils import ExperimentPaths, ZScoringNormalizer
+from deep_lst.utils.config import get_context_var_pairs
 
 PATHS = ExperimentPaths()
 
@@ -532,7 +533,10 @@ class Forecast:
         diag_out_keys = td_keys.get("diagnostic_out_keys", [])
 
         lookback = kwargs.get("lookback", 0)
-        context_vars = kwargs.get("context_vars", [])
+        inference_horizon = kwargs.get(
+            "horizon", 0
+        )  # currently reads from the modalty overwritten horizon, not from infer.yaml!
+        context_pairs = get_context_var_pairs(model.config["train_dataset"])
 
         all_vars = [k[1] for k in prog_keys] + [k[1] for k in diag_keys]
 
@@ -550,21 +554,25 @@ class Forecast:
                 # history[var] is a list of lookback tensors (oldest first), each [B, H, W, C].
                 # Batch indices 1..lookback correspond to times t0-lookback+1 .. t0.
                 history = {}
-                if lookback > 0:
-                    for var in context_vars:
-                        src_key = ("seviri", var)
-                        history[var] = [batch[src_key][:, i, ...] for i in range(1, lookback + 1)]
+                for modality, var in context_pairs:
+                    history[(modality, var)] = [batch[(modality, var)][:, i, ...] for i in range(1, lookback + 1)]
 
                 batch_preds = {var: [] for var in all_vars}
                 batch_obs = {var: [] for var in all_vars}
 
-                for t in range(1, kwargs["horizon"] + 1):
+                predict_anomaly = model.config["model"].get("predict_anomaly", False)
+                clim_fwd = (
+                    model.climatology.lookup_forward(batch["spatial_idx"], batch["time_idx"], inference_horizon)
+                    if predict_anomaly
+                    else None
+                )
+
+                for t in range(1, inference_horizon + 1):
                     tstep_td = TensorDict({}, batch_size=[batch.batch_size[0]])
                     for key in td_keys["in_keys"]:
                         if key[1].endswith("_ctx"):
                             continue  # context keys injected below
-                        mod_lb = lookback if key[0] == "seviri" else 0
-                        tstep_td[key] = batch[key][:, mod_lb + t, ...]
+                        tstep_td[key] = batch[key][:, lookback + t, ...]
                     for key in prog_keys:
                         tstep_td[key] = prog[key]
 
@@ -572,10 +580,9 @@ class Forecast:
                     # At t=1 the history is all teacher-forced; beyond that it mixes
                     # predictions as the window slides past the observed lookback.
                     if lookback > 0:
-                        for var in context_vars:
-                            ctx_key = ("seviri", f"{var}_ctx")
-                            # [B, lookback, H, W, C] -> [B, H, W, 2*lookback*C]
-                            ctx = torch.stack(history[var], dim=1)
+                        for modality, var in context_pairs:
+                            ctx_key = (modality, f"{var}_ctx")
+                            ctx = torch.stack(history[(modality, var)], dim=1)
                             B, lb, H, W, C = ctx.shape
                             valid_mask = torch.isfinite(ctx).all(dim=-1, keepdim=True)
                             ctx_vals = torch.nan_to_num(ctx, nan=0.0)
@@ -588,19 +595,35 @@ class Forecast:
 
                     for key, out_key in zip(prog_keys, prog_out_keys):
                         var = key[1]
-                        prog[key] = prog[key] + out[out_key].float()
+                        model_increment = out[out_key].float()
+
+                        if clim_fwd is not None and var == "LST":
+                            pad = (1,) * (prog[key].ndim - 1)
+                            clim_t = clim_fwd[:, t].view(-1, *pad)
+                            clim_tprev = clim_fwd[:, t - 1].view(-1, *pad)
+                            clim_increment = torch.nan_to_num(clim_t - clim_tprev, nan=0.0)
+                        else:
+                            clim_increment = 0
+
+                        state_increment = model_increment + clim_increment
+                        prog[key] = prog[key] + state_increment
+
                         batch_preds[var].append(prog[key].squeeze((-3, -2, -1)))
                         batch_obs[var].append(batch[key][:, lookback + t, ...].squeeze((-3, -2, -1)))
-
-                        # Advance history: drop oldest, append current prediction
-                        if lookback > 0 and var in history:
-                            history[var].pop(0)
-                            history[var].append(prog[key])
 
                     for key, out_key in zip(diag_keys, diag_out_keys):
                         var = key[1]
                         batch_preds[var].append(out[out_key].float().squeeze((-3, -2, -1)))
                         batch_obs[var].append(batch[key][:, lookback + t, ...].squeeze((-3, -2, -1)))
+
+                    if lookback > 0:
+                        for modality, var in context_pairs:
+                            history_key = (modality, var)
+                            history[history_key].pop(0)
+                            if history_key in prog_keys:
+                                history[history_key].append(prog[history_key])
+                            else:
+                                history[history_key].append(batch[history_key][:, lookback + t, ...])
 
                 for var in all_vars:
                     p = torch.stack(batch_preds[var], dim=1).cpu().numpy()

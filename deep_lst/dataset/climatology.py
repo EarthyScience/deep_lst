@@ -61,6 +61,13 @@ class ClimatologyLookup(torch.nn.Module):
         clim_values = self.clim[clim_rows, pixel_ranks[:, None]]  # (B, T_total)
         return clim_values
 
+    def lookup_forward(self, spatial_idx, time_idx, n_steps):  # -> (B, n_steps+1)
+        pixel_ranks = torch.tensor([self.flat_to_rank[int(s)] for s in spatial_idx.cpu()], device=self.clim.device)
+        offsets = torch.arange(0, n_steps + 1, device=spatial_idx.device)
+        time_window = time_idx[:, None] + offsets[None, :]
+        clim_rows = self.time_to_clim_row[time_window]
+        return self.clim[clim_rows, pixel_ranks[:, None]]
+
 
 if __name__ == "__main__":
     clim_path = Path("/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/climatology_hourly/eval_KG_L.nc")

@@ -5,6 +5,7 @@ import torch.nn as nn
 from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
+from deep_lst.utils.config import get_context_keys
 from deep_lst.utils.io import ExperimentPaths
 
 
@@ -158,15 +159,12 @@ def load_model(
         device:     The torch.device the model is on.
     """
     lookback = config.get("train_dataset", {}).get("seviri", {}).get("lookback", 0)
-    context_vars = config.get("train_dataset", {}).get("seviri", {}).get("context_vars", [])
     if in_feature_sizes is None:
         in_feature_sizes = {}
-    if lookback > 0:
-        for var in context_vars:
-            ctx_key = ("seviri", f"{var}_ctx")
-            if ctx_key not in td_keys["in_keys"]:
-                td_keys["in_keys"].append(ctx_key)
-            in_feature_sizes[ctx_key] = 2 * lookback
+    for ctx_key, size in get_context_keys(config.get("train_dataset", {}), lookback):
+        if ctx_key not in td_keys["in_keys"]:
+            td_keys["in_keys"].append(ctx_key)
+        in_feature_sizes[ctx_key] = size
 
     model = MultiModalMLP(
         in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],

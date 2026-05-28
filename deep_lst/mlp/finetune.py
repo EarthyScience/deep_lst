@@ -30,7 +30,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.config import get_keys_from_config
+from deep_lst.utils.config import get_context_keys, get_keys_from_config
 from deep_lst.utils.io import load_inc_variances
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
@@ -170,13 +170,11 @@ def main(cfg: DictConfig) -> None:
     td_keys = get_keys_from_config(config["train_dataset"])
 
     lookback = config["train_dataset"]["seviri"]["lookback"]
-    context_vars = config["train_dataset"]["seviri"].get("context_vars", [])
     in_feature_sizes: dict = {}
     if lookback > 0:
-        for var in context_vars:
-            ctx_key = ("seviri", f"{var}_ctx")
+        for ctx_key, size in get_context_keys(config["train_dataset"], lookback):
             td_keys["in_keys"].append(ctx_key)
-            in_feature_sizes[ctx_key] = 2 * lookback  # values + validity mask
+            in_feature_sizes[ctx_key] = size
 
     inc_variances: dict[str, float] = {}
     for modality, mod_cfg in config["train_dataset"].items():

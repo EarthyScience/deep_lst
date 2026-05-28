@@ -49,6 +49,38 @@ def test_lookup_window_round_trip(tmp_path):
             assert out[b, k].item() == expected
 
 
+def test_lookup_forward_round_trip(tmp_path):
+    flat_ids = [10, 20, 30]
+    values = np.zeros((8784, 3), dtype=np.float32)
+    values[:, :] = np.arange(8784)[:, None] * 1000 + np.array(flat_ids)[None, :]  # values[t, p] = 1000*t + flat_id
+
+    clim_path, idx_path = _write_synthetic_clim(tmp_path, values, flat_ids)
+    ts = pd.date_range("2024-01-01", periods=8784, freq="h")  # one leap year — natural doy already leap-aligned
+
+    horizon = 3
+    lookback = 2
+    lookup = ClimatologyLookup(
+        clim_path=clim_path,
+        spatial_idx_path=idx_path,
+        lookback=lookback,
+        horizon=horizon,
+        state_mean=0.0,
+        state_std=1.0,
+        store_time_range=ts,
+    )
+
+    spatial_idx = torch.tensor([20, 30])
+    time_idx = torch.tensor([100, 500])
+    nsteps = 5
+    out = lookup.lookup_forward(spatial_idx, time_idx, nsteps)
+    assert out.shape == (2, nsteps + 1)
+
+    out = lookup.lookup_forward(spatial_idx, time_idx, horizon)
+    out_lw = lookup.lookup_window(spatial_idx, time_idx)[:, lookback : lookback + horizon + 1]
+
+    assert torch.equal(out, out_lw), "forward lookup must match window lookup over [0..horizon]"
+
+
 def test_leap_year_alignment(tmp_path):
     # Values encode the (doy, hour) row position so the lookup result lets us reverse-engineer the row used.
     values = np.zeros((8784, 1), dtype=np.float32)

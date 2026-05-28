@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 
 from deep_lst.losses.common import LossAccumulator, gaussian_crps, sigma_key
+from deep_lst.utils.config import get_context_var_pairs
 
 
 class RolloutLoss(ABC):
@@ -39,7 +40,7 @@ class RolloutLoss(ABC):
         if spatial_mask is None or spatial_mask.sum() == 0:
             return self._zero_loss(batch.device)
 
-        predict_anomaly = lit_module.config["model"].get("predict_anomaly", False)
+        predict_anomaly = lit_module.config.get("model", {}).get("predict_anomaly", False)
         if predict_anomaly:
             clim_window = lit_module.climatology.lookup_window(batch["spatial_idx"], batch["time_idx"])
             clim_used = clim_window[:, lookback : lookback + horizon + 1]
@@ -69,8 +70,8 @@ class RolloutLoss(ABC):
     def _read_runtime_config(self, config):
         horizon = config["train_dataset"]["seviri"]["horizon"]
         lookback = config["train_dataset"]["seviri"]["lookback"]
-        context_vars = config["train_dataset"]["seviri"].get("context_vars", [])
-        return horizon, lookback, context_vars
+        context_pairs = get_context_var_pairs(config["train_dataset"])
+        return horizon, lookback, context_pairs
 
     def _spatial_mask(self, batch, lookback):
         spatial_mask = None
@@ -86,13 +87,12 @@ class RolloutLoss(ABC):
     def _timestep_weight(self, t):
         return self.timestep_weights[t - 1] if self.timestep_weights else 1.0
 
-    def _build_step_td(self, batch, prog, spatial_mask, lookback, t, context_vars):
+    def _build_step_td(self, batch, prog, spatial_mask, lookback, t, context_pairs):
         tstep_td = TensorDict({}, batch_size=[spatial_mask.sum().item()])
         for key in self.in_keys:
             if key[1].endswith("_ctx"):
                 continue  # context keys are injected below
-            mod_lb = lookback if key[0] == "seviri" else 0
-            inp = batch[key][:, mod_lb + t, ...][spatial_mask]
+            inp = batch[key][:, lookback + t, ...][spatial_mask]
             if self.impute_inputs:
                 inp = torch.nan_to_num(inp, nan=0.0)
             tstep_td[key] = inp
@@ -101,10 +101,9 @@ class RolloutLoss(ABC):
 
         # Inject lookback context: teacher-forced past states with validity mask (Option B).
         if lookback > 0:
-            for var in context_vars:
-                src_key = ("seviri", var)
-                ctx_key = ("seviri", f"{var}_ctx")
-
+            for modality, var in context_pairs:
+                src_key = (modality, var)
+                ctx_key = (modality, f"{var}_ctx")
                 ctx = batch[src_key][:, t : lookback + t, ...].permute(0, 2, 3, 1, 4)[spatial_mask]
 
                 valid_mask = torch.isfinite(ctx).all(dim=-1, keepdim=True)  # [N_valid, lookback, 1]
@@ -116,18 +115,20 @@ class RolloutLoss(ABC):
 
     def _step_prognostic(self, out, batch, prog, spatial_mask, lookback, t, w, loss, clim_window=None):
         for key, out_key in zip(self.prognostic_keys, self.prognostic_out_keys):
-            pred_increment = out[out_key]
+            model_increment = out[out_key]
             target_slice = batch[key][:, lookback + t, ...]
 
-            apply_shift = clim_window is not None and key[1] == "LST"
-            if apply_shift:
+            apply_clim = clim_window is not None and key[1] == "LST"
+            if apply_clim:
                 pad = (1,) * (target_slice.ndim - 1)
                 clim_t = clim_window[:, lookback + t].view(-1, *pad)[spatial_mask]
                 clim_tprev = clim_window[:, lookback + t - 1].view(-1, *pad)[spatial_mask]
-                delta_clim = clim_t - clim_tprev
-                y_hat = prog[key] + pred_increment + delta_clim
+                clim_increment = clim_t - clim_tprev
             else:
-                y_hat = prog[key] + pred_increment
+                clim_increment = 0.0
+
+            state_increment = model_increment + clim_increment
+            y_hat = prog[key] + state_increment
 
             target = target_slice[spatial_mask]
             target_valid = torch.isfinite(target).all(dim=-1)
@@ -146,15 +147,15 @@ class RolloutLoss(ABC):
 
                 if self.incremental_loss:
                     target_prev = batch[key][:, lookback + t - 1, ...][spatial_mask]
-                    target_increment = target - target_prev
-                    if apply_shift:
-                        target_increment = target_increment - delta_clim
-
-                    inc_valid = target_valid & torch.isfinite(target_increment).all(dim=-1)
+                    target_state_increment = target - target_prev
+                    target_model_increment = target_state_increment - clim_increment
+                    inc_valid = target_valid & torch.isfinite(target_model_increment).all(dim=-1)
 
                     if inc_valid.sum() > 0:
                         inc_loss = (
-                            self._incremental_loss(out, out_key, pred_increment, target_increment, inc_valid, batch)
+                            self._incremental_loss(
+                                out, out_key, model_increment, target_model_increment, inc_valid, batch
+                            )
                             / sigma2_inc
                         )
                         loss.add(f"increment_{key[1]}", inc_loss, weight=w)

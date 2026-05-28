@@ -695,4 +695,4 @@ def test_rollout_mse_anomaly_numerical_baseline():
     loss = loss_fn(_RolloutLitModuleAnomaly(model), batch, stage="train")
     print(loss.item())
     # Pin the baseline once it runs cleanly — replace XXX after first run
-    assert loss.item() == pytest.approx(0.6564374566078186, abs=1e-7)
+    assert loss.item() == pytest.approx(0.7986586093902588, abs=1e-7)
