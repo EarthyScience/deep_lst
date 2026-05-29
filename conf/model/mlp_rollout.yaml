@@ -4,7 +4,7 @@
 _model_name: mlp_rollout
 _step_loss_mse: RolloutMSE
 _step_loss_crps: RolloutCRPS
-_sigma_prognostics: [LST, AL-BB-DH]
+_sigma_prognostics: [LST]
 _sigma_diagnostics: []
 
 train_dataset:
@@ -12,7 +12,7 @@ train_dataset:
     context_vars: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
-    prognostics: [LST, AL-BB-DH]
+    prognostics: [LST]
     diagnostics: []
     context_vars: [LST]
 
@@ -21,7 +21,7 @@ val_dataset:
     context_vars: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
-    prognostics: [LST, AL-BB-DH]
+    prognostics: [LST]
     diagnostics: []
     context_vars: [LST]
 
@@ -30,7 +30,7 @@ test_dataset:
     context_vars: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
-    prognostics: [LST, AL-BB-DH]
+    prognostics: [LST]
     diagnostics: []
     context_vars: [LST]
 

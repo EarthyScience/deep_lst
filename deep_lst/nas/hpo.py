@@ -39,7 +39,7 @@ def objective(
     config["model"]["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     config["model"]["dropout"] = trial.suggest_float("dropout", 0.0, 0.5)
     config["model"]["weight_decay"] = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
-    config["model"]["hidden_sizes"] = hidden_sizes[trial.suggest_categorical("hidden_sizes_idx", [0, 1, 2], log=False)]
+    config["model"]["hidden_sizes"] = hidden_sizes[trial.suggest_categorical("hidden_sizes_idx", [0, 1, 2])]
 
     config["training"]["batch_size"] = trial.suggest_categorical("batch_size", [128, 256, 512])
 
