@@ -12,7 +12,9 @@ class ExperimentPaths:
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
     plots_root: Path = field(default_factory=lambda: Path("./plots"))
-    stores_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/wegen-stores-new/"))
+    stores_root: Path = field(
+        default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/wegen-stores/sampled_stores/")
+    )
     # --- directories ---
 
     def experiment_dir(self, experiment: str) -> Path:
