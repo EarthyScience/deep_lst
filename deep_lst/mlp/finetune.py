@@ -2,7 +2,9 @@
 
 Loads weights from a pre-trained checkpoint and continues training with a new
 Hydra-composed config — typically a longer horizon, adjusted timestep_weights,
-and/or lower lr. Architecture must be identical between pre-training and finetuning.
+and/or lower lr. Architecture (hidden_sizes, use_residual) is taken from the
+source checkpoint's saved config.yml automatically; any CLI overrides on those
+fields are ignored to keep the state_dict loadable.
 
 Usage
 -----
@@ -85,6 +87,24 @@ def main(cfg: DictConfig) -> None:
             raise FileNotFoundError(f"last.ckpt not found at {ckpt_path}")
 
     print(f"Loading weights from: {ckpt_path}")
+
+    # Force the architecture to match the source checkpoint. state_dict loading
+    # will fail otherwise; safer to take these from the saved config than to
+    # rely on the user passing them on the CLI.
+    saved_config_path = paths.experiment_dir(from_experiment) / from_version / "config.yml"
+    if saved_config_path.exists():
+        saved = OmegaConf.to_container(OmegaConf.load(saved_config_path), resolve=True)
+        for k in ("hidden_sizes", "use_residual"):
+            if k in saved.get("model", {}):
+                if config["model"].get(k) != saved["model"][k]:
+                    print(
+                        f"  model.{k}: overriding {config['model'].get(k)} -> {saved['model'][k]} (from source checkpoint)"
+                    )
+                config["model"][k] = saved["model"][k]
+    else:
+        print(
+            f"  WARNING: source config.yml not found at {saved_config_path}; architecture must match the checkpoint manually."
+        )
 
     # --- loggers ---
     loggers = []
