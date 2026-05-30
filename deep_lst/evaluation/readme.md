@@ -57,7 +57,7 @@ submits both with automatic `afterok` dependency — no manual wiring needed.
 ```bash
 for eval in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa yangambi bouamir; do
     bash scripts/inference/run_inference.sh \
-        experiment=mlp_rollout_L_KG_mse_h6_v4 \
+        experiment=mlp_rollout_L_KG_mse_h24_v5_ft \
         version=version_0 \
         eval=${eval} \
         inference_horizon=200 \
@@ -69,8 +69,8 @@ done
 
 ```bash
 bash scripts/inference/run_inference.sh \
-    experiment=mlp_rollout_L_KG_mse_h4_v5_large \
-    version=version_0 \
+    experiment=mlp_rollout_L_KG_mse_h24_v5_ft \
+    version=version_2 \
     eval=train_KG_L \
     inference_horizon=200 \
     best=true
