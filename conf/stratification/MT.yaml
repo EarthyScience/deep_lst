@@ -2,5 +2,5 @@
 _stratification: MT
 # MajorTom 5 km land grid — Africa subset (3000 sites, colleague's indices).
 # _spatial and _statistics are fixed (no size variants for this grid).
-_spatial: MT
-_statistics: MT
+_spatial: mtg
+_statistics: mtg

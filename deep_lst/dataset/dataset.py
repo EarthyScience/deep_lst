@@ -104,7 +104,7 @@ class UnimodalDataset(Dataset):
             sampled_grid = IndexedSubsetGrid(
                 _parent_grid_for(root.attrs["index_space"], modality_id),
                 spatial_idx,
-                name=f"{modality_id.upper()}_sampled_{kwargs['spatial']}",
+                name=root.attrs["spatial_grid"],
             )
             store = EOZarrStore(store_path, spatial_grid=sampled_grid, time_grid=T1H, mode="r+")
         else:
@@ -178,7 +178,7 @@ class MultimodalDataset(Dataset):
                 sampled_grid = IndexedSubsetGrid(
                     _parent_grid_for(root.attrs["index_space"], mod),
                     spatial_idx,
-                    name=f"{mod.upper()}_sampled_{kwargs['spatial']}",
+                    name=root.attrs["spatial_grid"],
                 )
                 store = EOZarrStore(store_path, spatial_grid=sampled_grid, time_grid=T1H, mode="r+")
             else:
