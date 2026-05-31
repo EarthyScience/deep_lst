@@ -78,12 +78,8 @@ class BaselineExtractor(ABC):
 
     def _make_dataset(self, baseline: np.ndarray, test_timestamps: pd.DatetimeIndex, attrs: dict) -> xr.Dataset:
         if self.sparse:
-            if "lat" in self.zarr_store and "lon" in self.zarr_store:
-                pixel_lats = self.zarr_store["lat"][:]
-                pixel_lons = self.zarr_store["lon"][:]
-            else:
-                pixel_lats = self.lats[self.local_rows]
-                pixel_lons = self.lons[self.local_cols]
+            pixel_lats = self.lats[self.local_rows]
+            pixel_lons = self.lons[self.local_cols]
             return xr.Dataset(
                 {self.var_name: (["valid_time", "pixel"], baseline)},
                 coords={

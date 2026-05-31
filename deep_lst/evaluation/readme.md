@@ -55,7 +55,7 @@ submits both with automatic `afterok` dependency — no manual wiring needed.
 ### Dense eval region (e.g. `dahra`)
 
 ```bash
-for eval in dahra antananarivo gobabeb johannesburg east_africa sahel_niger w_africa yangambi bouamir; do
+for eval in dahra antananarivo gobabeb johannesburg passage sahel_niger west_africa yangambi bouamir; do
     bash scripts/inference/run_inference.sh \
         experiment=mlp_rollout_L_MT_mse_h4_v5_large_l72_mtg \
         version=version_0 \
