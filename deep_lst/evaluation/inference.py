@@ -10,7 +10,7 @@ from tensordict import TensorDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from deep_lst.evaluation.spatial import build_local_grid
+from deep_lst.evaluation.spatial import lookup_pixel_coords
 from deep_lst.utils import ExperimentPaths, ZScoringNormalizer
 from deep_lst.utils.config import get_context_var_pairs
 
@@ -138,8 +138,9 @@ class Forecast:
         self.diagnostic_vars = [key[1] for key in td_keys.get("diagnostic_keys", [])]
 
         self.unique_spatial_idx = np.unique(spatial_indices)
-        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = build_local_grid(
-            self.unique_spatial_idx
+        seviri_store_path = PATHS.sampled_store_path("seviri", self.config["spatial"])
+        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = lookup_pixel_coords(
+            seviri_store_path, self.unique_spatial_idx
         )
 
         fill = len(self.unique_spatial_idx) / (self.grid_shape[0] * self.grid_shape[1])
@@ -297,10 +298,11 @@ class Forecast:
         time_idx: np.ndarray,
         inference_horizon: int,
         prediction_mode: str,
+        seviri_store_path: Path,
     ) -> None:
         """Create empty zarr store for distributed inference. No model weights required."""
         unique_spatial_idx = np.unique(spatial_indices)
-        lats, lons, local_rows, local_cols, grid_shape = build_local_grid(unique_spatial_idx)
+        lats, lons, local_rows, local_cols, grid_shape = lookup_pixel_coords(seviri_store_path, unique_spatial_idx)
         H, W = int(grid_shape[0]), int(grid_shape[1])
 
         fill = len(unique_spatial_idx) / (H * W)

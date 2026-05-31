@@ -7,7 +7,7 @@ import xarray as xr
 from eodata.grids import build_seviri_grid
 
 from deep_lst.evaluation.metrics import compute_grouped_scores, compute_scores, to_init_time, to_valid_time
-from deep_lst.evaluation.spatial import build_local_grid
+from deep_lst.evaluation.spatial import lookup_pixel_coords
 from deep_lst.utils import ExperimentPaths
 
 _BASELINE_REGISTRY: dict[str, tuple[callable, str]] = {
@@ -128,8 +128,13 @@ class Evaluator(ABC):
                 if key in indices_ds.files:
                     coords[key] = (("pixel",), indices_ds[key][lookup])
         else:
-            src_indices = indices_ds["src_indices"]
-            _, _, local_rows, local_cols, grid_shape = build_local_grid(src_indices)
+            src_indices = np.unique(indices_ds["src_indices"])
+            if self.eval_name.startswith("train_"):
+                store_token = self.eval_name.removeprefix("train_")
+            else:
+                store_token = self.eval_name if self.eval_name.startswith("eval_") else f"eval_{self.eval_name}"
+            store_path = self.paths.sampled_store_path("seviri", store_token)
+            _, _, local_rows, local_cols, grid_shape = lookup_pixel_coords(store_path, src_indices)
             if grid_shape != (ds.sizes["lat"], ds.sizes["lon"]):
                 raise ValueError(
                     f"Grid shape mismatch: expected {grid_shape}, got {(ds.sizes['lat'], ds.sizes['lon'])}"

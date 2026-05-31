@@ -29,6 +29,7 @@ def run_inference_setup(cfg: DictConfig) -> None:
     time_idx = load_time_indices(paths, config["test_dataset"])
 
     output_path = paths.forecast_path(cfg.experiment, cfg.version, cfg.eval_name)
+    seviri_store_path = paths.sampled_store_path("seviri", config["test_dataset"]["spatial"])
 
     print(f"Experiment : {cfg.experiment} / {cfg.version}")
     print(f"Eval       : {cfg.eval_name}  (indices: {cfg.spatial_indices})")
@@ -41,6 +42,7 @@ def run_inference_setup(cfg: DictConfig) -> None:
         time_idx,
         cfg.inference_horizon,
         config["model"]["step_loss"],
+        seviri_store_path,
     )
 
 

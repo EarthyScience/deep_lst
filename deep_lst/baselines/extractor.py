@@ -10,7 +10,7 @@ import pandas as pd
 import xarray as xr
 import zarr
 
-from deep_lst.evaluation.spatial import build_local_grid
+from deep_lst.evaluation.spatial import lookup_pixel_coords
 from deep_lst.utils import ExperimentPaths
 
 _SPARSE_FILL_THRESHOLD = 0.01
@@ -69,7 +69,9 @@ class BaselineExtractor(ABC):
         self.n_pixels = self.var.shape[0]
 
     def _resolve_spatial_layout(self):
-        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = build_local_grid(self.spatial_idx)
+        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = lookup_pixel_coords(
+            self.zarr_store, self.spatial_idx
+        )
         fill = self.n_pixels / (self.grid_shape[0] * self.grid_shape[1])
         self.sparse = fill < _SPARSE_FILL_THRESHOLD
         print(f"Spatial: {self.n_pixels} pixels, fill={fill:.4f} → {'sparse' if self.sparse else 'dense'} output")
