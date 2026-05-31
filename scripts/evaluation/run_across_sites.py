@@ -11,11 +11,11 @@ cross_site_skill_boxplot  Side-by-side ACC and NSE per region
 
 Usage
 -----
-uv run scripts/evaluation/run_across_sites.py \\
-    --experiment mlp_rollout_L_KG_v1 \\
-    --version version_1 \\
-    --baseline era5 clim_smooth \\
-    --lead_time 3h
+uv run scripts/evaluation/run_across_sites.py \
+    --experiment mlp_rollout_L_KG_mse_h24_v5_ft \
+    --version version_0 \
+    --baseline era5 clim_smooth \
+    --lead_time 6h
 
 Available --baseline:        era5  clim_hourly  clim_smooth  persistence
 Available --reduction_order: space_then_time  time_then_space

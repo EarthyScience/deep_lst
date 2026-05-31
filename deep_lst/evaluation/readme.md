@@ -69,9 +69,9 @@ done
 
 ```bash
 bash scripts/inference/run_inference.sh \
-    experiment=mlp_rollout_L_KG_mse_h24_v5_ft \
-    version=version_2 \
-    eval=train_KG_L \
+    experiment=mlp_rollout_L_MT_mse_h4_v5_large_l72_mtg \
+    version=version_0 \
+    eval=train_mtg \
     inference_horizon=200 \
     best=true
 ```
