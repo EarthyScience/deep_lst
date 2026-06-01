@@ -92,6 +92,12 @@ class ForecastResult:
         pred_vars = [v.replace("_pred", "") for v in ds.data_vars if v.endswith("_pred")]
         predictions = {var: ds[f"{var}_pred"].values for var in pred_vars}
         observations = {var: ds[f"{var}_obs"].values for var in pred_vars}
+        empty = [var for var, arr in predictions.items() if not np.isfinite(arr).any()]
+        if empty:
+            raise ValueError(
+                f"Forecast at {path} has no finite predictions for {empty} "
+                f"(unfilled NaN skeleton). Re-run inference for this region before evaluating."
+            )
         sparse = "pixel" in ds.dims
         return cls(
             predictions=predictions,
