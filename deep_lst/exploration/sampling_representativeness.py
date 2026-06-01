@@ -15,8 +15,8 @@ from deep_lst.exploration.plots.kg_sampling import plot_kg_bars, plot_kg_map, pl
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 KG_TIFF = "/Net/Groups/BGI/people/mwessel/auxilary_data/Beck_KG_V1/Beck_KG_V1_present_0p083.tif"
-NPZ_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/spatial/indices_MT.npz"
-EVAL_NPZ_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/spatial/indices_eval_MT.npz"
+NPZ_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/spatial/indices_mtg.npz"
+EVAL_NPZ_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/spatial/indices_eval_mtg.npz"
 META_PATH = "/Net/Groups/BGI/tscratch/weathergenerator/indices/africa/indices_meta.json"
 OUT_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/results/exploration/sampling_representativeness/kg_classes.pdf"
 OUT_PATH_MAP = (

@@ -81,6 +81,24 @@ def _lc_rgb(lc_array):
     return np.array([to_rgb(IGBP_COLORS.get(int(c), "#808080")) for c in lc_array])
 
 
+def _plot_lc_histogram(ax, lc_array):
+    """Training-site frequency per IGBP land-cover class, bars coloured by class.
+
+    Doubles as the land-cover legend (bar colour = class), replacing the patch legend.
+    """
+    counts = np.bincount(lc_array.astype(int))
+    present = [c for c in range(len(counts)) if c > 0 and counts[c] > 0]
+    x = np.arange(len(present))
+    ax.bar(x, [counts[c] for c in present], width=0.6, color=[IGBP_COLORS.get(c, "#808080") for c in present])
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{c}: {IGBP_NAMES.get(c, '')}" for c in present], fontsize=8, rotation=45, ha="right")
+    ax.set_ylabel("n sites", fontsize=10)
+    ax.set_title("Land cover class", fontsize=10)
+    ax.tick_params(axis="y", labelsize=8)
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+
+
 def plot_kg_bars(df, out_path):
     plt.rcParams.update(RC)
 
@@ -165,7 +183,15 @@ def plot_kg_map(df, africa, africa_grid, africa_kg, valid, grid, npz_path, out_p
         color="black",
         lw=0.5,
     )
-    ax.scatter(train_lons, train_lats, c=_lc_rgb(train_lc), s=8, linewidths=0, zorder=5)
+    ax.scatter(
+        train_lons,
+        train_lats,
+        c=_lc_rgb(train_lc),
+        s=18,
+        linewidths=0.2,
+        edgecolors="#303030",
+        zorder=5,
+    )
 
     for name, (lon, lat) in EVAL_CENTERS.items():
         dists = (coords[:, 0] - lon) ** 2 + (coords[:, 1] - lat) ** 2
@@ -195,12 +221,8 @@ def plot_kg_map(df, africa, africa_grid, africa_kg, valid, grid, npz_path, out_p
 
     plt.colorbar(sc, ax=ax, label="Sampling ratio", shrink=0.6)
 
-    present_classes = sorted(set(int(c) for c in train_lc))
-    lc_handles = [
-        mpatches.Patch(color=IGBP_COLORS.get(c, "#808080"), label=f"{c}: {IGBP_NAMES.get(c, '')}")
-        for c in present_classes
-    ]
-    ax.legend(handles=lc_handles, loc="lower left", fontsize=7, ncol=2, title="Land cover class", title_fontsize=8)
+    axh = ax.inset_axes([0.03, 0.11, 0.30, 0.22])
+    _plot_lc_histogram(axh, train_lc)
 
     ax.set_aspect("equal")
     ax.set_axis_off()
@@ -263,7 +285,10 @@ def plot_kg_map_grey(df, africa, africa_grid, africa_kg, valid, grid, npz_path, 
         train_lons,
         train_lats,
         c=_lc_rgb(train_lc),
-        s=8,  # linewidths=0.3, edgecolors='#505050', zorder=5,
+        s=18,
+        linewidths=0.2,
+        edgecolors="#303030",
+        zorder=5,
     )
 
     for name, (lon, lat) in EVAL_CENTERS.items():
@@ -292,12 +317,8 @@ def plot_kg_map_grey(df, africa, africa_grid, africa_kg, valid, grid, npz_path, 
             bbox=dict(facecolor="white", alpha=0.5, edgecolor="none", pad=1),
         )
 
-    present_classes = sorted(set(int(c) for c in train_lc))
-    lc_handles = [
-        mpatches.Patch(color=IGBP_COLORS.get(c, "#808080"), label=f"{c}: {IGBP_NAMES.get(c, '')}")
-        for c in present_classes
-    ]
-    ax.legend(handles=lc_handles, loc="lower left", fontsize=7, ncol=2, title="Land cover class", title_fontsize=8)
+    axh = ax.inset_axes([0.03, 0.11, 0.30, 0.22])
+    _plot_lc_histogram(axh, train_lc)
 
     ax.set_aspect("equal")
     ax.set_axis_off()
