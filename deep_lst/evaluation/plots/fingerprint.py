@@ -195,7 +195,11 @@ def fingerprint_plot(
     if vmax is None:
         vmax = float(np.nanpercentile(finite, 98))
 
-    if vcenter is not None:
+    if not (np.isfinite(vmin) and np.isfinite(vmax)):
+        # No finite data anywhere: render a (blank) panel with a trivial norm
+        # instead of crashing on TwoSlopeNorm's monotonicity check.
+        norm = mcolors.Normalize(vmin=-1.0, vmax=1.0)
+    elif vcenter is not None:
         all_negative = vmax <= vcenter
         all_positive = vmin >= vcenter
         if all_negative:
