@@ -2,9 +2,8 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
-import shapely
 import xarray as xr
-from eodata.grids import build_seviri_grid
+import zarr
 
 from deep_lst.evaluation.metrics import compute_grouped_scores, compute_scores, to_init_time, to_valid_time
 from deep_lst.evaluation.spatial import lookup_pixel_coords
@@ -114,26 +113,32 @@ class Evaluator(ABC):
         if not path.exists():
             raise FileNotFoundError(f"Eval indices not found for {self.eval_name}: {path}")
         indices_ds = np.load(path)
-        class_keys = ["kg_class", "kg_major"]
+        class_keys = ["kg_class", "kg_major", "kg_classes", "biome_classes", "modis_lc_classes", "ecoregion_classes"]
+        if self.eval_name.startswith("train_"):
+            store_token = self.eval_name.removeprefix("train_")
+        else:
+            store_token = self.eval_name if self.eval_name.startswith("eval_") else f"eval_{self.eval_name}"
+        store_path = self.paths.sampled_store_path("seviri", store_token)
 
         coords = {}
         if "pixel" in ds.dims:
-            seviri_grid = build_seviri_grid()
-            points = shapely.points(ds["lon"].values, ds["lat"].values)
-            forecast_src = np.asarray(seviri_grid.centers_tree.nearest(geometry=points))
-            npz_src = indices_ds["src_indices"]
-            npz_pos = {int(s): i for i, s in enumerate(npz_src)}
-            lookup = np.array([npz_pos[int(s)] for s in forecast_src], dtype=np.int64)
+            zg = zarr.open_group(store_path, mode="r")
+            zarr_spatial_idx = zg["spatial_idx"][:]
+            zarr_lats = zg["lat"][:]
+            zarr_lons = zg["lon"][:]
+            zarr_row_by_coord = {(float(la), float(lo)): i for i, (la, lo) in enumerate(zip(zarr_lats, zarr_lons))}
+            forecast_rows = np.array(
+                [zarr_row_by_coord[(float(la), float(lo))] for la, lo in zip(ds["lat"].values, ds["lon"].values)],
+                dtype=np.int64,
+            )
+            target_spatial = zarr_spatial_idx[forecast_rows]
+            npz_pos_by_spatial = {int(s): i for i, s in enumerate(indices_ds["src_indices"])}
+            npz_rows = np.array([npz_pos_by_spatial[int(s)] for s in target_spatial], dtype=np.int64)
             for key in class_keys:
                 if key in indices_ds.files:
-                    coords[key] = (("pixel",), indices_ds[key][lookup])
+                    coords[key] = (("pixel",), indices_ds[key][npz_rows])
         else:
             src_indices = np.unique(indices_ds["src_indices"])
-            if self.eval_name.startswith("train_"):
-                store_token = self.eval_name.removeprefix("train_")
-            else:
-                store_token = self.eval_name if self.eval_name.startswith("eval_") else f"eval_{self.eval_name}"
-            store_path = self.paths.sampled_store_path("seviri", store_token)
             _, _, local_rows, local_cols, grid_shape = lookup_pixel_coords(store_path, src_indices)
             if grid_shape != (ds.sizes["lat"], ds.sizes["lon"]):
                 raise ValueError(

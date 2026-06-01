@@ -51,7 +51,14 @@ class PlotRunnerDiagnostics:
         label: str,
         plots_dir: Path,
         baseline_evaluators: dict[str, EvaluatorDiagnostics] | None = None,
-        class_coords: tuple[str, ...] = ("kg_class", "kg_major"),
+        class_coords: tuple[str, ...] = (
+            "kg_class",
+            "kg_major",
+            "kg_classes",
+            "biome_classes",
+            "modis_lc_classes",
+            "ecoregion_classes",
+        ),
     ):
         self.ev = evaluator
         self.label = label
