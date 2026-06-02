@@ -24,6 +24,8 @@ import multiprocessing
 import time
 from concurrent.futures import ProcessPoolExecutor
 
+import dask
+
 from deep_lst.evaluation.evaluator import EvaluatorDiagnostics, EvaluatorVerification
 from deep_lst.evaluation.plot_runner import PlotRunnerDiagnostics, PlotRunnerVerification
 from deep_lst.utils import ExperimentPaths
@@ -40,6 +42,9 @@ BASELINE_LABELS = {
 
 def _run_evaluator(cls_name, kwargs):
     """Module-level worker for ProcessPoolExecutor (must be picklable)."""
+    dask.config.set(
+        scheduler="threads", num_workers=2
+    )  # bounded threads: caps memory without OOM; 8 tasks already run as separate processes
     cls = {"EvaluatorDiagnostics": EvaluatorDiagnostics, "EvaluatorVerification": EvaluatorVerification}[cls_name]
     ev = cls(**kwargs)
     ev.run()

@@ -39,6 +39,8 @@ class Evaluator(ABC):
         consistent_mask,
         overwrite,
         reduction_order: tuple = ("space", "time"),
+        metrics: tuple = RAW_METRICS,
+        compute_anomaly: bool = True,
     ):
         self.experiment = experiment
         self.version = version
@@ -49,6 +51,8 @@ class Evaluator(ABC):
         self.temporal = temporal
         self.aggregation = aggregation
         self.reduction_order = reduction_order
+        self.metrics = metrics
+        self.compute_anomaly = compute_anomaly
         self.consistent_mask = consistent_mask
         self.paths = ExperimentPaths()
 
@@ -150,7 +154,9 @@ class Evaluator(ABC):
         if not path.exists():
             raise FileNotFoundError(f"Baseline '{self.baseline}' not found: {path}")
 
-        return xr.open_dataset(path)[var_name]
+        # chunks={} -> dask-backed, so the per-lead reindex/concat in baseline_full
+        # streams instead of materialising the full aligned cube in numpy.
+        return xr.open_dataset(path, chunks={})[var_name]
 
     def _align_baseline(self, valid_times: np.ndarray) -> xr.DataArray:
         return self.baseline_ds.reindex(valid_time=valid_times)
@@ -284,9 +290,10 @@ class EvaluatorVerification(Evaluator):
     def _compute(self):
         lead_times = self.forecast_ds["lead_time"].values
 
-        self.scores = compute_scores(self.pred, self.obs, RAW_METRICS, self.aggregation)
+        self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
 
         self.baseline_scores = None
+        self.baseline_full = None
         self.climate_scores = None
         self.skill_scores = None
 
@@ -298,9 +305,10 @@ class EvaluatorVerification(Evaluator):
 
             lt_index = pd.Index(lead_times, name="lead_time")
             baseline_full = xr.concat(baseline_slices, dim=lt_index)
-            self.baseline_scores = compute_scores(baseline_full, self.obs, RAW_METRICS, self.aggregation)
+            self.baseline_full = baseline_full
+            self.baseline_scores = compute_scores(baseline_full, self.obs, self.metrics, self.aggregation)
 
-            if self.baseline in CLIMATE_BASELINES:
+            if self.baseline in CLIMATE_BASELINES and self.compute_anomaly:
                 pred_anom = self.pred - baseline_full
                 obs_anom = self.obs - baseline_full
                 self.climate_scores = compute_scores(pred_anom, obs_anom, ANOMALY_METRICS, self.aggregation)

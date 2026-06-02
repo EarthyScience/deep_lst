@@ -132,6 +132,8 @@ PROBES = {
     "Nile delta crop": (30.5, 31.0),
     "Ethiopia highland": (8.0, 39.0),
 }
+# subset shown in the per-step probe figures (one panel per pixel).
+PROBE_SHOW = ["Congo rainforest", "Namib (S-winter)", "Ethiopia highland"]
 
 
 # %% ============================== EQUATIONS (physics only) ===========================
@@ -308,18 +310,44 @@ def plot_pair(panels, suptitle, fname):
     print(f"saved {fname}")
 
 
-def plot_timeseries(times, rows, panels, suptitle, fname):
-    """Stacked time-series panels, one coloured line per site (axes KEPT)."""
+def plot_step_per_pixel(times, rows, key, ylabel, suptitle, fname):
+    """One figure for a single computed step: one row (panel) per probe pixel (axes KEPT)."""
     colors = plt.cm.turbo(np.linspace(0.05, 0.95, len(rows)))
-    fig, axs = plt.subplots(len(panels), 1, figsize=(11, 12), sharex=True)
-    for ax, (ylab, key) in zip(axs, panels):
-        for col, row in zip(colors, rows):
-            ax.plot(times, row[key], color=col, lw=1.0, label=row["name"])
-        ax.set_ylabel(ylab, fontsize=9)
+    fig, axs = plt.subplots(len(rows), 1, figsize=(10, 7), sharex=True)
+    for ax, col, row in zip(np.atleast_1d(axs), colors, rows):
+        ax.plot(times, row[key], color=col, lw=1.1)
+        ax.set_title(row["name"], fontsize=9, loc="left")
+        ax.set_ylabel(ylabel, fontsize=9)
         ax.grid(alpha=0.2, color="gray")
     axs[-1].xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
-    axs[0].legend(ncol=4, fontsize=7, loc="lower center", bbox_to_anchor=(0.5, 1.05))
-    fig.suptitle(suptitle, y=0.995)
+    fig.suptitle(suptitle, y=0.998)
+    fig.tight_layout()
+    fig.savefig(FIG_DIR / fname, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"saved {fname}")
+
+
+def plot_bt_vs_lst_per_pixel(times, rows, suptitle, fname):
+    """One row per pixel: T11 BT (dotted) vs GSW LST (solid); fill = the correction."""
+    fig, axs = plt.subplots(len(rows), 1, figsize=(10, 7), sharex=True)
+    for ax, row in zip(np.atleast_1d(axs), rows):
+        ax.plot(times, row["t11"], color="deepskyblue", lw=1.0, ls=":", label="T11 BT")
+        ax.plot(times, row["lstm"], color="orange", lw=1.3, label="GSW LST")
+        ax.fill_between(
+            times,
+            row["t11"],
+            row["lstm"],
+            where=np.isfinite(row["lstm"]),
+            color="orange",
+            alpha=0.15,
+            label="correction (LST $-$ T11)",
+        )
+        ax.set_title(row["name"], fontsize=9, loc="left")
+        ax.set_ylabel("temperature [K]", fontsize=9)
+        ax.grid(alpha=0.2, color="gray")
+    axs[0].legend(fontsize=8, loc="upper right", ncol=3)
+    axs[-1].xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+    fig.suptitle(suptitle, y=0.998)
     fig.tight_layout()
     fig.savefig(FIG_DIR / fname, dpi=130, bbox_inches="tight")
     plt.close(fig)
@@ -674,7 +702,8 @@ _ts = ptimes.astype("datetime64[s]").astype(float)
 _es = e5_time[e5_wk].astype("datetime64[s]").astype(float)
 
 rows = []
-for nm, (la, lo) in PROBES.items():
+for nm in PROBE_SHOW:
+    la, lo = PROBES[nm]
     iy, ix = lonlat_to_pixel(la, lo, ds.x.values, ds.y.values)
     t11 = radiance_to_bt(pixel_timeseries(ds[CH_IR108], iy, ix, ws_full), **BT_COEF[CH_IR108])
     t12 = radiance_to_bt(pixel_timeseries(ds[CH_IR120], iy, ix, ws_full), **BT_COEF[CH_IR120])
@@ -687,17 +716,29 @@ for nm, (la, lo) in PROBES.items():
     clr = clear_sky_mask(t11, dt, theta_deg[iy, ix]) & np.isfinite(lst)
     rows.append(dict(name=nm, t11=t11, dt=dt, w=w, lstm=np.where(clr, lst, np.nan)))
 
-plot_timeseries(
-    ptimes.astype("datetime64[ns]"),
+# one figure per computed step; 3 rows = the 3 probe pixels.
+ptimes_ns = ptimes.astype("datetime64[ns]")
+for key, ylabel, fname, title in [
+    ("t11", "T11 BT [K]\n(raw, cloud-hit)", "probe_t11.pdf", "T11 brightness temperature"),
+    ("dt", "dT [K]", "probe_dT.pdf", "split-window dT"),
+    ("w", "W [g cm$^{-2}$]", "probe_W.pdf", "column water vapour W"),
+    ("lstm", "clear-sky LST [K]\n(gaps = cloud)", "probe_lst.pdf", "clear-sky GSW LST"),
+]:
+    plot_step_per_pixel(
+        ptimes_ns,
+        rows,
+        key,
+        ylabel,
+        f"Probe pixels -- {title} over the week (2020-06-09 .. 06-15 UTC)",
+        fname,
+    )
+
+# overlay per pixel: BT (dotted) -> LST (solid) shows the correction over time.
+plot_bt_vs_lst_per_pixel(
+    ptimes_ns,
     rows,
-    [
-        ("T11 BT [K]\n(raw, cloud-hit)", "t11"),
-        ("dT [K]", "dt"),
-        ("W [g cm$^{-2}$]", "w"),
-        ("clear-sky LST [K]\n(gaps = cloud)", "lstm"),
-    ],
-    "Probe pixels -- diurnal cycle over the week (2020-06-09 .. 06-15 UTC)",
-    "probe_pixel_timeseries.pdf",
+    "Probe pixels -- BT $\\rightarrow$ LST correction over the week (2020-06-09 .. 06-15 UTC)",
+    "probe_bt_vs_lst.pdf",
 )
 
 

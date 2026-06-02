@@ -18,6 +18,11 @@ from deep_lst.evaluation.plots._design import _LABEL_ALIASES, RC
 from deep_lst.evaluation.plots._design import CASE_COLORS as _CASE_COLORS
 from deep_lst.evaluation.plots._design import DEFAULT_COLOR as _DEFAULT_COLOR
 
+# Lead-time day buckets shared by the daily error-growth and skill plots.
+# Day 8 (169-192 h) is included so the range matches the model's ~200 h rollout
+# (and the forecast-limit plots' 0-8 day axis); 193-200 h is the partial tail.
+DAY_BUCKETS = [(1, 24), (25, 48), (49, 72), (73, 96), (97, 120), (121, 144), (145, 168), (169, 192)]
+
 
 def error_growth_plot(
     ds_by_lead: xr.Dataset,
@@ -82,7 +87,6 @@ def error_growth_daily_plot(
     q_lo = ds_by_lead[f"{metric}_q05"].values
     q_hi = ds_by_lead[f"{metric}_q95"].values
 
-    DAY_BUCKETS = [(1, 24), (25, 48), (49, 72), (73, 96), (97, 120), (121, 144), (145, 168)]
     day_labels, day_means, day_los, day_his = [], [], [], []
 
     for day_idx, (blo, bhi) in enumerate(DAY_BUCKETS, start=1):
@@ -184,7 +188,6 @@ def skill_plot(
     lead_td = pd.TimedeltaIndex(first["lead_time"].values)
     lead_hours = np.array([int(lt.total_seconds() / 3600) for lt in lead_td])
 
-    DAY_BUCKETS = [(1, 24), (25, 48), (49, 72), (73, 96), (97, 120), (121, 144), (145, 168)]
     x, day_labels = [], []
     for day_idx, (lo, hi) in enumerate(DAY_BUCKETS, start=1):
         mask = (lead_hours >= lo) & (lead_hours <= hi)
@@ -197,7 +200,7 @@ def skill_plot(
         return
     x = np.array(x)
 
-    fig, ax = plt.subplots(figsize=(max(5, len(x) * 1.2), 4.5))
+    fig, ax = plt.subplots(figsize=(max(5, len(x) * 1.0), 4.5))
 
     for ref_label, ds_ref in references.items():
         skill = ds_ref[f"{metric}_q50"].values

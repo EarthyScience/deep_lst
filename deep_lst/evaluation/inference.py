@@ -406,6 +406,50 @@ class Forecast:
         print(f"Created zarr store at {path} ({n_time} init times, {len(pred_vars)} variable(s))")
 
     @staticmethod
+    def rechunk_store(path, target_bytes: int = 256 * 1024**2) -> None:
+        """Rewrite a finished forecast store with init_time chunked into large blocks.
+
+        Inference streams one init_time per chunk — fast, conflict-free writes,
+        but it leaves thousands of tiny chunks that make every evaluation read
+        slow (each reduction scans all of them). This rewrites the store so each
+        chunk is roughly ``target_bytes``, chunking only along init_time and
+        keeping lead_time/space whole. Source codecs (zstd) are preserved.
+
+        Run once after all distributed fills complete (the finalize step).
+        """
+        import shutil
+
+        path = Path(path)
+        ds = xr.open_zarr(path)
+        sample = ds[next(iter(ds.data_vars))]
+        other = int(np.prod([sample.sizes[d] for d in sample.dims if d != "init_time"]))
+        init_chunk = int(max(1, min(sample.sizes["init_time"], target_bytes // (other * sample.dtype.itemsize))))
+
+        enc = {}
+        for v in ds.data_vars:
+            da = ds[v]
+            chunks = tuple(init_chunk if d == "init_time" else da.sizes[d] for d in da.dims)
+            ev = {"chunks": chunks}
+            for key in ("compressors", "filters", "serializer"):
+                if key in da.encoding:
+                    ev[key] = da.encoding[key]
+            enc[v] = ev
+        for c in ds.coords:
+            enc[c] = {"chunks": tuple(ds[c].sizes[d] for d in ds[c].dims)}
+
+        ds = ds.chunk({"init_time": init_chunk})
+        tmp = path.parent / (path.name + ".rechunk.tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        ds.to_zarr(tmp, encoding=enc, mode="w")
+        ds.close()
+        zarr.consolidate_metadata(str(tmp))
+        shutil.rmtree(path)
+        tmp.rename(path)
+        print(
+            f"Rechunked {path.name}: init_time chunk={init_chunk} (~{other * init_chunk * sample.dtype.itemsize / 1e6:.0f} MB/chunk)"
+        )
+
+    @staticmethod
     def _fill_zarr_store(
         path,
         preds_flat,
