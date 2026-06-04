@@ -16,7 +16,12 @@ from deep_lst.evaluation.metrics import compute_class_scores, compute_grouped_sc
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import error_growth_daily_plot, error_growth_plot, skill_plot
 from deep_lst.evaluation.plots.fingerprint import fingerprint_plot, improvement_da
-from deep_lst.evaluation.plots.init_time import plot_init_vs_lead, score_over_init_plot
+from deep_lst.evaluation.plots.init_time import (
+    diurnal_lead_heatmap,
+    diurnal_lead_lines,
+    plot_init_vs_lead,
+    score_over_init_plot,
+)
 from deep_lst.evaluation.plots.maps import acc_map, improvement_map_multi
 from deep_lst.evaluation.plots.scores import category_score_violinplot, error_overview_plot
 from deep_lst.evaluation.plots.spectra import (
@@ -516,14 +521,52 @@ class PlotRunnerVerification:
         series = self._init_score_series("rmse", group="hour")
         if not series:
             return
+        # All _INIT_LEADS are phase-aligned (≡ same offset mod 24), so one
+        # valid-hour shift annotates every curve.
+        shift = int(pd.Timedelta(self._INIT_LEADS[0]).total_seconds() // 3600) % 24
         score_over_init_plot(
             series,
             xlabel="Initialisation hour of day",
             ylabel="RMSE (K)",
             x_kind="hour",
             legend_title="Lead time",
+            valid_shift_h=shift,
             title=f"{self.ev.eval_name} — RMSE by init hour",
             save_path=self.plots_dir / f"{self.ev.var}_rmse_by_init_hour.pdf",
+        )
+
+    def _diurnal_lead_matrix(self, metric: str, max_lead_h: int = 24):
+        """Median ``metric`` over days, per (init hour-of-day, lead time) up to
+        ``max_lead_h``. Returns a DataArray with dims (hour, lead_time)."""
+        scores = self.ev.scores
+        if metric not in scores:
+            return None
+        leads = pd.TimedeltaIndex(scores["lead_time"].values)
+        keep = scores["lead_time"].values[leads <= pd.Timedelta(hours=max_lead_h)]
+        sub = scores[metric].sel(lead_time=keep)
+        return sub.groupby(sub["init_time"].dt.hour).median()
+
+    def plot_error_by_init_hour_leads(self):
+        m = self._diurnal_lead_matrix("rmse")
+        if m is None:
+            return
+        diurnal_lead_lines(
+            m,
+            xlabel="Initialisation hour of day",
+            ylabel="RMSE (K)",
+            title=f"{self.ev.eval_name} — RMSE by init hour and lead (0–24 h)",
+            save_path=self.plots_dir / f"{self.ev.var}_rmse_by_init_hour_leads.pdf",
+        )
+
+    def plot_diurnal_lead_heatmap(self):
+        m = self._diurnal_lead_matrix("rmse")
+        if m is None:
+            return
+        diurnal_lead_heatmap(
+            m,
+            metric_label="RMSE (K)",
+            title=f"{self.ev.eval_name} — RMSE by init hour and lead",
+            save_path=self.plots_dir / f"{self.ev.var}_rmse_diurnal_lead_heatmap.pdf",
         )
 
     def plot_error_growth(self):
