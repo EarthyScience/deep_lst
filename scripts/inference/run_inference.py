@@ -24,6 +24,7 @@ import os
 
 import hydra
 import numpy as np
+import zarr
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Subset
 
@@ -33,7 +34,7 @@ from deep_lst.evaluation.inference import Forecast
 from deep_lst.mlp.model import load_model
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config
-from deep_lst.utils.inference import load_run_config, load_spatial_indices, load_time_indices
+from deep_lst.utils.inference import load_run_config, load_time_indices
 
 
 @hydra.main(config_path="../../conf", config_name="infer", version_base="1.3")
@@ -42,7 +43,9 @@ def run_inference(cfg: DictConfig) -> None:
 
     config = load_run_config(cfg, paths)
     td_keys = get_keys_from_config(config["test_dataset"])
-    spatial_indices = load_spatial_indices(paths, cfg.spatial_indices)
+    # Match the dataset's source of truth: read spatial_idx from the sampled zarr the dataset will open.
+    seviri_store_path = paths.sampled_store_path("seviri", config["test_dataset"]["spatial"])
+    spatial_indices = zarr.open_group(str(seviri_store_path), mode="r")["spatial_idx"][:]
     time_idx = load_time_indices(paths, config["test_dataset"])
 
     eval_name = cfg.eval_name

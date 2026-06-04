@@ -34,14 +34,6 @@ def load_run_config(cfg: DictConfig, paths: ExperimentPaths) -> dict:
     return config
 
 
-def load_spatial_indices(paths: ExperimentPaths, spatial_indices_key: str) -> np.ndarray:
-    """Load flat spatial indices from the asset store."""
-    spatial_path = paths.spatial_indices_path("seviri", spatial_indices_key)
-    if not spatial_path.exists():
-        raise FileNotFoundError(f"Spatial indices not found: {spatial_path}")
-    return np.load(spatial_path)["src_indices"]
-
-
 def load_time_indices(paths: ExperimentPaths, test_dataset_config: dict) -> np.ndarray:
     """Load, concatenate, and deduplicate temporal indices from the configured periods."""
     temporal = test_dataset_config.get("temporal")

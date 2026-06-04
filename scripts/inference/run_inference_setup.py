@@ -11,12 +11,13 @@ uv run scripts/inference/run_inference_setup.py \\
 """
 
 import hydra
+import zarr
 from omegaconf import DictConfig
 
 from deep_lst.evaluation.inference import Forecast
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config
-from deep_lst.utils.inference import load_run_config, load_spatial_indices, load_time_indices
+from deep_lst.utils.inference import load_run_config, load_time_indices
 
 
 @hydra.main(config_path="../../conf", config_name="infer", version_base="1.3")
@@ -25,11 +26,12 @@ def run_inference_setup(cfg: DictConfig) -> None:
 
     config = load_run_config(cfg, paths)
     td_keys = get_keys_from_config(config["test_dataset"])
-    spatial_indices = load_spatial_indices(paths, cfg.spatial_indices)
+    seviri_store_path = paths.sampled_store_path("seviri", config["test_dataset"]["spatial"])
+    # Match the dataset's source of truth: read spatial_idx from the sampled zarr the dataset will open.
+    spatial_indices = zarr.open_group(str(seviri_store_path), mode="r")["spatial_idx"][:]
     time_idx = load_time_indices(paths, config["test_dataset"])
 
     output_path = paths.forecast_path(cfg.experiment, cfg.version, cfg.eval_name)
-    seviri_store_path = paths.sampled_store_path("seviri", config["test_dataset"]["spatial"])
 
     print(f"Experiment : {cfg.experiment} / {cfg.version}")
     print(f"Eval       : {cfg.eval_name}  (indices: {cfg.spatial_indices})")

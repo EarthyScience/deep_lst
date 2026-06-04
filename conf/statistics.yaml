@@ -29,7 +29,9 @@ era5:
   inputs:
     # dynamic
     - stl1           # Soil temperature layer 1 (K)
+    - stl2
     - swvl1          # Volumetric soil water layer 1 (m³/m³)
+    - swvl2
     - u10            # Zonal wind at 10 m (m/s)
     - v10            # Meridional wind at 10 m (m/s)
     - sp             # Surface pressure (Pa)
@@ -41,6 +43,7 @@ era5:
     - cp             # Convective precipitation (m)
     - tp             # Total precipitation (m)
     - tcwv           # Total column water vapour (kg/m²)
+    - tcc            # Total cloud cover (fraction)
     - skt            # Skin temperature (K)
     # static
     - tvh            # High vegetation cover (fraction)
@@ -75,6 +78,9 @@ seviri:
     # cloud-masked pixels, which would bias the statistics toward clear-sky values
     - LST            # Land surface temperature (K)
     - standard_error # LST retrieval uncertainty (K)
+    - MH
+    - MLE
+    - MLT-AS
     # - quality_flag   # LST quality control flag -  FIX NEEDED: SAVE AS DYNAMIC ANCILLARY IN TORCH SCHEME.
   prognostics: []
   # Variables for which temporal increment statistics (mean, std, min, max of
@@ -83,6 +89,9 @@ seviri:
   # Both variables are moved to diagnostics for this pass so that NaN values
   # (cloud-masked pixels) are preserved rather than zeroed out by nan_to_num.
   increment_variables:
+    - MH
+    - MLE
+    - MLT-AS
     - LST
     - AL-BB-DH
   row_extent: 3201   # SEVIRI Africa domain
