@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.evaluator import (
@@ -15,7 +16,7 @@ from deep_lst.evaluation.metrics import compute_class_scores, compute_grouped_sc
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import error_growth_daily_plot, error_growth_plot, skill_plot
 from deep_lst.evaluation.plots.fingerprint import fingerprint_plot, improvement_da
-from deep_lst.evaluation.plots.init_time import plot_init_vs_lead
+from deep_lst.evaluation.plots.init_time import plot_init_vs_lead, score_over_init_plot
 from deep_lst.evaluation.plots.maps import acc_map, improvement_map_multi
 from deep_lst.evaluation.plots.scores import category_score_violinplot, error_overview_plot
 from deep_lst.evaluation.plots.spectra import (
@@ -459,6 +460,71 @@ class PlotRunnerVerification:
             if name.startswith("plot_"):
                 if requested is None or name[5:] in requested:
                     getattr(self, name)()
+
+    # Phase-aligned leads (all ≡ 6 h mod 24) so the init-hour and valid-hour
+    # diurnal phases coincide across the overlaid curves.
+    _INIT_LEADS = ("6h", "30h", "78h")
+
+    def _init_score_series(self, metric: str, group: str) -> dict[str, dict]:
+        """Per-lead quantile curves of ``metric`` over the init-time axis.
+
+        ``group="date"`` resamples init_time to daily bins, so the q05–q95 band
+        is the within-day (diurnal) spread; ``group="hour"`` groups by init
+        hour-of-day, so the band is the across-days (seasonal) spread. The line
+        is q50 in both, matching the (0.05, 0.50, 0.95) quantiles of summarise.
+        """
+        scores = self.ev.scores
+        if metric not in scores:
+            return {}
+        qs = [0.05, 0.50, 0.95]
+        available = pd.TimedeltaIndex(scores["lead_time"].values)
+        series = {}
+        for lead in self._INIT_LEADS:
+            td = pd.Timedelta(lead)
+            if td not in available:
+                continue
+            s = scores[metric].sel(lead_time=td)
+            if group == "hour":
+                g = s.groupby(s["init_time"].dt.hour).quantile(qs, skipna=True)
+                x = g["hour"].values
+            else:
+                g = s.resample(init_time="1D").quantile(qs, skipna=True)
+                x = g["init_time"].values
+            series[lead] = {
+                "x": x,
+                "q05": g.sel(quantile=0.05).values,
+                "q50": g.sel(quantile=0.50).values,
+                "q95": g.sel(quantile=0.95).values,
+            }
+        return series
+
+    def plot_error_by_init_date(self):
+        series = self._init_score_series("rmse", group="date")
+        if not series:
+            return
+        score_over_init_plot(
+            series,
+            xlabel="Initialisation date",
+            ylabel="RMSE (K)",
+            x_kind="date",
+            legend_title="Lead time",
+            title=f"{self.ev.eval_name} — RMSE by init date",
+            save_path=self.plots_dir / f"{self.ev.var}_rmse_by_init_date.pdf",
+        )
+
+    def plot_error_by_init_hour(self):
+        series = self._init_score_series("rmse", group="hour")
+        if not series:
+            return
+        score_over_init_plot(
+            series,
+            xlabel="Initialisation hour of day",
+            ylabel="RMSE (K)",
+            x_kind="hour",
+            legend_title="Lead time",
+            title=f"{self.ev.eval_name} — RMSE by init hour",
+            save_path=self.plots_dir / f"{self.ev.var}_rmse_by_init_hour.pdf",
+        )
 
     def plot_error_growth(self):
         for m in RAW_METRICS:
