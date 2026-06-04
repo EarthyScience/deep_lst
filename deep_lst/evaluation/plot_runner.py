@@ -470,15 +470,15 @@ class PlotRunnerVerification:
     # diurnal phases coincide across the overlaid curves.
     _INIT_LEADS = ("6h", "30h", "78h")
 
-    def _init_score_series(self, metric: str, group: str) -> dict[str, dict]:
+    def _init_score_series(self, scores, metric: str, group: str) -> dict[str, dict]:
         """Per-lead quantile curves of ``metric`` over the init-time axis.
 
-        ``group="date"`` resamples init_time to daily bins, so the q05–q95 band
-        is the within-day (diurnal) spread; ``group="hour"`` groups by init
+        ``scores`` is any (init_time, lead_time) dataset — raw scores or a skill
+        cube. ``group="date"`` resamples init_time to daily bins, so the q05–q95
+        band is the within-day (diurnal) spread; ``group="hour"`` groups by init
         hour-of-day, so the band is the across-days (seasonal) spread. The line
         is q50 in both, matching the (0.05, 0.50, 0.95) quantiles of summarise.
         """
-        scores = self.ev.scores
         if metric not in scores:
             return {}
         qs = [0.05, 0.50, 0.95]
@@ -504,7 +504,7 @@ class PlotRunnerVerification:
         return series
 
     def plot_error_by_init_date(self):
-        series = self._init_score_series("rmse", group="date")
+        series = self._init_score_series(self.ev.scores, "rmse", group="date")
         if not series:
             return
         score_over_init_plot(
@@ -518,7 +518,7 @@ class PlotRunnerVerification:
         )
 
     def plot_error_by_init_hour(self):
-        series = self._init_score_series("rmse", group="hour")
+        series = self._init_score_series(self.ev.scores, "rmse", group="hour")
         if not series:
             return
         # All _INIT_LEADS are phase-aligned (≡ same offset mod 24), so one
@@ -535,10 +535,10 @@ class PlotRunnerVerification:
             save_path=self.plots_dir / f"{self.ev.var}_rmse_by_init_hour.pdf",
         )
 
-    def _diurnal_lead_matrix(self, metric: str, max_lead_h: int = 24):
+    def _diurnal_lead_matrix(self, scores, metric: str, max_lead_h: int = 24):
         """Median ``metric`` over days, per (init hour-of-day, lead time) up to
-        ``max_lead_h``. Returns a DataArray with dims (hour, lead_time)."""
-        scores = self.ev.scores
+        ``max_lead_h``, for any (init_time, lead_time) dataset (raw or skill).
+        Returns a DataArray with dims (hour, lead_time)."""
         if metric not in scores:
             return None
         leads = pd.TimedeltaIndex(scores["lead_time"].values)
@@ -547,7 +547,7 @@ class PlotRunnerVerification:
         return sub.groupby(sub["init_time"].dt.hour).median()
 
     def plot_error_by_init_hour_leads(self):
-        m = self._diurnal_lead_matrix("rmse")
+        m = self._diurnal_lead_matrix(self.ev.scores, "rmse")
         if m is None:
             return
         diurnal_lead_lines(
@@ -559,15 +559,65 @@ class PlotRunnerVerification:
         )
 
     def plot_diurnal_lead_heatmap(self):
-        m = self._diurnal_lead_matrix("rmse")
+        m = self._diurnal_lead_matrix(self.ev.scores, "rmse")
         if m is None:
             return
         diurnal_lead_heatmap(
             m,
             metric_label="RMSE (K)",
+            cmap="RdPu",
+            vmin=0,
+            vmax=3,
             title=f"{self.ev.eval_name} — RMSE by init hour and lead",
             save_path=self.plots_dir / f"{self.ev.var}_rmse_diurnal_lead_heatmap.pdf",
         )
+
+    def _skill_cubes(self) -> dict[str, xr.Dataset]:
+        """{reference_label: skill dataset} on (init_time, lead_time), where
+        skill = 1 - model_RMSE / baseline_RMSE. One entry per baseline that
+        produced skill_scores (era5 / clim / persistence)."""
+        out = {}
+        for label, bl_ev in self.baselines.items():
+            skill = getattr(bl_ev, "skill_scores", None)
+            if skill is not None:
+                out[label] = 1 - skill
+        return out
+
+    def plot_skill_by_init_hour(self):
+        # All _INIT_LEADS are phase-aligned, so one valid-hour shift fits all.
+        shift = int(pd.Timedelta(self._INIT_LEADS[0]).total_seconds() // 3600) % 24
+        for label, skill in self._skill_cubes().items():
+            series = self._init_score_series(skill, "rmse", group="hour")
+            if not series:
+                continue
+            safe = label.replace(" ", "_")
+            score_over_init_plot(
+                series,
+                xlabel="Initialisation hour of day",
+                ylabel="RMSE skill score",
+                x_kind="hour",
+                legend_title="Lead time",
+                valid_shift_h=shift,
+                hline=0.0,
+                title=f"{self.ev.eval_name} — RMSE skill vs {label} by init hour",
+                save_path=self.plots_dir / f"{self.ev.var}_skill_{safe}_by_init_hour.pdf",
+            )
+
+    def plot_skill_diurnal_lead_heatmap(self):
+        for label, skill in self._skill_cubes().items():
+            m = self._diurnal_lead_matrix(skill, "rmse")
+            if m is None:
+                continue
+            safe = label.replace(" ", "_")
+            diurnal_lead_heatmap(
+                m,
+                metric_label="RMSE skill score",
+                cmap="RdBu",
+                vmin=-1,
+                vmax=1,
+                title=f"{self.ev.eval_name} — RMSE skill vs {label} by init hour and lead",
+                save_path=self.plots_dir / f"{self.ev.var}_skill_{safe}_diurnal_lead_heatmap.pdf",
+            )
 
     def plot_error_growth(self):
         for m in RAW_METRICS:

@@ -81,6 +81,7 @@ def score_over_init_plot(
     colors: dict[str, str] | None = None,
     show_band: bool = True,
     valid_shift_h: int | None = None,
+    hline: float | None = None,
     save_path: Path = None,
 ) -> None:
     """Median line (+ optional q05–q95 band) of a score over the init-time axis.
@@ -106,6 +107,9 @@ def score_over_init_plot(
         if show_band:
             ax.fill_between(d["x"], d["q05"], d["q95"], color=c, alpha=0.2)
         ax.plot(d["x"], d["q50"], color=c, linewidth=2, label=label)
+
+    if hline is not None:
+        ax.axhline(hline, color="black", linewidth=0.8, linestyle="--", alpha=0.6)
 
     if x_kind == "hour":
         ax.set_xticks(range(0, 24, 3))
@@ -199,12 +203,16 @@ def diurnal_lead_heatmap(
     *,
     metric_label: str = "RMSE (K)",
     title: str | None = None,
-    cmap: str = "viridis",
+    cmap: str = "RdPu",
+    vmin: float | None = None,
+    vmax: float | None = None,
     save_path: Path = None,
 ) -> None:
     """Heatmap of a score over init hour-of-day (x) and lead time (y).
 
-    ``da`` has dims ``(hour, lead_time)``. Colour encodes the score.
+    ``da`` has dims ``(hour, lead_time)``. Colour encodes the score. ``vmin`` /
+    ``vmax`` fix the colour scale so heatmaps stay comparable side by side
+    across regions.
     """
     plt.rcParams.update(RC)
     hours = da["hour"].values
@@ -217,6 +225,8 @@ def diurnal_lead_heatmap(
         origin="lower",
         aspect="auto",
         cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
         extent=[hours.min() - 0.5, hours.max() + 0.5, lead_h.min() - 0.5, lead_h.max() + 0.5],
     )
     ax.set_xticks(range(0, 24, 3))
