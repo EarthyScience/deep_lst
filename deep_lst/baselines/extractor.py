@@ -259,11 +259,8 @@ class Era5Extractor(BaselineExtractor):
         skt_mapped = skt[seviri_to_era5_rank, :]  # (n_seviri, n_test)
 
         # --- Remap to SEVIRI spatial layout ---
-        self.spatial_idx = np.unique(self.src_indices)
+        # first_index[i] = position in src_indices where unique_seviri[i] first appears,
+        # so skt_mapped[first_index[i]] is the SKT for unique_seviri[i].
+        self.spatial_idx, first_index = np.unique(self.src_indices, return_index=True)
         self.n_pixels = len(self.spatial_idx)
-
-        # pixel_positions[i] = rank of self.src_indices in unique_seviri
-        _, pixel_positions = np.unique(self.src_indices, return_inverse=True)
-
-        # skt_pixels[i, :] = SKT for unique_seviri[i] — shape (n_unique, n_test)
-        self.var = skt_mapped[pixel_positions, :]
+        self.var = skt_mapped[first_index, :]
