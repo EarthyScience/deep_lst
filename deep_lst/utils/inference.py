@@ -1,8 +1,7 @@
-"""Shared helpers for inference scripts (run_inference.py, run_inference_setup.py)."""
+"""Shared helpers for inference scripts."""
 
 import copy
 
-import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
 from deep_lst.utils import ExperimentPaths
@@ -32,15 +31,3 @@ def load_run_config(cfg: DictConfig, paths: ExperimentPaths) -> dict:
         config["test_dataset"][mod]["horizon"] = cfg.inference_horizon
 
     return config
-
-
-def load_time_indices(paths: ExperimentPaths, test_dataset_config: dict) -> np.ndarray:
-    """Load, concatenate, and deduplicate temporal indices from the configured periods."""
-    temporal = test_dataset_config.get("temporal")
-    if temporal is None:
-        raise ValueError("No temporal period specified in eval config.")
-    periods = [temporal] if isinstance(temporal, str) else list(temporal)
-    time_idx = np.concatenate(
-        [np.load(paths.temporal_indices_path(p))["time_indices"].astype(np.int64) for p in periods]
-    )
-    return np.sort(np.unique(time_idx))

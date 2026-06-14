@@ -1,32 +1,19 @@
-"""Run model inference for a trained experiment (or just create the zarr store).
+"""Run model inference for a trained experiment.
 
-When setup_only=true, creates the output zarr store without loading model weights;
-intended for CPU-only submission before the GPU array job.
-When setup_only=false (default), runs GPU inference for this job's time chunk.
+Builds the test dataset, creates the forecast.zarr sized to the dataset's actual
+time axis, fills it with predictions in one process, and rechunks at the end.
 
 Usage
 -----
-# Create zarr store only (CPU, no model weights)
-uv run scripts/inference/run_inference.py setup_only=true \\
-    experiment=mlp_rollout_L_KG_mse_h3_v1 version=version_0 eval=gobabeb \\
-    inference_horizon=200
-
-# Run inference (GPU, reads store created above)
 uv run scripts/inference/run_inference.py \\
     experiment=mlp_rollout_L_KG_mse_h3_v1 version=version_0 eval=gobabeb \\
     inference_horizon=200
-
-# One-command submission via the launcher (recommended):
-#   scripts/inference/run_inference.sh --array=0-3 experiment=... version=... eval=... inference_horizon=200
 """
-
-import os
 
 import hydra
 import numpy as np
-import zarr
 from omegaconf import DictConfig
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
 from deep_lst.dataset.collator import Collator
 from deep_lst.dataset.dataset import MultimodalDataset
@@ -34,107 +21,64 @@ from deep_lst.evaluation.inference import Forecast
 from deep_lst.mlp.model import load_model
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config
-from deep_lst.utils.inference import load_run_config, load_time_indices
+from deep_lst.utils.inference import load_run_config
 
 
 @hydra.main(config_path="../../conf", config_name="infer", version_base="1.3")
 def run_inference(cfg: DictConfig) -> None:
     paths = ExperimentPaths()
-
     config = load_run_config(cfg, paths)
     td_keys = get_keys_from_config(config["test_dataset"])
-    # Match the dataset's source of truth: read spatial_idx from the sampled zarr the dataset will open.
-    seviri_store_path = paths.sampled_store_path("seviri", config["test_dataset"]["spatial"])
-    spatial_indices = zarr.open_group(str(seviri_store_path), mode="r")["spatial_idx"][:]
-    time_idx = load_time_indices(paths, config["test_dataset"])
 
-    eval_name = cfg.eval_name
-    print(f"Experiment : {cfg.experiment} / {cfg.version}")
-    print(f"Eval       : {eval_name}  (indices: {cfg.spatial_indices})")
-
-    # --- Load model ---
     lit_module, device = load_model(
         config, td_keys, experiment=cfg.experiment, version=cfg.version, prefer_best=cfg.best
     )
 
-    # --- Distributed inference: compute chunk bounds before building dataset ---
-    # n_chunks / chunk_offset can come from Hydra config or from SLURM array env vars.
-    # --array=0-N sets SLURM_ARRAY_TASK_COUNT=N+1 and SLURM_ARRAY_TASK_ID per task,
-    # so the only submission knob needed is --array=0-N (no n_chunks arg required).
+    dataset = MultimodalDataset.from_modalities(modality_ids=config["modality_ids"], **config["test_dataset"])
+    print(f"Experiment : {cfg.experiment} / {cfg.version}")
+    print(f"Eval       : {cfg.eval_name}")
+    print(f"Dataset    : {len(dataset.spatial_idx)} pixels × {len(dataset.time_idx)} init times")
 
-    n_chunks = (
-        cfg.n_chunks
-        if cfg.n_chunks is not None
-        else (int(os.environ["SLURM_ARRAY_TASK_COUNT"]) if "SLURM_ARRAY_TASK_COUNT" in os.environ else None)
-    )
-    chunk_offset = (
-        cfg.chunk_offset
-        if cfg.chunk_offset is not None
-        else (int(os.environ["SLURM_ARRAY_TASK_ID"]) if "SLURM_ARRAY_TASK_ID" in os.environ else None)
-    )
-    time_offset = None
-    chunk_start = None
-    chunk_size = None
-    if n_chunks is not None:
-        if chunk_offset is None:
-            raise ValueError("n_chunks requires chunk_offset (or SLURM_ARRAY_TASK_ID) to be set.")
-        chunk_size = int(np.ceil(len(time_idx) / n_chunks))
-        chunk_start = chunk_offset * chunk_size
-        time_idx = time_idx[chunk_start : chunk_start + chunk_size]
-        time_offset = chunk_start
-        print(f"Chunk      : {chunk_offset}/{n_chunks} ({len(time_idx)} init times, offset={time_offset})")
-
-    # --- Build dataset and loader ---
-    test_dataset = MultimodalDataset.from_modalities(
-        modality_ids=config["modality_ids"],
-        **config["test_dataset"],
-    )
-
-    if n_chunks is not None:
-        # Subset dataset to the chunk's time steps only — each job runs only its share.
-        # Dataset internal time count may be smaller than the raw time_idx length because
-        # _load_samples drops the last `horizon` steps. Use len(test_dataset) as truth.
-        n_spatial = len(np.unique(spatial_indices))
-        n_total_time = len(test_dataset) // n_spatial
-        actual_start = min(chunk_start, n_total_time)
-        actual_end = min(chunk_start + chunk_size, n_total_time)
-        if actual_start >= n_total_time:
-            print(f"Chunk {chunk_offset} has no valid samples (offset beyond dataset), skipping.")
-            return
-        sample_idx = np.concatenate(
-            [np.arange(i * n_total_time + actual_start, i * n_total_time + actual_end) for i in range(n_spatial)]
+    # The streaming zarr write assumes time-major iteration in sorted pixel and time order
+    # (Forecast scatters by sorted-unique spatial_idx; init_time slots advance sequentially).
+    n_spatial = len(dataset.spatial_idx)
+    if not np.array_equal(dataset.indices[:n_spatial, 0], dataset.spatial_idx):
+        raise RuntimeError(
+            "Dataset pixel order differs from sorted spatial_idx — the forecast.zarr scatter "
+            "would assign predictions to wrong pixels. Check the sampled zarr's spatial_idx ordering."
         )
-        test_dataset = Subset(test_dataset, sample_idx.tolist())
-        print(f"           : {len(test_dataset)} samples ({actual_end - actual_start} steps × {n_spatial} pixels)")
+    if not np.array_equal(dataset.indices[::n_spatial, 1], dataset.time_idx):
+        raise RuntimeError(
+            "Dataset init_time order differs from sorted time_idx — the forecast.zarr init_time "
+            "slots would be mislabeled. Check the temporal indices npz ordering."
+        )
 
-    batch_size = config["analysis"]["batch_size"]
-    num_workers = config["analysis"]["num_workers"]
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
+    loader = DataLoader(
+        dataset,
+        batch_size=config["analysis"]["batch_size"],
+        num_workers=config["analysis"]["num_workers"],
         shuffle=False,
         drop_last=False,
         collate_fn=Collator(config["model"]["name"]),
         pin_memory=config["analysis"].get("pin_memory", False),
-        persistent_workers=num_workers > 0,
+        persistent_workers=config["analysis"]["num_workers"] > 0,
+        prefetch_factor=config["analysis"].get("prefetch_factor", 2),
     )
 
-    # --- Run inference ---
     forecast = Forecast(
         model=lit_module,
         device=device,
-        loader=test_loader,
+        loader=loader,
         td_keys=td_keys,
         config=config["test_dataset"],
-        spatial_indices=spatial_indices,
+        spatial_indices=dataset.spatial_idx,
         prediction_mode=config["model"]["step_loss"],
         apply_consistent_mask=not cfg.no_consistent_mask,
     )
-    # --- Save ---
-    output_path = paths.forecast_path(cfg.experiment, cfg.version, eval_name)
-    forecast.predict_and_save(output_path, time_idx, time_offset=time_offset)
+
+    output_path = paths.forecast_path(cfg.experiment, cfg.version, cfg.eval_name)
+    forecast.predict_and_save(output_path, dataset.time_idx)
+    Forecast.rechunk_store(output_path)
 
 
 if __name__ == "__main__":

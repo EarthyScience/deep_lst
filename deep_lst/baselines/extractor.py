@@ -241,6 +241,19 @@ class Era5Extractor(BaselineExtractor):
     def run(self, store: str):
         super().run(store, modality="era5")
 
+    def _resolve_spatial_layout(self):
+        # self.spatial_idx is in the SEVIRI index space (npz src_indices). The SEVIRI zarr's
+        # spatial_idx + lat/lon match that space; the ERA5 zarr's don't (its spatial_idx is in
+        # ERA5 flat space). For MTG these coincide because both zarrs are MTG-keyed; for equiang
+        # eval regions they don't — read the layout from the SEVIRI side.
+        seviri_store = zarr.open(str(self.paths.sampled_store_path("seviri", self.store_key)), mode="r")
+        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = lookup_pixel_coords(
+            seviri_store, self.spatial_idx
+        )
+        fill = self.n_pixels / (self.grid_shape[0] * self.grid_shape[1])
+        self.sparse = fill < _SPARSE_FILL_THRESHOLD
+        print(f"Spatial: {self.n_pixels} pixels, fill={fill:.4f} → {'sparse' if self.sparse else 'dense'} output")
+
     def _resolve_store(self):
         idx_path = self.paths.spatial_indices_path("era5", self.store_key)
 

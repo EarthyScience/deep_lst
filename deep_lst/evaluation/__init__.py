@@ -1,4 +1,3 @@
-from deep_lst.evaluation.inference import ForecastResult
 from deep_lst.evaluation.metrics import (
     METRIC_REGISTRY,
     compute_grouped_scores,
@@ -8,7 +7,6 @@ from deep_lst.evaluation.metrics import (
 from deep_lst.evaluation.spatial import lookup_pixel_coords
 
 __all__ = [
-    "ForecastResult",
     "lookup_pixel_coords",
     "METRIC_REGISTRY",
     "compute_scores",

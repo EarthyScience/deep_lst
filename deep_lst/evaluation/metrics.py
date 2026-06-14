@@ -178,6 +178,9 @@ def compute_class_scores(
 
     class_bins = np.unique(pred[class_coord].values)
     class_bins = class_bins[class_bins != -1]  # Exclude invalid class bin if present
+    if len(class_bins) == 0:
+        # No valid class bins (e.g. anomaly path with all-NaN pixels filtering everything to -1).
+        return xr.Dataset()
     slices = []
     for class_bin in class_bins:
         pred_class = pred.where(pred.coords[class_coord] == class_bin)

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from itertools import chain
 from pathlib import Path
 
 import numpy as np
@@ -25,93 +25,8 @@ TIME_INDEX_ORIGIN = pd.Timestamp("2016-01-01")
 _SPARSE_FILL_THRESHOLD = 0.01
 
 
-@dataclass
-class ForecastResult:
-    """Forecast predictions and observations with coordinates.
-
-    Dense mode  (sparse=False): predictions shape (N_time, T, lat, lon) — for
-        geographically concentrated eval sites where the bounding box is small.
-    Sparse mode (sparse=True):  predictions shape (N_pixel, N_time, T) — for
-        scattered training-site pixels where the bounding box would be huge.
-    """
-
-    predictions: dict[str, np.ndarray]
-    observations: dict[str, np.ndarray]
-    init_times: pd.DatetimeIndex
-    lead_times: pd.TimedeltaIndex
-    lats: np.ndarray
-    lons: np.ndarray
-    sparse: bool = field(default=False)
-
-    def to_xarray(self) -> xr.Dataset:
-        data_vars = {}
-        if self.sparse:
-            for var in self.predictions:
-                data_vars[f"{var}_pred"] = (["pixel", "init_time", "lead_time"], self.predictions[var])
-                data_vars[f"{var}_obs"] = (["pixel", "init_time", "lead_time"], self.observations[var])
-            return xr.Dataset(
-                data_vars,
-                coords={
-                    "lat": ("pixel", self.lats),
-                    "lon": ("pixel", self.lons),
-                    "init_time": self.init_times,
-                    "lead_time": self.lead_times,
-                },
-            )
-        for var in self.predictions:
-            data_vars[f"{var}_pred"] = (["init_time", "lead_time", "lat", "lon"], self.predictions[var])
-            data_vars[f"{var}_obs"] = (["init_time", "lead_time", "lat", "lon"], self.observations[var])
-        return xr.Dataset(
-            data_vars,
-            coords={
-                "lat": self.lats,
-                "lon": self.lons,
-                "init_time": self.init_times,
-                "lead_time": self.lead_times,
-            },
-        )
-
-    def save(self, path: Path) -> None:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        ds = self.to_xarray()
-        first_var = next(iter(ds.data_vars))
-        shape = ds[first_var].shape
-        if self.sparse:
-            enc = {v: {"chunks": (min(shape[0], 1000), shape[1], shape[2])} for v in ds.data_vars}
-        else:
-            enc = {v: {"chunks": (1, shape[1], min(shape[2], 256), min(shape[3], 256))} for v in ds.data_vars}
-        for c in ds.coords:
-            enc[c] = {"chunks": (ds[c].shape[0],)}
-        ds.to_zarr(path, encoding=enc, mode="w")
-        print(f"Saved forecast results to {path}")
-
-    @classmethod
-    def load(cls, path: Path) -> "ForecastResult":
-        ds = xr.open_zarr(path)
-        pred_vars = [v.replace("_pred", "") for v in ds.data_vars if v.endswith("_pred")]
-        predictions = {var: ds[f"{var}_pred"].values for var in pred_vars}
-        observations = {var: ds[f"{var}_obs"].values for var in pred_vars}
-        empty = [var for var, arr in predictions.items() if not np.isfinite(arr).any()]
-        if empty:
-            raise ValueError(
-                f"Forecast at {path} has no finite predictions for {empty} "
-                f"(unfilled NaN skeleton). Re-run inference for this region before evaluating."
-            )
-        sparse = "pixel" in ds.dims
-        return cls(
-            predictions=predictions,
-            observations=observations,
-            init_times=pd.DatetimeIndex(ds["init_time"].values),
-            lead_times=pd.TimedeltaIndex(ds["lead_time"].values),
-            lats=ds["lat"].values,
-            lons=ds["lon"].values,
-            sparse=sparse,
-        )
-
-
 class Forecast:
-    """Runs model inference and produces ForecastResult."""
+    """Runs model inference and writes predictions to a forecast.zarr store."""
 
     def __init__(
         self,
@@ -148,63 +63,12 @@ class Forecast:
         if self.sparse:
             print(f"Sparse output mode (fill={fill:.4f} < {_SPARSE_FILL_THRESHOLD})")
 
-    def predict_with_time_index(self, time_idx: np.ndarray) -> ForecastResult:
-        """Run inference and map init_times from explicit T1H time indices."""
-        predict_dispatch = {
-            "DiagnosticMSE": self._predict_diagnostic,
-            "DiagnosticCRPS": self._predict_diagnostic,
-            "RolloutMSE": self._predict_rollout,
-            "RolloutCRPS": self._predict_rollout,
-        }
-        predict_fn = predict_dispatch.get(self.prediction_mode)
-        if predict_fn is None:
-            raise ValueError(f"Unknown prediction_mode: {self.prediction_mode}. Known: {list(predict_dispatch)}")
+    def predict_and_save(self, path: Path, time_idx: np.ndarray) -> None:
+        """Run inference, streaming predictions into the zarr store one init_time at a time.
 
-        preds_flat, obs_flat = predict_fn(
-            self.model,
-            self.device,
-            self.loader,
-            self.td_keys,
-            normaliser=self.normaliser,
-            **self.config["seviri"],
-        )
-
-        if self.apply_consistent_mask and self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
-            preds_flat, obs_flat = self._apply_consistent_mask(preds_flat, obs_flat)
-
-        first_var = list(preds_flat.keys())[0]
-        time_horizon = preds_flat[first_var].shape[1]
-        n_spatial = len(self.unique_spatial_idx)
-        unique_time_idx = np.unique(time_idx)
-        n_time = preds_flat[first_var].shape[0] // n_spatial
-        unique_time_idx = unique_time_idx[:n_time]
-
-        predictions, observations = self._remap(preds_flat, obs_flat, n_spatial, n_time, time_horizon)
-
-        if self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
-            predictions, observations, time_horizon = self._prepend_nan_lead(
-                predictions, observations, n_spatial, n_time, time_horizon
-            )
-
-        init_times = TIME_INDEX_ORIGIN + pd.to_timedelta(unique_time_idx.astype(np.int64), unit="h")
-        lead_times = pd.timedelta_range(start="0h", periods=time_horizon, freq="h")
-
-        pixel_lats, pixel_lons = self._pixel_coords()
-        return ForecastResult(
-            predictions=predictions,
-            observations=observations,
-            init_times=init_times,
-            lead_times=lead_times,
-            lats=pixel_lats,
-            lons=pixel_lons,
-            sparse=self.sparse,
-        )
-
-    def predict_and_save(self, path: Path, time_idx: np.ndarray, time_offset: int | None = None) -> None:
-        """Run inference and write directly to zarr without holding the full grid in memory.
-
-        time_offset=None  (default): single-job mode — creates store, fills all steps, consolidates.
-        time_offset=int:             distributed fill — writes into an existing store at the given offset.
+        Relies on the loader iterating time-major (all pixels of init_time 0, then 1, ...)
+        so each flush writes whole init_time chunks. Memory stays bounded at ~one batch
+        plus a sub-init_time carry buffer, independent of the dataset size.
         """
         predict_dispatch = {
             "DiagnosticMSE": self._predict_diagnostic,
@@ -215,8 +79,9 @@ class Forecast:
         predict_fn = predict_dispatch.get(self.prediction_mode)
         if predict_fn is None:
             raise ValueError(f"Unknown prediction_mode: {self.prediction_mode}. Known: {list(predict_dispatch)}")
+        is_rollout = self.prediction_mode in ("RolloutMSE", "RolloutCRPS")
 
-        preds_flat, obs_flat = predict_fn(
+        gen = predict_fn(
             self.model,
             self.device,
             self.loader,
@@ -225,113 +90,81 @@ class Forecast:
             **self.config["seviri"],
         )
 
-        if self.apply_consistent_mask and self.prediction_mode in ("RolloutMSE", "RolloutCRPS"):
-            preds_flat, obs_flat = self._apply_consistent_mask(preds_flat, obs_flat)
+        # Peek the first batch to size the lead axis from actual output shapes.
+        try:
+            first_batch = next(gen)
+        except StopIteration:
+            raise ValueError("Loader produced no batches; nothing to save.") from None
 
-        first_var = list(preds_flat.keys())[0]
-        time_horizon = preds_flat[first_var].shape[1]
-        n_spatial = len(self.unique_spatial_idx)
-        unique_time_idx = np.unique(time_idx)[: preds_flat[first_var].shape[0] // n_spatial]
-        n_time = len(unique_time_idx)
-
-        is_rollout = self.prediction_mode in ("RolloutMSE", "RolloutCRPS")
+        first_var = next(iter(first_batch[0]))
+        time_horizon = first_batch[0][first_var].shape[1]
         t_out = time_horizon + 1 if is_rollout else time_horizon
+        lead_offset = 1 if is_rollout else 0
+
+        n_spatial = len(self.unique_spatial_idx)
+        unique_time_idx = np.unique(time_idx)
+        n_time = len(unique_time_idx)
         init_times = TIME_INDEX_ORIGIN + pd.to_timedelta(unique_time_idx.astype(np.int64), unit="h")
         lead_times = pd.timedelta_range(start="0h", periods=t_out, freq="h")
         pixel_lats, pixel_lons = self._pixel_coords()
 
         if self.sparse:
-            spatial_shape = (len(self.unique_spatial_idx),)
+            spatial_shape = (n_spatial,)
         else:
             H, W = self.grid_shape
             spatial_shape = (int(H), int(W))
 
-        if time_offset is None:
-            self._create_zarr_store(
-                path,
-                list(preds_flat.keys()),
-                n_time,
-                t_out,
-                spatial_shape,
-                init_times,
-                lead_times,
-                pixel_lats,
-                pixel_lons,
-            )
-            self._fill_zarr_store(
-                path,
-                preds_flat,
-                obs_flat,
-                n_spatial,
-                n_time,
-                time_horizon,
-                self.local_rows,
-                self.local_cols,
-                self.grid_shape,
-                0,
-                is_rollout,
-                sparse=self.sparse,
-            )
-            zarr.consolidate_metadata(str(path))
-        else:
-            self._fill_zarr_store(
-                path,
-                preds_flat,
-                obs_flat,
-                n_spatial,
-                n_time,
-                time_horizon,
-                self.local_rows,
-                self.local_cols,
-                self.grid_shape,
-                time_offset,
-                is_rollout,
-                sparse=self.sparse,
-            )
-        print(f"Done. Saved to {path}")
-
-    @staticmethod
-    def setup_output(
-        path: Path,
-        td_keys: dict,
-        spatial_indices: np.ndarray,
-        time_idx: np.ndarray,
-        inference_horizon: int,
-        prediction_mode: str,
-        seviri_store_path: Path,
-    ) -> None:
-        """Create empty zarr store for distributed inference. No model weights required."""
-        unique_spatial_idx = np.unique(spatial_indices)
-        lats, lons, local_rows, local_cols, grid_shape = lookup_pixel_coords(seviri_store_path, unique_spatial_idx)
-        H, W = int(grid_shape[0]), int(grid_shape[1])
-
-        fill = len(unique_spatial_idx) / (H * W)
-        sparse = fill < _SPARSE_FILL_THRESHOLD
-        if sparse:
-            print(f"Sparse output mode (fill={fill:.4f})")
-
-        all_vars = [key[1] for key in td_keys.get("prognostic_keys", [])]
-        all_vars += [key[1] for key in td_keys.get("diagnostic_keys", [])]
-
-        is_rollout = prediction_mode in ("RolloutMSE", "RolloutCRPS")
-        t_out = inference_horizon + 1 if is_rollout else inference_horizon
-
-        unique_time_idx = np.sort(np.unique(time_idx))
-        n_time = len(unique_time_idx)
-        init_times = TIME_INDEX_ORIGIN + pd.to_timedelta(unique_time_idx.astype(np.int64), unit="h")
-        lead_times = pd.timedelta_range(start="0h", periods=t_out, freq="h")
-
-        if sparse:
-            pixel_lats = lats[local_rows]
-            pixel_lons = lons[local_cols]
-            spatial_shape = (len(unique_spatial_idx),)
-        else:
-            pixel_lats, pixel_lons = lats, lons
-            spatial_shape = (H, W)
-
-        Forecast._create_zarr_store(
+        all_vars = list(first_batch[0].keys())
+        self._create_zarr_store(
             path, all_vars, n_time, t_out, spatial_shape, init_times, lead_times, pixel_lats, pixel_lons
         )
+        store = zarr.open_group(str(path), mode="r+")
+        zarr_arrays = {var: (store[f"{var}_pred"], store[f"{var}_obs"]) for var in all_vars}
+
+        carry_p = {var: [] for var in all_vars}
+        carry_o = {var: [] for var in all_vars}
+        carry_count = 0
+        ti_cursor = 0
+
+        for preds_b, obs_b in chain([first_batch], gen):
+            if self.apply_consistent_mask and is_rollout:
+                preds_b, obs_b = self._apply_consistent_mask(preds_b, obs_b)
+            for var in all_vars:
+                carry_p[var].append(preds_b[var])
+                carry_o[var].append(obs_b[var])
+            carry_count += preds_b[first_var].shape[0]
+
+            n_complete = carry_count // n_spatial
+            if n_complete == 0:
+                continue
+            cut = n_complete * n_spatial
+            block_p = {var: np.concatenate(carry_p[var], axis=0) for var in all_vars}
+            block_o = {var: np.concatenate(carry_o[var], axis=0) for var in all_vars}
+            self._write_init_times(
+                zarr_arrays,
+                {var: a[:cut] for var, a in block_p.items()},
+                {var: a[:cut] for var, a in block_o.items()},
+                ti_cursor,
+                n_spatial,
+                lead_offset,
+                self.local_rows,
+                self.local_cols,
+                self.grid_shape,
+                self.sparse,
+            )
+            ti_cursor += n_complete
+            carry_p = {var: [a[cut:]] for var, a in block_p.items()}
+            carry_o = {var: [a[cut:]] for var, a in block_o.items()}
+            carry_count -= cut
+
+        if carry_count != 0 or ti_cursor != n_time:
+            raise RuntimeError(
+                f"Stream ended at init_time {ti_cursor}/{n_time} with {carry_count} leftover samples — "
+                "dataset size does not match n_spatial × n_time; forecast.zarr is incomplete."
+            )
+
+        zarr.consolidate_metadata(str(path))
+        print(f"Done. Saved to {path}")
 
     @staticmethod
     def _create_zarr_store(
@@ -409,16 +242,7 @@ class Forecast:
 
     @staticmethod
     def rechunk_store(path, target_bytes: int = 256 * 1024**2) -> None:
-        """Rewrite a finished forecast store with init_time chunked into large blocks.
-
-        Inference streams one init_time per chunk — fast, conflict-free writes,
-        but it leaves thousands of tiny chunks that make every evaluation read
-        slow (each reduction scans all of them). This rewrites the store so each
-        chunk is roughly ``target_bytes``, chunking only along init_time and
-        keeping lead_time/space whole. Source codecs (zstd) are preserved.
-
-        Run once after all distributed fills complete (the finalize step).
-        """
+        """Rewrite a finished forecast store with init_time chunked into large blocks."""
         import shutil
 
         path = Path(path)
@@ -452,92 +276,55 @@ class Forecast:
         )
 
     @staticmethod
-    def _fill_zarr_store(
-        path,
-        preds_flat,
-        obs_flat,
+    def _write_init_times(
+        zarr_arrays,
+        preds,
+        obs,
+        ti_start,
         n_spatial,
-        n_time,
-        time_horizon,
+        lead_offset,
         local_rows,
         local_cols,
         grid_shape,
-        time_offset,
-        prepend_nan,
-        sparse=False,
+        sparse,
     ):
-        """Write n_time steps of predictions into existing zarr store starting at time_offset."""
-        lead_offset = 1 if prepend_nan else 0
+        """Scatter (k * n_spatial, t) prediction blocks into k whole init_time slots.
 
-        store = zarr.open_group(str(path), mode="r+")
-        first_var = next(iter(preds_flat))
-        t_out = store[f"{first_var}_pred"].shape[1]
-        zarr_arrays = {var: (store[f"{var}_pred"], store[f"{var}_obs"]) for var in preds_flat}
-
-        p_by_pixel = {var: preds_flat[var].reshape(n_spatial, n_time, time_horizon) for var in preds_flat}
-        o_by_pixel = {var: obs_flat[var].reshape(n_spatial, n_time, time_horizon) for var in obs_flat}
+        Rows must be time-major: rows [i*n_spatial : (i+1)*n_spatial] hold all pixels of
+        init_time ti_start + i, in the pixel order of local_rows/local_cols.
+        """
+        first_var = next(iter(preds))
+        k = preds[first_var].shape[0] // n_spatial
+        t_out = zarr_arrays[first_var][0].shape[1]
 
         if sparse:
-            # Shape: (n_time, t_out, N_pixel) — write per-pixel data directly, no scatter.
             buf_p = np.full((1, t_out, n_spatial), np.nan, dtype=np.float32)
             buf_o = np.full((1, t_out, n_spatial), np.nan, dtype=np.float32)
-            for ti in range(n_time):
-                abs_ti = time_offset + ti
+            for i in range(k):
+                rows = slice(i * n_spatial, (i + 1) * n_spatial)
+                ti = ti_start + i
                 for var, (pa, oa) in zarr_arrays.items():
                     buf_p[:] = np.nan
-                    # p_by_pixel[:, ti, :] is (N_pixel, T); transpose to (T, N_pixel) for lead/pixel dims
-                    buf_p[0, lead_offset:, :] = p_by_pixel[var][:, ti, :].T
-                    pa[abs_ti : abs_ti + 1] = buf_p
+                    # preds[var][rows] is (n_spatial, t); transpose to (t, n_spatial) for lead/pixel dims
+                    buf_p[0, lead_offset:, :] = preds[var][rows].T
+                    pa[ti : ti + 1] = buf_p
                     buf_o[:] = np.nan
-                    buf_o[0, lead_offset:, :] = o_by_pixel[var][:, ti, :].T
-                    oa[abs_ti : abs_ti + 1] = buf_o
+                    buf_o[0, lead_offset:, :] = obs[var][rows].T
+                    oa[ti : ti + 1] = buf_o
         else:
             H, W = grid_shape
             dense_p = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
             dense_o = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
-            for ti in range(n_time):
-                abs_ti = time_offset + ti
+            for i in range(k):
+                rows = slice(i * n_spatial, (i + 1) * n_spatial)
+                ti = ti_start + i
                 for var, (pa, oa) in zarr_arrays.items():
                     dense_p[:] = np.nan
-                    dense_p[0, lead_offset:, local_rows, local_cols] = p_by_pixel[var][:, ti, :]
-                    pa[abs_ti : abs_ti + 1] = dense_p
+                    dense_p[0, lead_offset:, local_rows, local_cols] = preds[var][rows]
+                    pa[ti : ti + 1] = dense_p
                     dense_o[:] = np.nan
-                    dense_o[0, lead_offset:, local_rows, local_cols] = o_by_pixel[var][:, ti, :]
-                    oa[abs_ti : abs_ti + 1] = dense_o
-
-    def _remap(self, preds_flat, obs_flat, n_spatial, n_time, time_horizon):
-        predictions = {}
-        observations = {}
-        for var in preds_flat:
-            if self.sparse:
-                p, o = self._remap_to_sparse(preds_flat[var], obs_flat[var], n_spatial, n_time, time_horizon)
-            else:
-                p, o = self._remap_to_grid(
-                    preds_flat[var],
-                    obs_flat[var],
-                    n_spatial,
-                    n_time,
-                    time_horizon,
-                    self.local_rows,
-                    self.local_cols,
-                    self.grid_shape,
-                )
-            predictions[var] = p
-            observations[var] = o
-        return predictions, observations
-
-    def _prepend_nan_lead(self, predictions, observations, n_spatial, n_time, time_horizon):
-        """Prepend NaN at lead_time=0 so rollout output aligns with diagnostic shape."""
-        if self.sparse:
-            nan_slice = np.full((n_spatial, n_time, 1), np.nan, dtype=np.float32)
-            axis = 2
-        else:
-            nan_slice = np.full((n_time, 1, *self.grid_shape), np.nan, dtype=np.float32)
-            axis = 1
-        for var in predictions:
-            predictions[var] = np.concatenate([nan_slice, predictions[var]], axis=axis)
-            observations[var] = np.concatenate([nan_slice.copy(), observations[var]], axis=axis)
-        return predictions, observations, time_horizon + 1
+                    dense_o[0, lead_offset:, local_rows, local_cols] = obs[var][rows]
+                    oa[ti : ti + 1] = dense_o
 
     def _pixel_coords(self):
         """Per-pixel lat/lon for sparse output or bbox lat/lon arrays for dense."""
@@ -547,12 +334,9 @@ class Forecast:
 
     @staticmethod
     def _predict_diagnostic(model, device, loader, td_keys, normaliser=None, **kwargs):
-        """Single-step: read all diagnostic outputs, denormalise per batch."""
+        """Single-step generator: yields per-batch (preds, obs) dicts, denormalised."""
         diag_keys = td_keys["diagnostic_keys"]
         diag_out_keys = td_keys["diagnostic_out_keys"]
-
-        preds = {key[1]: [] for key in diag_keys}
-        obs = {key[1]: [] for key in diag_keys}
 
         with torch.no_grad():
             for batch in tqdm(loader, desc="Predicting (diagnostic)"):
@@ -560,6 +344,8 @@ class Forecast:
                 with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
                     out = model.model(batch)
 
+                preds_b = {}
+                obs_b = {}
                 for diag_key, diag_out_key in zip(diag_keys, diag_out_keys):
                     var = diag_key[1]
                     pred_batch = out[diag_out_key].float().cpu().numpy().squeeze((-3, -2, -1))
@@ -569,16 +355,13 @@ class Forecast:
                         pred_batch = normaliser.denormalise(pred_batch, var)
                         obs_batch = normaliser.denormalise(obs_batch, var)
 
-                    preds[var].append(pred_batch)
-                    obs[var].append(obs_batch)
-
-        preds = {var: np.concatenate(preds[var], axis=0) for var in preds}
-        obs = {var: np.concatenate(obs[var], axis=0) for var in obs}
-        return preds, obs
+                    preds_b[var] = pred_batch
+                    obs_b[var] = obs_batch
+                yield preds_b, obs_b
 
     @staticmethod
     def _predict_rollout(model, device, loader, td_keys, normaliser=None, **kwargs):
-        """Autoregressive rollout with per-batch denormalisation."""
+        """Autoregressive rollout generator: yields per-batch (preds, obs) dicts of shape (B, horizon)."""
         prog_keys = td_keys["prognostic_keys"]
         prog_out_keys = td_keys["prognostic_out_keys"]
         diag_keys = td_keys.get("diagnostic_keys", [])
@@ -592,9 +375,6 @@ class Forecast:
 
         all_vars = [k[1] for k in prog_keys] + [k[1] for k in diag_keys]
 
-        all_preds = {var: [] for var in all_vars}
-        all_obs = {var: [] for var in all_vars}
-
         with torch.no_grad():
             for batch in tqdm(loader, desc="Predicting (rollout)"):
                 batch = batch.to(device)
@@ -602,9 +382,6 @@ class Forecast:
                 # Initial prognostic state is at batch index = lookback (t0)
                 prog = {key: batch[key][:, lookback, ...] for key in prog_keys}
 
-                # Seed the rolling context history from the batch lookback window.
-                # history[var] is a list of lookback tensors (oldest first), each [B, H, W, C].
-                # Batch indices 1..lookback correspond to times t0-lookback+1 .. t0.
                 history = {}
                 for modality, var in context_pairs:
                     history[(modality, var)] = [batch[(modality, var)][:, i, ...] for i in range(1, lookback + 1)]
@@ -628,9 +405,6 @@ class Forecast:
                     for key in prog_keys:
                         tstep_td[key] = prog[key]
 
-                    # Inject rolling context with Option B: values + validity mask.
-                    # At t=1 the history is all teacher-forced; beyond that it mixes
-                    # predictions as the window slides past the observed lookback.
                     if lookback > 0:
                         for modality, var in context_pairs:
                             ctx_key = (modality, f"{var}_ctx")
@@ -677,18 +451,17 @@ class Forecast:
                             else:
                                 history[history_key].append(batch[history_key][:, lookback + t, ...])
 
+                preds_b = {}
+                obs_b = {}
                 for var in all_vars:
                     p = torch.stack(batch_preds[var], dim=1).cpu().numpy()
                     o = torch.stack(batch_obs[var], dim=1).cpu().numpy()
                     if normaliser:
                         p = normaliser.denormalise(p, var)
                         o = normaliser.denormalise(o, var)
-                    all_preds[var].append(p)
-                    all_obs[var].append(o)
-
-        preds = {var: np.concatenate(all_preds[var], axis=0) for var in all_vars}
-        obs = {var: np.concatenate(all_obs[var], axis=0) for var in all_vars}
-        return preds, obs
+                    preds_b[var] = p
+                    obs_b[var] = o
+                yield preds_b, obs_b
 
     @staticmethod
     def _apply_consistent_mask(
@@ -699,28 +472,8 @@ class Forecast:
         for var in obs:
             o = obs[var]
             p = preds[var]
-            # Require both obs and pred to be finite at ALL lead times.
-            # Checking obs alone misses rollout pixels where a NaN init state
-            # (cloud at t=0) propagates through the autoregressive loop,
-            # producing NaN predictions even when obs clears later.
+
             all_valid = np.all(np.isfinite(o), axis=1, keepdims=True) & np.all(np.isfinite(p), axis=1, keepdims=True)
             preds_masked[var] = np.where(all_valid, p, np.nan)
             obs_masked[var] = np.where(all_valid, o, np.nan)
         return preds_masked, obs_masked
-
-    @staticmethod
-    def _remap_to_sparse(all_preds, all_obs, n_spatial, n_time, t):
-        """Reshape flat predictions to (N_pixel, N_time, T) — no grid allocation."""
-        preds = all_preds.reshape(n_spatial, n_time, t)
-        obs = all_obs.reshape(n_spatial, n_time, t)
-        return preds.astype(np.float32), obs.astype(np.float32)
-
-    @staticmethod
-    def _remap_to_grid(all_preds, all_obs, n_spatial, n_time, t, local_rows, local_cols, grid_shape):
-        preds = all_preds.reshape(n_spatial, n_time, t)
-        obs = all_obs.reshape(n_spatial, n_time, t)
-        spatial_preds = np.full((n_time, t, *grid_shape), np.nan, dtype=np.float32)
-        spatial_obs = np.full((n_time, t, *grid_shape), np.nan, dtype=np.float32)
-        spatial_preds[:, :, local_rows, local_cols] = preds.transpose(1, 2, 0)
-        spatial_obs[:, :, local_rows, local_cols] = obs.transpose(1, 2, 0)
-        return spatial_preds, spatial_obs
