@@ -3,7 +3,7 @@ import numpy as np
 import xarray as xr
 
 CLIM_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/climatology/hourly/climatology_train_KG_L.nc"
-ZARR_PATH = "/Net/Groups/BGI/tscratch/mwessel/wegen-stores-new/seviri_sampled_KG_L.zarr"
+ZARR_PATH = "/Net/Groups/BGI/tscratch/mwessel/wegen-stores/sampled_stores/seviri_sampled_KG_L.zarr"
 OUT_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/results/exploration/climatology.png"
 
 PERIOD = slice("2024-11-04", "2024-11-17")

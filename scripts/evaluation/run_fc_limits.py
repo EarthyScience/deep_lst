@@ -65,9 +65,9 @@ _EVALS = [
     "bouamir",
     "gobabeb",
     "johannesburg",
-    "east_africa",
+    "passage",
     "sahel_niger",
-    "w_africa",
+    "west_africa",
     "yangambi",
 ]
 
@@ -78,9 +78,9 @@ _REGION_DISPLAY = {
     "bouamir": "Bouamir",
     "gobabeb": "Gobabeb",
     "johannesburg": "Johannesburg",
-    "east_africa": "Passage",
+    "passage": "Passage",
     "sahel_niger": "Sahel",
-    "w_africa": "West Africa",
+    "west_africa": "West Africa",
     "yangambi": "Yangambi",
 }
 

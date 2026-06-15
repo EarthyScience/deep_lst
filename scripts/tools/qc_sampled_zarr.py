@@ -24,16 +24,16 @@ import numpy as np
 import zarr
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-STORES = "/Net/Groups/BGI/tscratch/mwessel/wegen-stores-new"
+STORES = "/Net/Groups/BGI/tscratch/mwessel/wegen-stores/sampled_stores"
 ASSETS = "/Net/Groups/BGI/people/mwessel/deep_lst/assets"
 
 SEV_FULL = f"{STORES}/seviri_long.zarr"
 ERA5_FULL = f"{STORES}/era5_long.zarr"
-SEV_SAMPLED = f"{STORES}/seviri_sampled_KGLC_L.zarr"
-ERA5_SAMPLED = f"{STORES}/era5_sampled_KGLC_L.zarr"
+SEV_SAMPLED = f"{STORES}/seviri_sampled_KG_L.zarr"
+ERA5_SAMPLED = f"{STORES}/era5_sampled_KG_L.zarr"
 
-SEV_IDX_FILE = f"{ASSETS}/seviri/spatial/indices_KGLC_L.npz"
-ERA5_IDX_FILE = f"{ASSETS}/era5/spatial/indices_KGLC_L.npz"
+SEV_IDX_FILE = f"{ASSETS}/seviri/spatial/indices_KG_L.npz"
+ERA5_IDX_FILE = f"{ASSETS}/era5/spatial/indices_KG_L.npz"
 
 SEV_COL_EXTENT = 3201
 ERA5_COL_EXTENT = 1440

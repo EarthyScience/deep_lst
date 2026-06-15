@@ -205,6 +205,17 @@ class RolloutMSE(RolloutLoss):
         return F.mse_loss(pred_inc[valid], target_inc[valid])
 
 
+class RolloutSmoothL1(RolloutLoss):
+    def _prognostic_loss(self, out, out_key, y_hat, target, valid, batch):
+        return F.smooth_l1_loss(y_hat[valid], target[valid], beta=1.0)
+
+    def _diagnostic_loss(self, out, out_key, target, valid, batch):
+        return F.smooth_l1_loss(out[out_key][valid], target[valid], beta=1.0)
+
+    def _incremental_loss(self, out, out_key, pred_inc, target_inc, valid, batch):
+        return F.smooth_l1_loss(pred_inc[valid], target_inc[valid], beta=1.0)
+
+
 class RolloutCRPS(RolloutLoss):
     def _prognostic_loss(self, out, out_key, y_hat, target, valid, batch):
         log_sigma = out[sigma_key(out_key)]
