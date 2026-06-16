@@ -74,12 +74,14 @@ class Forecast:
             "DiagnosticMSE": self._predict_diagnostic,
             "DiagnosticCRPS": self._predict_diagnostic,
             "RolloutMSE": self._predict_rollout,
+            "RolloutSmoothL1": self._predict_rollout,
             "RolloutCRPS": self._predict_rollout,
+            "RolloutIncrementLoss": self._predict_rollout,
         }
         predict_fn = predict_dispatch.get(self.prediction_mode)
         if predict_fn is None:
             raise ValueError(f"Unknown prediction_mode: {self.prediction_mode}. Known: {list(predict_dispatch)}")
-        is_rollout = self.prediction_mode in ("RolloutMSE", "RolloutCRPS")
+        is_rollout = self.prediction_mode in ("RolloutMSE", "RolloutSmoothL1", "RolloutCRPS", "RolloutIncrementLoss")
 
         gen = predict_fn(
             self.model,

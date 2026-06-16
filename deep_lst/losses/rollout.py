@@ -52,16 +52,22 @@ class RolloutLoss(ABC):
             clim_window = None
 
         prognostics = self._initilise_progonostic_states(batch, spatial_mask, lookback)
+        history = self._init_history(batch, spatial_mask, lookback, context_vars)
         loss = LossAccumulator(device=batch.device)
 
         for t in range(1, horizon + 1):
             w = self._timestep_weight(t)
-            tstep_td = self._build_step_td(batch, prognostics, spatial_mask, lookback, t, context_vars)
+            # Feed the carried prediction back into the lookback context window (forcings stay
+            # true), matching inference-time rollout. detach_rollout controls BPTT through it.
+            tstep_td = self._build_feedback_step_td(
+                batch, prognostics, history, spatial_mask, lookback, t, context_vars
+            )
             out = lit_module.model(tstep_td)
             prognostics = self._step_prognostic(
                 out, batch, prognostics, spatial_mask, lookback, t, w, loss, clim_window
             )
             self._step_diagnostic(out, batch, spatial_mask, lookback, t, w, loss)
+            self._update_history(prognostics, batch, history, spatial_mask, lookback, t, context_vars)
 
         loss.finalize()
         loss.log_to(lit_module, stage)
@@ -112,6 +118,57 @@ class RolloutLoss(ABC):
                 tstep_td[ctx_key] = torch.cat([ctx_vals.flatten(1), valid_mask.float().flatten(1)], dim=-1)
 
         return tstep_td
+
+    def _init_history(self, batch, spatial_mask, lookback, context_pairs):
+        """Per-valid-pixel lookback buffer of past states (oldest first), one list per context
+        variable. Seeded from the TRUE past window [1..lookback]; the rollout then feeds the
+        model's own predictions back into it (see _update_history) so the context the model sees
+        during training matches inference. Empty when lookback == 0. Shared by all rollout losses."""
+        history = {}
+        if lookback > 0:
+            for modality, var in context_pairs:
+                src_key = (modality, var)
+                history[src_key] = [batch[src_key][:, i, ...][spatial_mask] for i in range(1, lookback + 1)]
+        return history
+
+    def _build_feedback_step_td(self, batch, prog, history, spatial_mask, lookback, t, context_pairs):
+        """Like _build_step_td, but the lookback context comes from the (fed-back) history buffer
+        instead of the true window — so the model conditions on its own past predictions, as at
+        inference time. Forcings (at lookback+t) and the current prognostic state are unchanged."""
+        tstep_td = TensorDict({}, batch_size=[spatial_mask.sum().item()])
+        for key in self.in_keys:
+            if key[1].endswith("_ctx"):
+                continue
+            inp = batch[key][:, lookback + t, ...][spatial_mask]
+            if self.impute_inputs:
+                inp = torch.nan_to_num(inp, nan=0.0)
+            tstep_td[key] = inp
+        for key in self.prognostic_keys:
+            tstep_td[key] = prog[key]
+
+        if lookback > 0:
+            for modality, var in context_pairs:
+                ctx_key = (modality, f"{var}_ctx")
+                ctx = torch.stack(history[(modality, var)], dim=1)  # [N_valid, lookback, C]
+                valid_mask = torch.isfinite(ctx).all(dim=-1, keepdim=True)
+                ctx_vals = torch.nan_to_num(ctx, nan=0.0)
+                tstep_td[ctx_key] = torch.cat([ctx_vals.flatten(1), valid_mask.float().flatten(1)], dim=-1)
+
+        return tstep_td
+
+    def _update_history(self, prog, batch, history, spatial_mask, lookback, t, context_pairs):
+        """Slide the lookback window forward one step: drop the oldest entry, append the new one —
+        the model's PREDICTED state for prognostic context vars, the TRUE future value for forcings
+        (which are known ahead). Mirrors inference.py::_predict_rollout. No-op when lookback == 0."""
+        if lookback == 0:
+            return
+        for modality, var in context_pairs:
+            src_key = (modality, var)
+            history[src_key].pop(0)
+            if src_key in self.prognostic_keys:
+                history[src_key].append(prog[src_key])
+            else:
+                history[src_key].append(batch[src_key][:, lookback + t, ...][spatial_mask])
 
     def _step_prognostic(self, out, batch, prog, spatial_mask, lookback, t, w, loss, clim_window=None):
         for key, out_key in zip(self.prognostic_keys, self.prognostic_out_keys):
@@ -231,3 +288,92 @@ class RolloutCRPS(RolloutLoss):
             "log_sigma head for the increment. Use MSE for incremental_loss, or fix "
             "this hook by adding a sigma_inc head to the model."
         )
+
+
+class RolloutIncrementLoss(RolloutLoss):
+    def __call__(self, lit_module, batch, stage):
+        self.lit_module = lit_module
+        self.stage = stage
+
+        horizon, lookback, context_vars = self._read_runtime_config(lit_module.config)
+        spatial_mask = self._spatial_mask(batch, lookback)
+
+        if spatial_mask is None or spatial_mask.sum() == 0:
+            return self._zero_loss(batch.device)
+
+        prognostics = self._initilise_progonostic_states(batch, spatial_mask, lookback)
+        history = self._init_history(batch, spatial_mask, lookback, context_vars)
+        loss = LossAccumulator(device=batch.device)
+
+        for t in range(1, horizon + 1):
+            w = self._timestep_weight(t)
+
+            # Teacher-forced pass: true prior state + true context (reuses base builder).
+            # Drop pixels whose true prior state is NaN (cloud) for this step: they have no
+            # increment target here anyway (the increment needs a finite prior endpoint), and
+            # an un-imputed NaN state input would poison the gradients (0 * NaN). The model
+            # input is a fixed concat, so we drop the whole pixel rather than null one slot.
+            tf_mask = spatial_mask
+            for key in self.prognostic_keys:
+                tf_mask = tf_mask & torch.isfinite(batch[key][:, lookback + t - 1, ...]).all(dim=-1)
+            if tf_mask.sum() > 0:
+                tf_prog = {key: batch[key][:, lookback + t - 1, ...][tf_mask] for key in self.prognostic_keys}
+                tf_td = self._build_step_td(batch, tf_prog, tf_mask, lookback, t, context_vars)
+                tf_out = lit_module.model(tf_td)
+                self._add_increment_terms(tf_out, batch, tf_mask, lookback, t, w, loss, "tf")
+                self._add_diag_terms(tf_out, batch, tf_mask, lookback, t, w, loss, "tf")
+
+            # Rollout pass: carried prediction + fed-back context (mirrors inference).
+            ro_td = self._build_feedback_step_td(batch, prognostics, history, spatial_mask, lookback, t, context_vars)
+            ro_out = lit_module.model(ro_td)
+            self._add_increment_terms(ro_out, batch, spatial_mask, lookback, t, w, loss, "ro")
+            self._add_diag_terms(ro_out, batch, spatial_mask, lookback, t, w, loss, "ro")
+            prognostics = self._carry_and_update_history(
+                ro_out, batch, prognostics, history, spatial_mask, lookback, t, context_vars
+            )
+
+        loss.finalize()
+        loss.log_to(lit_module, stage)
+        return loss.finalize()
+
+    def _add_increment_terms(self, out, batch, spatial_mask, lookback, t, w, loss, tag):
+        for key, out_key in zip(self.prognostic_keys, self.prognostic_out_keys):
+            model_increment = out[out_key]
+            target = batch[key][:, lookback + t, ...][spatial_mask]
+            target_prev = batch[key][:, lookback + t - 1, ...][spatial_mask]
+            target_increment = target - target_prev
+
+            valid = torch.isfinite(target).all(dim=-1) & torch.isfinite(target_increment).all(dim=-1)
+            if valid.sum() == 0:
+                continue
+
+            s = self.inc_variances.get(key[1], 1.0) ** 0.5
+            term = F.smooth_l1_loss(model_increment[valid] / s, target_increment[valid] / s, beta=1.0)
+            loss.add(f"increment_{tag}_{key[1]}", term, weight=w)
+
+    def _add_diag_terms(self, out, batch, spatial_mask, lookback, t, w, loss, tag):
+        for key, out_key in zip(self.diagnostic_keys, self.diagnostic_out_keys):
+            target = batch[key][:, lookback + t, ...][spatial_mask]
+            valid = torch.isfinite(target).all(dim=-1)
+            if valid.sum() == 0:
+                continue
+            term = F.smooth_l1_loss(out[out_key][valid], target[valid], beta=1.0)
+            loss.add(f"diag_{tag}_{key[1]}", term, weight=w)
+
+    def _carry_and_update_history(self, out, batch, prog, history, spatial_mask, lookback, t, context_pairs):
+        for key, out_key in zip(self.prognostic_keys, self.prognostic_out_keys):
+            y_hat = prog[key] + out[out_key]
+            prog[key] = y_hat.detach() if self.detach_rollout else y_hat
+        self._update_history(prog, batch, history, spatial_mask, lookback, t, context_pairs)
+        return prog
+
+    # This loss implements its own __call__ and does not use the base per-step
+    # hooks; these stubs exist only to satisfy the abstract base class.
+    def _prognostic_loss(self, out, out_key, y_hat, target, valid, batch):
+        raise NotImplementedError("RolloutIncrementLoss uses its own __call__, not the per-step hooks.")
+
+    def _diagnostic_loss(self, out, out_key, target, valid, batch):
+        raise NotImplementedError("RolloutIncrementLoss uses its own __call__, not the per-step hooks.")
+
+    def _incremental_loss(self, out, out_key, pred_increment, target_increment, valid, batch):
+        raise NotImplementedError("RolloutIncrementLoss uses its own __call__, not the per-step hooks.")

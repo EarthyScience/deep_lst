@@ -57,13 +57,9 @@ def load_samples(
             stop=T1H.date_to_index(end_time) - horizon,
         )
 
-    # Thin init times to specific UTC hours (T1H is midnight-aligned, so hour = idx % 24).
     if init_hours is not None:
         time_idx = time_idx[np.isin(time_idx % 24, init_hours)]
 
-    # Time-major: all pixels of init_time 0, then init_time 1, ... This aligns batches with
-    # whole-init_time writes to forecast.zarr (chunked one init_time per chunk). Read-side
-    # order is irrelevant: inference preloads to RAM, training shuffles, statistics aggregate.
     time, space = np.meshgrid(time_idx, spatial_idx, indexing="ij")
     indices = np.stack([space.ravel(), time.ravel()], axis=1)  # (N_time * N_spatial, 2)
     return indices
