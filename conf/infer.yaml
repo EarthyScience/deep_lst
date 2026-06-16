@@ -16,6 +16,7 @@ no_consistent_mask: true
 inference_horizon: 72   # rollout horizon in hours. Use the trained value to reproduce training-length forecasts.
 
 test_dataset:
+  init_hours: null   # e.g. [0,6,12,18] to thin init times to those UTC hours (default: every hour)
   era5:
     preload: true
   seviri:

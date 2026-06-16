@@ -19,9 +19,17 @@ from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 from deep_lst.utils.config import get_context_keys, get_keys_from_config
 from deep_lst.utils.io import ExperimentPaths, load_inc_variances
 
-HPO_EPOCHS = 13
-HPO_TRAIN_BATCHES = 300
-HPO_VAL_BATCHES = 100
+HPO_EPOCHS = 25
+HPO_TRAIN_BATCHES = 1200
+HPO_VAL_BATCHES = 150
+
+HIDDEN_SIZES = [
+    [512, 256, 256, 128, 256],
+    [1024, 512, 256, 256, 128],
+    [1024, 512, 512, 256, 256],
+    [2048, 1024, 512, 512, 256],
+    [4096, 2048, 1024, 1024, 512],
+]
 
 
 def objective(
@@ -34,12 +42,10 @@ def objective(
 ) -> float:
     config = copy.deepcopy(base_config)
 
-    hidden_sizes = [[512, 256, 256, 128, 256], [1024, 512, 512, 256, 256], [1024, 512, 256, 256, 128]]
-
     config["model"]["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     config["model"]["dropout"] = trial.suggest_float("dropout", 0.0, 0.5)
     config["model"]["weight_decay"] = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
-    config["model"]["hidden_sizes"] = hidden_sizes[trial.suggest_categorical("hidden_sizes_idx", [0, 1, 2])]
+    config["model"]["hidden_sizes"] = HIDDEN_SIZES[trial.suggest_categorical("hidden_sizes_idx", [0, 1, 2, 3, 4])]
 
     config["training"]["batch_size"] = trial.suggest_categorical("batch_size", [128, 256, 512])
 
@@ -103,9 +109,16 @@ def main():
             config_name="train",
             overrides=[
                 "model=mlp_rollout",
-                "loss=mse",
-                "stratification=KG",
-                "size=L",  # L statistics for correct V3 normalization
+                "loss=smoothl1",
+                "stratification=mtg",
+                "size=L",
+                "horizon=h8",
+                "train_dataset.era5.lookback=72",
+                "train_dataset.seviri.lookback=72",
+                "val_dataset.era5.lookback=72",
+                "val_dataset.seviri.lookback=72",
+                "test_dataset.era5.lookback=72",
+                "test_dataset.seviri.lookback=72",
                 "model.warmup_steps=300",
             ],
         )
@@ -137,13 +150,13 @@ def main():
 
     study = optuna.create_study(
         direction="minimize",
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5),
         storage=storage,
-        study_name="mlp_rollout_L_KG_mse_h4_v5_hpo",
+        study_name="mlp_rollout_L_MT_smoothl1_h8_l72_v0_hpo",
         load_if_exists=True,
     )
 
-    n_trials = int(os.environ.get("HPO_N_TRIALS", "50"))
+    n_trials = int(os.environ.get("HPO_N_TRIALS", "25"))
     study.optimize(
         lambda trial: objective(trial, config, dm, td_keys, in_feature_sizes, inc_variances),
         n_trials=n_trials,
@@ -152,10 +165,8 @@ def main():
     df = study.trials_dataframe()
     df.to_csv(nas_dir / "hpo_results.csv", index=False)
 
-    hidden_sizes = [[512, 256, 256, 128, 256], [1024, 512, 512, 256, 256], [1024, 512, 256, 256, 128]]
-
     best = study.best_trial
-    best_hidden_sizes = hidden_sizes[best.params["hidden_sizes_idx"]]
+    best_hidden_sizes = HIDDEN_SIZES[best.params["hidden_sizes_idx"]]
     with open(nas_dir / "hpo_best.json", "w") as f:
         json.dump({"val_loss": best.value, "params": best.params, "hidden_sizes": best_hidden_sizes}, f, indent=2)
 

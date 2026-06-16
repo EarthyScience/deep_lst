@@ -2,6 +2,7 @@ assets/
 results/
 
 wandb/
+nas/hpo.db
 
 
 scripts/out

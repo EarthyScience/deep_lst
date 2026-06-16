@@ -42,6 +42,7 @@ def load_samples(
     temporal_indices_path: str | list | None = None,
     horizon: int = 0,
     lookback: int = 0,
+    init_hours: list[int] | None = None,
 ) -> np.ndarray:
     if temporal_indices_path is not None:
         time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64)
@@ -55,6 +56,10 @@ def load_samples(
             start=T1H.date_to_index(start_time) + lookback,
             stop=T1H.date_to_index(end_time) - horizon,
         )
+
+    # Thin init times to specific UTC hours (T1H is midnight-aligned, so hour = idx % 24).
+    if init_hours is not None:
+        time_idx = time_idx[np.isin(time_idx % 24, init_hours)]
 
     # Time-major: all pixels of init_time 0, then init_time 1, ... This aligns batches with
     # whole-init_time writes to forecast.zarr (chunked one init_time per chunk). Read-side
@@ -129,6 +134,7 @@ class UnimodalDataset(Dataset):
             temporal_indices_path=temporal_paths,
             horizon=kwargs[modality_id].get("horizon", 0),
             lookback=kwargs[modality_id].get("lookback", 0),
+            init_hours=kwargs.get("init_hours"),
         )
         statistics = assemble_statistics_from_npz(PATHS.statistics_path(modality_id, kwargs[modality_id]["statistics"]))
 
@@ -218,6 +224,7 @@ class MultimodalDataset(Dataset):
             temporal_indices_path=temporal_paths,
             horizon=shared_horizon,
             lookback=shared_lookback,
+            init_hours=kwargs.get("init_hours"),
         )
         n_spatial = len(seviri_spatial_idx)
 
