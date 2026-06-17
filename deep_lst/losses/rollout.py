@@ -193,8 +193,10 @@ class RolloutLoss(ABC):
             frac = target_valid.sum().float() / max(target_valid.numel(), 1)
 
             if frac >= self.min_valid_fraction:
-                sigma2_inc = self.inc_variances.get(key[1], 1.0)
-                state_loss = self._prognostic_loss(out, out_key, y_hat, target, target_valid, batch) / sigma2_inc
+                # State is z-scored (unit variance) → already comparable across prognostic vars,
+                # so no per-variable rescaling. (Previously divided by the INCREMENT variance,
+                # which was dimensionally inconsistent and mis-weights multiple prognostics.)
+                state_loss = self._prognostic_loss(out, out_key, y_hat, target, target_valid, batch)
 
                 self.lit_module.log(
                     f"{self.stage}_loss_state_{key[1]}_t{t}", state_loss, on_step=False, on_epoch=True, sync_dist=True
@@ -209,11 +211,11 @@ class RolloutLoss(ABC):
                     inc_valid = target_valid & torch.isfinite(target_model_increment).all(dim=-1)
 
                     if inc_valid.sum() > 0:
-                        inc_loss = (
-                            self._incremental_loss(
-                                out, out_key, model_increment, target_model_increment, inc_valid, batch
-                            )
-                            / sigma2_inc
+                        # Standardise the increment by its own std INSIDE the loss (consistent
+                        # normalisation; for Smooth L1 this also sets the Huber knee at 1 increment-std).
+                        s = self.inc_variances.get(key[1], 1.0) ** 0.5
+                        inc_loss = self._incremental_loss(
+                            out, out_key, model_increment / s, target_model_increment / s, inc_valid, batch
                         )
                         loss.add(f"increment_{key[1]}", inc_loss, weight=w)
 
