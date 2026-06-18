@@ -128,6 +128,29 @@ def compute_scores(
     return xr.Dataset(data_vars)
 
 
+def compute_rmse_sufficient_stats(
+    pred: xr.DataArray,
+    obs: xr.DataArray,
+) -> xr.Dataset:
+    """Per-(init_time, lead_time) additive sufficient statistics for a pooled-RMSE bootstrap.
+
+    Reduces only the SPACE dims (lat/lon/pixel), keeping init_time and lead_time. Returns:
+      - ``se_sum``: sum of squared error over space (NaNs skipped),
+      - ``count``:  number of valid (non-NaN) pixels.
+    A pooled RMSE over any set of init_times is then ``sqrt(se_sum.sum / count.sum)`` — which is
+    what the block bootstrap resamples over. Keeping the sums (not per-init RMSE) is what lets the
+    bootstrap re-pool correctly over resampled init_times.
+    """
+    se = (obs - pred) ** 2
+    space_dims = [d for d in _REDUCTION_DIMS["space"] if d in se.dims]
+    return xr.Dataset(
+        {
+            "se_sum": se.sum(dim=space_dims, skipna=True),
+            "count": se.notnull().sum(dim=space_dims),
+        }
+    )
+
+
 def compute_grouped_scores(
     pred: xr.DataArray,
     obs: xr.DataArray,

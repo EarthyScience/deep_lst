@@ -5,7 +5,13 @@ import pandas as pd
 import xarray as xr
 import zarr
 
-from deep_lst.evaluation.metrics import compute_grouped_scores, compute_scores, to_init_time, to_valid_time
+from deep_lst.evaluation.metrics import (
+    compute_grouped_scores,
+    compute_rmse_sufficient_stats,
+    compute_scores,
+    to_init_time,
+    to_valid_time,
+)
 from deep_lst.evaluation.spatial import lookup_pixel_coords
 from deep_lst.utils import ExperimentPaths
 
@@ -208,6 +214,55 @@ class Evaluator(ABC):
             }
         )
 
+    def bootstrap_summarise(
+        self,
+        stats: xr.Dataset,
+        metric: str = "rmse",
+        block: int = 24,
+        n_boot: int = 500,
+        quantiles=(0.05, 0.50, 0.95),
+        seed: int = 0,
+    ) -> xr.Dataset:
+        """Block-bootstrap CI for a pooled metric over init_time, per lead_time.
+
+        `stats` carries additive sufficient statistics (se_sum, count) with dims
+        (init_time, lead_time) — see metrics.compute_rmse_sufficient_stats. We moving-block
+        resample init_time (blocks of `block` consecutive inits, to respect temporal
+        autocorrelation — block=1 recovers the iid/climpred bootstrap), pool each resample via
+        sqrt(Σse_sum / Σcount), and take percentiles over the bootstrap curves.
+
+        Returns the SAME schema as `summarise` ({metric}_q05/q50/q95 over lead_time) so the plots
+        are unchanged. q50 is the point estimate (pooled over ALL inits); the outer quantiles are
+        bootstrap percentiles. NOTE: `block` is in init-INDEX units, so its wall-clock span depends
+        on the init spacing (e.g. 6-hourly inits → block=4 ≈ 1 day).
+        """
+        se = stats["se_sum"].transpose("init_time", "lead_time").values
+        cnt = stats["count"].transpose("init_time", "lead_time").values
+        n_init = se.shape[0]
+
+        def pooled(rows):
+            with np.errstate(invalid="ignore", divide="ignore"):
+                return np.sqrt(se[rows].sum(0) / cnt[rows].sum(0))
+
+        block = min(block, n_init)
+        n_blocks = int(np.ceil(n_init / block))
+        starts = np.arange(n_init - block + 1)
+        rng = np.random.default_rng(seed)
+        curves = np.empty((n_boot, se.shape[1]))
+        for b in range(n_boot):
+            rows = np.concatenate([np.arange(s, s + block) for s in rng.choice(starts, n_blocks)])[:n_init]
+            curves[b] = pooled(rows)
+
+        point = pooled(np.arange(n_init))
+        data_vars = {}
+        for q in quantiles:
+            label = f"{metric}_q{int(q * 100):02d}"
+            if abs(q - 0.5) < 1e-9:
+                data_vars[label] = ("lead_time", point)
+            else:
+                data_vars[label] = ("lead_time", np.nanpercentile(curves, q * 100, axis=0))
+        return xr.Dataset(data_vars, coords={"lead_time": stats["lead_time"].values})
+
 
 class EvaluatorDiagnostics(Evaluator):
     """Fixed lead time → valid_time space. Standard metrics, diurnal, spatial.
@@ -301,6 +356,7 @@ class EvaluatorVerification(Evaluator):
         lead_times = self.forecast_ds["lead_time"].values
 
         self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
+        self.rmse_stats = compute_rmse_sufficient_stats(self.pred, self.obs)
 
         self.baseline_scores = None
         self.baseline_full = None

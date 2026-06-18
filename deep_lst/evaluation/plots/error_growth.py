@@ -9,6 +9,7 @@ skill_plot                     Skill score SS = model_RMSE / reference_RMSE, dai
 error_growth_single_valid_time RMSE vs lead time for a fixed valid time, with clim. baseline
 """
 
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -18,10 +19,18 @@ from deep_lst.evaluation.plots._design import _LABEL_ALIASES, RC
 from deep_lst.evaluation.plots._design import CASE_COLORS as _CASE_COLORS
 from deep_lst.evaluation.plots._design import DEFAULT_COLOR as _DEFAULT_COLOR
 
-# Lead-time day buckets shared by the daily error-growth and skill plots.
-# Day 8 (169-192 h) is included so the range matches the model's ~200 h rollout
-# (and the forecast-limit plots' 0-8 day axis); 193-200 h is the partial tail.
-DAY_BUCKETS = [(1, 24), (25, 48), (49, 72), (73, 96), (97, 120), (121, 144), (145, 168), (169, 192)]
+DAY_BUCKETS = [
+    (1, 24),
+    (25, 48),
+    (49, 72),
+    (73, 96),
+    (97, 120),
+    (121, 144),
+    (145, 168),
+    (169, 192),
+    (193, 217),
+    (218, 240),
+]
 
 
 def error_growth_plot(
@@ -238,3 +247,89 @@ def skill_plot(
         fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=False)
         print(f"  Saved: {save_path}")
     plt.close(fig)
+
+
+def error_growth_day_night_plot(pred, obs, var, save_path, eval_region):
+    """RMSE vs lead for all 24 valid hours-of-day (colour gradient + colorbar), with local midday
+    (12 h) and midnight (00 h) emphasised on top.
+
+    Fixing the valid hour removes the diurnal-aliasing wiggle (no within-window hour variation);
+    with 6-hourly inits each hour recurs every 6 lead-hours, so the curves are 6-hourly. Computed
+    from raw pred/obs (valid hour = init + lead). No uncertainty band.
+    """
+    plt.rcParams.update(RC)
+    pred = pred.isel(lead_time=slice(1, None))  # drop lead-0 placeholder
+    obs = obs.isel(lead_time=slice(1, None))
+    space = [d for d in ("lat", "lon", "pixel") if d in pred.dims]
+    valid_hour = (pred["init_time"].dt.hour + (pred["lead_time"] / np.timedelta64(1, "h")).astype(int)) % 24
+    err2 = ((pred - obs) ** 2).load()  # in-memory once; the 24 hourly reductions then run fast
+    lead_h = (pred["lead_time"] / np.timedelta64(1, "h")).values
+    cmap = plt.get_cmap("twilight_shifted")
+
+    rmse_by_hour = {
+        hour: np.sqrt(err2.where(valid_hour == hour).mean(["init_time", *space], skipna=True)).values
+        for hour in range(24)
+    }
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for hour in range(24):
+        keep = np.isfinite(rmse_by_hour[hour])
+        ax.plot(lead_h[keep], rmse_by_hour[hour][keep], color=cmap(hour / 23.0), lw=1.0, zorder=2)
+    for hour, label in ((12, "Midday (12 h)"), (0, "Midnight (00 h)")):
+        keep = np.isfinite(rmse_by_hour[hour])
+        ax.plot(
+            lead_h[keep],
+            rmse_by_hour[hour][keep],
+            color=cmap(hour / 23.0),
+            lw=2.6,
+            marker="o",
+            ms=3,
+            label=label,
+            zorder=3,
+            path_effects=[pe.Stroke(linewidth=4.5, foreground="black"), pe.Normal()],
+        )
+    ax.set_xlabel("Lead time [h]")
+    ax.set_ylabel(f"{var} RMSE [K]")
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper left")
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 23))
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, label="Valid hour of day", ticks=[0, 6, 12, 18, 23])
+    ax.set_title(f"{eval_region} — {var} RMSE growth by valid hour")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {save_path}")
+
+
+def error_growth_by_init_plot(pred, obs, var, save_path, eval_region):
+    """RMSE vs lead, one curve per initialisation hour (no init-hour mixing).
+
+    Each curve fixes the init hour, so its oscillation is the diurnal cycle of the *valid* time
+    (valid hour = init + lead); the vertical separation between curves is the initialisation-time
+    skill dependence. The companion to the by-valid-hour plot, which instead fixes the valid hour.
+    """
+    plt.rcParams.update(RC)
+    pred = pred.isel(lead_time=slice(1, None))  # drop lead-0 placeholder
+    obs = obs.isel(lead_time=slice(1, None))
+    space_axes = (0,) + tuple(i for i, d in enumerate(pred.dims) if d not in ("init_time", "lead_time"))
+    init_hour = (pred["init_time"].dt.hour.values) % 24
+    err2 = ((pred - obs) ** 2).transpose("init_time", "lead_time", ...).values  # (init, lead, *space)
+    lead_h = (pred["lead_time"] / np.timedelta64(1, "h")).values
+    cmap = plt.get_cmap("twilight_shifted")
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for hour in sorted(set(init_hour.tolist())):
+        with np.errstate(invalid="ignore"):
+            rmse = np.sqrt(np.nanmean(err2[init_hour == hour], axis=space_axes))  # reduce init + space → (lead,)
+        keep = np.isfinite(rmse)
+        ax.plot(lead_h[keep], rmse[keep], color=cmap(hour / 23.0), lw=1.6, label=f"init {hour:02d}h")
+    ax.set_xlabel("Lead time [h]")
+    ax.set_ylabel(f"{var} RMSE [K]")
+    ax.grid(alpha=0.3)
+    ax.legend(title="Initialisation hour", loc="upper left")
+    ax.set_title(f"{eval_region} — {var} RMSE growth by initialisation hour")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {save_path}")

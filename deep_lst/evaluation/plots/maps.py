@@ -241,6 +241,100 @@ def improvement_map_multi(
     return fig
 
 
+def lead_bucket_map_grid(values, bucket_labels, baseline_labels, save_path, kind, tod_label, model_label, eval_region):
+    """Grid of per-pixel skill maps: rows = lead buckets, cols = baselines.
+
+    values[bucket_label][baseline_label] = DataArray(lat, lon). Both 'improvement'
+    (RMSE_baseline − RMSE_model, K) and 'skill' (1 − RMSE_model/RMSE_baseline) use a diverging
+    RdBu map centred on 0 (positive = model beats baseline)."""
+    plt.rcParams.update(RC)
+    n_row, n_col = len(bucket_labels), len(baseline_labels)
+    pool = [
+        values[b][bl].values[np.isfinite(values[b][bl].values)].ravel()
+        for b in bucket_labels
+        for bl in baseline_labels
+        if values[b].get(bl) is not None
+    ]
+    all_vals = np.concatenate(pool) if pool else np.array([1.0])
+    vmax = float(np.nanpercentile(np.abs(all_vals), 95)) if all_vals.size else 1.0
+
+    fig, axes = plt.subplots(
+        n_row, n_col, figsize=(5.2 * n_col, 4.6 * n_row), subplot_kw={"projection": _PROJ}, squeeze=False
+    )
+    im = None
+    for i, b in enumerate(bucket_labels):
+        for j, bl in enumerate(baseline_labels):
+            ax = axes[i][j]
+            da = values[b].get(bl)
+            if da is None:
+                ax.set_visible(False)
+                continue
+            im = da.plot(ax=ax, cmap="RdBu", vmin=-vmax, vmax=vmax, add_colorbar=False, transform=_PROJ)
+            _add_map_features(ax)
+            ax.set_title(f"vs {bl}" if i == 0 else "")
+            if j == 0:
+                ax.text(-0.32, 0.5, b, transform=ax.transAxes, rotation=90, va="center", ha="center", fontweight="bold")
+
+    fig.subplots_adjust(left=0.10, wspace=0.35, hspace=0.10, right=0.89)
+    cbar_ax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
+    cbar = fig.colorbar(im, cax=cbar_ax)
+    label = "RMSE(baseline) − RMSE(model) [K]" if kind == "improvement" else "Skill  1 − RMSE_model/RMSE_baseline"
+    cbar.set_label(f"{label}\nPositive = {model_label} better", rotation=270, labelpad=30)
+    fig.suptitle(f"{eval_region} — {kind} maps, {tod_label}  ({model_label})", y=1.0)
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {save_path}")
+    return fig
+
+
+def lead_bucket_rmse_grid(values, bucket_labels, col_labels, save_path, tod_label, eval_region):
+    """Grid of per-pixel RMSE maps: rows = lead buckets, cols = [model] + baselines (sequential cmap,
+    shared 0→vmax). values[bucket_label][col_label] = DataArray(lat, lon)."""
+    plt.rcParams.update(RC)
+    n_row, n_col = len(bucket_labels), len(col_labels)
+    pool = [
+        values[b][c].values[np.isfinite(values[b][c].values)].ravel()
+        for b in bucket_labels
+        for c in col_labels
+        if values[b].get(c) is not None
+    ]
+    all_vals = np.concatenate(pool) if pool else np.array([5.0])
+    vmax = float(np.nanpercentile(all_vals, 98)) if all_vals.size else 5.0
+
+    fig, axes = plt.subplots(
+        n_row, n_col, figsize=(4.6 * n_col, 4.6 * n_row), subplot_kw={"projection": _PROJ}, squeeze=False
+    )
+    im = None
+    for i, b in enumerate(bucket_labels):
+        for j, c in enumerate(col_labels):
+            ax = axes[i][j]
+            da = values[b].get(c)
+            if da is None:
+                ax.set_visible(False)
+                continue
+            im = da.plot(ax=ax, cmap="viridis", vmin=0, vmax=vmax, add_colorbar=False, transform=_PROJ)
+            _add_map_features(ax)
+            ax.set_title(c if i == 0 else "")
+            if j == 0:
+                ax.text(-0.32, 0.5, b, transform=ax.transAxes, rotation=90, va="center", ha="center", fontweight="bold")
+
+    fig.subplots_adjust(left=0.10, wspace=0.35, hspace=0.10, right=0.89)
+    cbar_ax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
+    cbar = fig.colorbar(im, cax=cbar_ax)
+    cbar.set_label("RMSE [K]", rotation=270, labelpad=18)
+    fig.suptitle(f"{eval_region} — RMSE maps, {tod_label}", y=1.0)
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {save_path}")
+    return fig
+
+
 def improvement_map(
     rmse_model: xr.DataArray,
     rmse_baseline: xr.DataArray,
