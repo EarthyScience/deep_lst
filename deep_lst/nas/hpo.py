@@ -19,9 +19,14 @@ from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 from deep_lst.utils.config import get_context_keys, get_keys_from_config
 from deep_lst.utils.io import ExperimentPaths, load_inc_variances
 
-HPO_EPOCHS = 25
-HPO_TRAIN_BATCHES = 1200
-HPO_VAL_BATCHES = 150
+HPO_EPOCHS = 20
+# Per-epoch SAMPLE budgets (not batch counts). limit_train/val_batches are derived per trial as
+# SAMPLES // batch_size, so every batch size sees the same data — a fair batch-size comparison.
+# Batch sizes are floored at 32 (bs=32 → 625 train batches/epoch) so the smallest-bs trials stay
+# feasible; below that the equalised-sample scheme makes a single trial take 13–37 h.
+HPO_TRAIN_SAMPLES = 20000
+HPO_VAL_SAMPLES = 8000
+VAL_METRIC = "val_loss_step_epoch"
 
 HIDDEN_SIZES = [
     [512, 256, 256, 128, 256],
@@ -30,6 +35,24 @@ HIDDEN_SIZES = [
     [2048, 1024, 512, 512, 256],
     [4096, 2048, 1024, 1024, 512],
 ]
+
+
+class _PruningCallback(pl.Callback):
+    """Report the validation metric to Optuna each epoch and prune unpromising trials early."""
+
+    def __init__(self, trial: optuna.Trial, monitor: str):
+        self.trial = trial
+        self.monitor = monitor
+
+    def on_validation_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+        value = trainer.callback_metrics.get(self.monitor)
+        if value is None:
+            return
+        self.trial.report(float(value), trainer.current_epoch)
+        if self.trial.should_prune():
+            raise optuna.TrialPruned(f"Trial {self.trial.number} pruned at epoch {trainer.current_epoch}")
 
 
 def objective(
@@ -46,8 +69,7 @@ def objective(
     config["model"]["dropout"] = trial.suggest_float("dropout", 0.0, 0.5)
     config["model"]["weight_decay"] = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
     config["model"]["hidden_sizes"] = HIDDEN_SIZES[trial.suggest_categorical("hidden_sizes_idx", [0, 1, 2, 3, 4])]
-
-    config["training"]["batch_size"] = trial.suggest_categorical("batch_size", [128, 256, 512])
+    config["training"]["batch_size"] = trial.suggest_categorical("batch_size", [32, 64, 128, 256, 512])
 
     print(
         f"[Trial {trial.number}] lr={config['model']['learning_rate']:.2e}  "
@@ -57,9 +79,11 @@ def objective(
         flush=True,
     )
 
+    bs = config["training"]["batch_size"]
     config["training"]["max_epochs"] = HPO_EPOCHS
-    config["training"]["limit_train_batches"] = HPO_TRAIN_BATCHES
-    config["training"]["limit_val_batches"] = HPO_VAL_BATCHES
+    # Equalise data seen across batch sizes: fixed SAMPLES/epoch → #batches = SAMPLES // bs.
+    config["training"]["limit_train_batches"] = max(1, HPO_TRAIN_SAMPLES // bs)
+    config["training"]["limit_val_batches"] = max(1, HPO_VAL_SAMPLES // bs)
     config["csv_logger"] = False
     config["wandb_logger"] = False
 
@@ -86,15 +110,16 @@ def objective(
         precision="bf16-mixed",
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
-        limit_train_batches=HPO_TRAIN_BATCHES,
-        limit_val_batches=HPO_VAL_BATCHES,
+        limit_train_batches=config["training"]["limit_train_batches"],
+        limit_val_batches=config["training"]["limit_val_batches"],
         enable_checkpointing=False,
         logger=False,
         enable_progress_bar=False,
+        callbacks=[_PruningCallback(trial, VAL_METRIC)],
     )
     trainer.fit(model_module, datamodule=data_module)
 
-    val_loss = trainer.callback_metrics.get("val_loss_step_epoch")
+    val_loss = trainer.callback_metrics.get(VAL_METRIC)
     if val_loss is None:
         raise optuna.TrialPruned()
     return float(val_loss)
@@ -112,13 +137,7 @@ def main():
                 "loss=smoothl1",
                 "stratification=mtg",
                 "size=L",
-                "horizon=h8",
-                "train_dataset.era5.lookback=72",
-                "train_dataset.seviri.lookback=72",
-                "val_dataset.era5.lookback=72",
-                "val_dataset.seviri.lookback=72",
-                "test_dataset.era5.lookback=72",
-                "test_dataset.seviri.lookback=72",
+                "horizon=h24",
                 "model.warmup_steps=300",
             ],
         )
@@ -150,9 +169,11 @@ def main():
 
     study = optuna.create_study(
         direction="minimize",
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=3, n_warmup_steps=5),
         storage=storage,
-        study_name="mlp_rollout_L_MT_smoothl1_h8_l72_v0_hpo",
+        # New study name: the batch_size categorical changed (8/16 dropped), which is incompatible
+        # with resuming the old study. The old study's trials remain in hpo.db.
+        study_name="mlp_rollout_MT_smoothl1_h24_l24_v6_hpo_bs32",
         load_if_exists=True,
     )
 
