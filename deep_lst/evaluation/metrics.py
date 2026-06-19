@@ -85,6 +85,25 @@ def nse(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
     return 1.0 - ss_res / ss_tot
 
 
+@_register("var_ratio")
+def var_ratio(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
+    """Variability error: ratio of simulated to observed std, sigma_sim / sigma_obs.
+    This is the alpha term of the NSE/KGE (Gupta et al. 2009) decomposition.
+    1 = correct spread, <1 = under-dispersed, >1 = over-dispersed.
+    """
+    return pred.std(dim=dim, skipna=True) / obs.std(dim=dim, skipna=True)
+
+
+@_register("norm_bias")
+def norm_bias(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
+    """Unconditional (standardised) bias: (mean_sim - mean_obs) / sigma_obs.
+    This is the beta term of the NSE/KGE (Gupta et al. 2009) decomposition.
+    0 = unbiased; sign follows the raw bias.
+    """
+    bias = pred.mean(dim=dim, skipna=True) - obs.mean(dim=dim, skipna=True)
+    return bias / obs.std(dim=dim, skipna=True)
+
+
 def to_valid_time(da: xr.Dataset, lead_time: str | np.timedelta64 | None = None) -> xr.DataArray:
     """Select a lead time and convert init_time → valid_time."""
     lt_delta = np.timedelta64(pd.Timedelta(lead_time).value, "ns")
