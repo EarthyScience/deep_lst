@@ -69,7 +69,13 @@ class RolloutLoss(ABC):
             self._step_diagnostic(out, batch, spatial_mask, lookback, t, w, loss)
             self._update_history(prognostics, batch, history, spatial_mask, lookback, t, context_vars)
 
-        loss.finalize()
+        if loss.total_weight == 0:
+            # Every rollout step fell below min_valid_fraction (e.g. a fully cloud-masked
+            # window in a high-missingness region like yangambi): nothing was accumulated, so
+            # finalize() returns a detached zero and backward() raises "does not require grad".
+            # Return a grad-safe zero instead — effectively skipping this batch.
+            return self._zero_loss(batch.device)
+
         loss.log_to(lit_module, stage)
         return loss.finalize()
 
@@ -237,7 +243,7 @@ class RolloutLoss(ABC):
                 loss.add(f"diag_{key[1]}", diag_loss, weight=w)
 
     def _zero_loss(self, device):
-        print("  WARNING: No initially valid pixels!")
+        print("  WARNING: no valid pixels to compute loss for this batch — skipping (zero grad).")
         return torch.tensor(0.0, device=device, requires_grad=True)
 
     @abstractmethod
@@ -334,7 +340,13 @@ class RolloutIncrementLoss(RolloutLoss):
                 ro_out, batch, prognostics, history, spatial_mask, lookback, t, context_vars
             )
 
-        loss.finalize()
+        if loss.total_weight == 0:
+            # Every rollout step fell below min_valid_fraction (e.g. a fully cloud-masked
+            # window in a high-missingness region like yangambi): nothing was accumulated, so
+            # finalize() returns a detached zero and backward() raises "does not require grad".
+            # Return a grad-safe zero instead — effectively skipping this batch.
+            return self._zero_loss(batch.device)
+
         loss.log_to(lit_module, stage)
         return loss.finalize()
 
