@@ -13,8 +13,15 @@ from deep_lst.evaluation.evaluator import (
     EvaluatorVerification,
 )
 from deep_lst.evaluation.metrics import compute_class_scores, compute_grouped_scores, compute_scores
+from deep_lst.evaluation.plots.cdf import day_night_summary, lst_cdf_plot, rmse_cdf_plot
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
-from deep_lst.evaluation.plots.error_growth import error_growth_daily_plot, error_growth_plot, skill_plot
+from deep_lst.evaluation.plots.error_growth import (
+    error_growth_by_init_plot,
+    error_growth_daily_plot,
+    error_growth_day_night_plot,
+    error_growth_plot,
+    skill_plot,
+)
 from deep_lst.evaluation.plots.fingerprint import fingerprint_plot, improvement_da
 from deep_lst.evaluation.plots.init_time import (
     diurnal_lead_heatmap,
@@ -22,7 +29,7 @@ from deep_lst.evaluation.plots.init_time import (
     plot_init_vs_lead,
     score_over_init_plot,
 )
-from deep_lst.evaluation.plots.maps import acc_map, improvement_map_multi
+from deep_lst.evaluation.plots.maps import acc_map, improvement_map_multi, lead_bucket_map_grid, lead_bucket_rmse_grid
 from deep_lst.evaluation.plots.scores import category_score_violinplot, error_overview_plot
 from deep_lst.evaluation.plots.spectra import (
     _grid_spacing_km,
@@ -49,6 +56,26 @@ _MONTH_LABELS = {
     12: "Dec",
 }
 
+# Cumulative lead horizons (all steps up to day N) for the lead-stratified skill/improvement maps.
+_LEAD_BUCKETS = {"≤ Day 1": range(1, 25), "≤ Day 5": range(1, 121), "≤ Day 10": range(1, 241)}
+_TOD = {"day": lambda vh: (vh >= 10) & (vh <= 15), "night": lambda vh: (vh >= 22) | (vh <= 3)}
+
+
+def _fit_buckets(n_lead):
+    """Cumulative lead buckets whose full horizon fits the forecast (keeps labels accurate and avoids
+    out-of-range isel on short-horizon evals). Falls back to all available leads if shorter than Day 1."""
+    fitted = {label: list(leads) for label, leads in _LEAD_BUCKETS.items() if (leads.stop - 1) <= (n_lead - 1)}
+    return fitted or {"All leads": list(range(1, n_lead))}
+
+
+def _bucket_tod_rmse(field, obs, lead_idx, tod):
+    """Per-pixel RMSE over a lead bucket, pooled over init+lead, masked to a day/night valid-hour."""
+    f = field.isel(lead_time=lead_idx).load()  # small bucket; load once (lazy per-cell reduction is slow)
+    o = obs.isel(lead_time=lead_idx).load()
+    valid_hour = (f["init_time"].dt.hour + (f["lead_time"] / np.timedelta64(1, "h")).astype(int)) % 24
+    err2 = ((f - o) ** 2).where(_TOD[tod](valid_hour))
+    return np.sqrt(err2.mean(["init_time", "lead_time"], skipna=True))  # (lat, lon)
+
 
 class PlotRunnerDiagnostics:
     def __init__(
@@ -57,7 +84,14 @@ class PlotRunnerDiagnostics:
         label: str,
         plots_dir: Path,
         baseline_evaluators: dict[str, EvaluatorDiagnostics] | None = None,
-        class_coords: tuple[str, ...] = ("kg_class", "kg_major"),
+        class_coords: tuple[str, ...] = (
+            "kg_class",
+            "kg_major",
+            "kg_classes",
+            "biome_classes",
+            "modis_lc_classes",
+            "ecoregion_classes",
+        ),
     ):
         self.ev = evaluator
         self.label = label
@@ -640,6 +674,107 @@ class PlotRunnerVerification:
                 case_label=self.label,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_error_growth_daily_{m}.pdf",
+                eval_region=self.ev.eval_name,
+            )
+
+    def plot_error_growth_day_night(self):
+        # RMSE vs lead at fixed valid hour (12 h / 00 h), day vs night. Verification (init×lead) only.
+        if "lead_time" not in self.ev.pred.dims:
+            return
+        error_growth_day_night_plot(
+            self.ev.pred,
+            self.ev.obs,
+            self.ev.var,
+            self.plots_dir / f"{self.ev.var}_error_growth_day_night.pdf",
+            self.ev.eval_name,
+        )
+
+    def plot_error_growth_by_init(self):
+        # RMSE vs lead, one curve per initialisation hour. Verification (init×lead) only.
+        if "lead_time" not in self.ev.pred.dims:
+            return
+        error_growth_by_init_plot(
+            self.ev.pred,
+            self.ev.obs,
+            self.ev.var,
+            self.plots_dir / f"{self.ev.var}_error_growth_by_init.pdf",
+            self.ev.eval_name,
+        )
+
+    def plot_cdf(self):
+        # Day/night value- & per-pixel-RMSE CDFs, lead 1→24 gradient. Verification (init×lead) only.
+        if "lead_time" not in self.ev.pred.dims:
+            return
+        summary = day_night_summary(self.ev.pred, self.ev.obs)
+        lst_cdf_plot(
+            self.ev.pred,
+            self.ev.obs,
+            self.ev.var,
+            self.plots_dir / f"{self.ev.var}_value_cdf.pdf",
+            self.ev.eval_name,
+            summary=summary,
+        )
+        rmse_cdf_plot(
+            self.ev.pred,
+            self.ev.obs,
+            self.ev.var,
+            self.plots_dir / f"{self.ev.var}_rmse_cdf.pdf",
+            self.ev.eval_name,
+            summary=summary,
+        )
+
+    def plot_improvement_skill_maps(self):
+        # Per-lead-bucket (day 1/5/10) × day/night improvement and skill maps vs each baseline.
+        if "pixel" in self.ev.forecast_ds.dims or "lead_time" not in self.ev.pred.dims or not self.baselines:
+            return
+        baselines = {
+            label: bl_ev.baseline_full
+            for label, bl_ev in self.baselines.items()
+            if getattr(bl_ev, "baseline_full", None) is not None
+        }
+        if not baselines:
+            return
+        buckets = _fit_buckets(self.ev.pred.sizes["lead_time"])  # clamp to the forecast horizon
+        bucket_labels = list(buckets)
+        baseline_labels = list(baselines)
+        for tod, tod_label in (("day", "daytime 10–15 h"), ("night", "nighttime 22–03 h")):
+            improvement = {b: {} for b in bucket_labels}
+            skill = {b: {} for b in bucket_labels}
+            error = {b: {} for b in bucket_labels}
+            for b, lead_idx in buckets.items():
+                rmse_model = _bucket_tod_rmse(self.ev.pred, self.ev.obs, lead_idx, tod)
+                error[b][self.label] = rmse_model
+                for bl_label, bl_field in baselines.items():
+                    rmse_bl = _bucket_tod_rmse(bl_field, self.ev.obs, lead_idx, tod)
+                    error[b][bl_label] = rmse_bl
+                    improvement[b][bl_label] = rmse_bl - rmse_model
+                    skill[b][bl_label] = 1 - rmse_model / rmse_bl
+            lead_bucket_rmse_grid(
+                error,
+                bucket_labels,
+                [self.label, *baseline_labels],
+                self.plots_dir / f"{self.ev.var}_error_map_{tod}.pdf",
+                tod_label=tod_label,
+                eval_region=self.ev.eval_name,
+            )
+            lead_bucket_map_grid(
+                improvement,
+                bucket_labels,
+                baseline_labels,
+                self.plots_dir / f"{self.ev.var}_improvement_map_{tod}.pdf",
+                kind="improvement",
+                tod_label=tod_label,
+                model_label=self.label,
+                eval_region=self.ev.eval_name,
+            )
+            lead_bucket_map_grid(
+                skill,
+                bucket_labels,
+                baseline_labels,
+                self.plots_dir / f"{self.ev.var}_skill_map_{tod}.pdf",
+                kind="skill",
+                tod_label=tod_label,
+                model_label=self.label,
                 eval_region=self.ev.eval_name,
             )
 

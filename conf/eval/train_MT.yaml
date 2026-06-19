@@ -1,7 +1,0 @@
-# @package _global_
-eval_name: train_MT
-spatial_indices: MT
-
-test_dataset:
-  spatial: MT
-  temporal: test

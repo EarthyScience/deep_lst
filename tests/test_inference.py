@@ -1,23 +1,17 @@
 """Tests for deep_lst/evaluation/inference.py
 
 Hermetic — no zarr stores, no real data, no GPU required.
-eodata is required only for build_local_grid; those tests are skipped otherwise.
 
 Covered:
-  ForecastResult
-    - construction and xarray conversion (dims, shapes, coordinates)
-    - lead times start at 1h (lookback=0 regression)
-    - save / load roundtrip (values, coords)
-
   _apply_consistent_mask
     - all-finite input passes through unchanged
     - NaN in obs at any lead time propagates to all lead times for that sample
     - mask is applied per-variable independently
 
-  _remap_to_grid
-    - output shape: (n_time, t, *grid_shape)
-    - pixels outside the sparse set are NaN
-    - pixel values survive the reshape
+  _write_init_times
+    - scatter into whole init_time slots (time-major row blocks)
+    - pixels outside the sparse set stay NaN
+    - values land at the right (init_time, lead, row, col); lead_offset shifts leads
 
   _predict_diagnostic
     - output keys match diagnostic_keys
@@ -32,20 +26,13 @@ Covered:
     - state is updated autoregressively (each step uses previous prediction)
     - NaN in init state (batch[:,0,...]) propagates to all forecast steps
     - all-NaN init returns correct shape (NaN outputs, not crash)
-
-  Forecast.predict() end-to-end
-    - lead_times = [1h, 2h, ..., horizon h]  (not [0h, 1h, ...])
-    - ForecastResult has correct n_time, horizon, spatial dims
-    - works without a normaliser (normaliser=None path)
 """
 
 import numpy as np
-import pandas as pd
-import pytest
 import torch
 from tensordict import TensorDict
 
-from deep_lst.evaluation.inference import Forecast, ForecastResult
+from deep_lst.evaluation.inference import Forecast
 
 # ── shared constants ──────────────────────────────────────────────────────────
 
@@ -101,11 +88,18 @@ def _diag_batch(b=B, finite=True):
     return TensorDict(data, batch_size=[b])
 
 
+# _predict_rollout reads:
+#   - model.config["train_dataset"] for context-var pairs (empty → no context, fine at LOOKBACK=0)
+#   - model.config["model"]["predict_anomaly"] to gate climatology lookup (default False)
+_EMPTY_TRAIN_CONFIG = {"train_dataset": {}, "model": {}}
+
+
 class _ZeroIncrementModel:
     """Rollout model: always returns a zero increment for the prognostic key."""
 
     def __init__(self):
         self.model = self
+        self.config = _EMPTY_TRAIN_CONFIG
         self.call_count = 0
         self.prog_states_at_call: list = []  # records prog state snapshot each call
 
@@ -122,6 +116,7 @@ class _ConstantIncrementModel:
 
     def __init__(self):
         self.model = self
+        self.config = _EMPTY_TRAIN_CONFIG
         self.call_count = 0
 
     def __call__(self, td):
@@ -136,6 +131,7 @@ class _ConstantDiagModel:
 
     def __init__(self, value=2.5):
         self.model = self
+        self.config = _EMPTY_TRAIN_CONFIG
         self.value = value
 
     def __call__(self, td):
@@ -155,73 +151,20 @@ class _MockNormaliser:
         return arr  # identity
 
 
-# ── ForecastResult ─────────────────────────────────────────────────────────────
+def _collect(gen):
+    """Drain a predict generator and concatenate per-batch dicts (the old return shape)."""
+    batches = list(gen)
+    preds = {v: np.concatenate([p[v] for p, _ in batches], axis=0) for v in batches[0][0]}
+    obs = {v: np.concatenate([o[v] for _, o in batches], axis=0) for v in batches[0][1]}
+    return preds, obs
 
 
-@pytest.fixture
-def sample_result():
-    n_time, n_lead, n_lat, n_lon = 5, HORIZON, 10, 12
-    shape = (n_time, n_lead, n_lat, n_lon)
-    return ForecastResult(
-        predictions={"LST": np.random.randn(*shape).astype(np.float32)},
-        observations={"LST": np.random.randn(*shape).astype(np.float32)},
-        init_times=pd.date_range("2020-01-01", periods=n_time, freq="h"),
-        lead_times=pd.timedelta_range("1h", periods=n_lead, freq="h"),
-        lats=np.linspace(-5.0, 5.0, n_lat),
-        lons=np.linspace(30.0, 41.0, n_lon),
-    )
+def _run_rollout(*args, **kwargs):
+    return _collect(Forecast._predict_rollout(*args, **kwargs))
 
 
-def test_to_xarray_dims(sample_result):
-    ds = sample_result.to_xarray()
-    assert set(ds.dims) == {"init_time", "lead_time", "lat", "lon"}
-
-
-def test_to_xarray_variables(sample_result):
-    ds = sample_result.to_xarray()
-    assert "LST_pred" in ds.data_vars
-    assert "LST_obs" in ds.data_vars
-
-
-def test_to_xarray_shape(sample_result):
-    ds = sample_result.to_xarray()
-    assert ds["LST_pred"].shape == (5, HORIZON, 10, 12)
-    assert ds["LST_obs"].shape == (5, HORIZON, 10, 12)
-
-
-def test_lead_times_start_at_1h(sample_result):
-    """Regression: with lookback=0 the first lead time must be 1 h, not 0 h."""
-    ds = sample_result.to_xarray()
-    first_lead = pd.Timedelta(ds["lead_time"].values[0])
-    assert first_lead == pd.Timedelta("1h"), (
-        f"First lead time is {first_lead}. Expected 1h — if it is 0h the "
-        "lookback=0 fix has been reverted or lead time indexing is wrong."
-    )
-
-
-def test_lead_times_are_sequential_hourly(sample_result):
-    ds = sample_result.to_xarray()
-    leads = pd.TimedeltaIndex(ds["lead_time"].values)
-    for i, lt in enumerate(leads):
-        assert lt == pd.Timedelta(f"{i + 1}h"), f"Lead time at index {i} should be {i + 1}h"
-
-
-def test_roundtrip_values(tmp_path, sample_result):
-    path = tmp_path / "forecast.zarr"
-    sample_result.save(path)
-    loaded = ForecastResult.load(path)
-    np.testing.assert_allclose(loaded.predictions["LST"], sample_result.predictions["LST"], rtol=1e-5)
-    np.testing.assert_allclose(loaded.observations["LST"], sample_result.observations["LST"], rtol=1e-5)
-
-
-def test_roundtrip_coords(tmp_path, sample_result):
-    path = tmp_path / "forecast.zarr"
-    sample_result.save(path)
-    loaded = ForecastResult.load(path)
-    np.testing.assert_allclose(loaded.lats, sample_result.lats)
-    np.testing.assert_allclose(loaded.lons, sample_result.lons)
-    assert len(loaded.init_times) == len(sample_result.init_times)
-    assert len(loaded.lead_times) == len(sample_result.lead_times)
+def _run_diagnostic(*args, **kwargs):
+    return _collect(Forecast._predict_diagnostic(*args, **kwargs))
 
 
 # ── _apply_consistent_mask ────────────────────────────────────────────────────
@@ -247,14 +190,17 @@ def test_mask_nan_in_one_lead_propagates_to_all():
 
 
 def test_mask_pred_nan_also_propagates():
-    """NaN in preds (not obs) should also propagate to all leads for that sample."""
+    """NaN in preds (not obs) propagates to all leads for that sample.
+    Rollout can produce NaN predictions from a NaN init state even when obs clears later,
+    so the mask requires BOTH obs and pred to be fully finite (see _apply_consistent_mask)."""
     preds = np.ones((4, HORIZON))
     preds[1, 0] = np.nan
     obs = np.ones((4, HORIZON))
     pm, om = Forecast._apply_consistent_mask({"LST": preds}, {"LST": obs})
-    # obs drives the mask; pred NaN alone does NOT propagate — only obs NaN does
-    # (design: mask based on obs validity)
-    assert np.all(np.isfinite(om["LST"]))
+    assert np.all(np.isnan(pm["LST"][1, :])), "All pred leads for sample 1 should be NaN"
+    assert np.all(np.isnan(om["LST"][1, :])), "All obs leads for sample 1 should be NaN"
+    assert np.all(np.isfinite(pm["LST"][0, :])), "Unaffected sample 0 pred should remain finite"
+    assert np.all(np.isfinite(om["LST"][0, :])), "Unaffected sample 0 obs should remain finite"
 
 
 def test_mask_independent_per_variable():
@@ -266,47 +212,77 @@ def test_mask_independent_per_variable():
     assert np.all(np.isfinite(om["T2"])), "T2 should be unaffected by LST mask"
 
 
-# ── _remap_to_grid ─────────────────────────────────────────────────────────────
+# ── _write_init_times ──────────────────────────────────────────────────────────
 
 
-def test_remap_output_shape():
-    n_sp, n_t, t = 4, 3, HORIZON
-    rows = np.array([0, 0, 1, 1])
-    cols = np.array([0, 1, 0, 1])
-    preds = np.random.randn(n_sp * n_t, t)
-    obs = np.random.randn(n_sp * n_t, t)
-    pg, og = Forecast._remap_to_grid(preds, obs, n_sp, n_t, t, rows, cols, (2, 2))
-    assert pg.shape == (n_t, t, 2, 2)
-    assert og.shape == (n_t, t, 2, 2)
+def _empty_store(n_time, t_out, grid_shape):
+    """Numpy stand-ins for the zarr pred/obs arrays (same slice-assign interface)."""
+    pa = np.full((n_time, t_out, *grid_shape), np.nan, dtype=np.float32)
+    oa = np.full((n_time, t_out, *grid_shape), np.nan, dtype=np.float32)
+    return pa, oa
 
 
-def test_remap_outside_pixels_are_nan():
-    n_sp, n_t, t = 2, 1, 2
-    rows = np.array([0, 1])
-    cols = np.array([0, 1])
-    preds = np.ones((n_sp * n_t, t))
-    obs = np.ones((n_sp * n_t, t))
-    pg, _ = Forecast._remap_to_grid(preds, obs, n_sp, n_t, t, rows, cols, (3, 3))
-    assert np.isnan(pg[0, 0, 0, 1]), "Pixel (0,1) was not in sparse set — should be NaN"
-    assert np.isnan(pg[0, 0, 1, 0]), "Pixel (1,0) was not in sparse set — should be NaN"
-    assert pg[0, 0, 0, 0] == 1.0
-    assert pg[0, 0, 1, 1] == 1.0
+def test_write_init_times_scatter_and_nan():
+    """Values land at their (row, col); grid cells outside the pixel set stay NaN."""
+    n_sp, t = 2, 2
+    rows, cols = np.array([0, 1]), np.array([0, 1])
+    pa, oa = _empty_store(n_time=1, t_out=t, grid_shape=(3, 3))
+    preds = {"LST": np.ones((n_sp, t), dtype=np.float32)}
+    obs = {"LST": np.ones((n_sp, t), dtype=np.float32)}
+
+    Forecast._write_init_times({"LST": (pa, oa)}, preds, obs, 0, n_sp, 0, rows, cols, (3, 3), sparse=False)
+
+    assert pa[0, 0, 0, 0] == 1.0
+    assert pa[0, 0, 1, 1] == 1.0
+    assert np.isnan(pa[0, 0, 0, 1]), "Pixel (0,1) was not in sparse set — should stay NaN"
+    assert np.isnan(pa[0, 0, 1, 0]), "Pixel (1,0) was not in sparse set — should stay NaN"
 
 
-def test_remap_values_preserved():
-    """Values at known pixels should survive the reshape exactly."""
-    n_sp, n_t, t = 2, 1, 2
-    rows = np.array([0, 0])
-    cols = np.array([0, 1])
-    # preds ordered spatial-major: [pix0_time0, pix1_time0] each of length t=2
-    preds = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=float)  # (n_sp*n_t=2, t=2)
-    obs = preds.copy()
-    pg, _ = Forecast._remap_to_grid(preds, obs, n_sp, n_t, t, rows, cols, (1, 2))
-    # pg shape: (1, 2, 1, 2)
-    assert pg[0, 0, 0, 0] == 10.0  # pix0, lead0
-    assert pg[0, 1, 0, 0] == 20.0  # pix0, lead1
-    assert pg[0, 0, 0, 1] == 30.0  # pix1, lead0
-    assert pg[0, 1, 0, 1] == 40.0  # pix1, lead1
+def test_write_init_times_values_preserved():
+    """Time-major rows: row j of an init_time block is pixel j, leads along axis 1."""
+    rows, cols = np.array([0, 0]), np.array([0, 1])
+    pa, oa = _empty_store(n_time=1, t_out=2, grid_shape=(1, 2))
+    preds = {"LST": np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32)}
+    obs = {"LST": preds["LST"].copy()}
+
+    Forecast._write_init_times({"LST": (pa, oa)}, preds, obs, 0, 2, 0, rows, cols, (1, 2), sparse=False)
+
+    assert pa[0, 0, 0, 0] == 10.0  # pix0, lead0
+    assert pa[0, 1, 0, 0] == 20.0  # pix0, lead1
+    assert pa[0, 0, 0, 1] == 30.0  # pix1, lead0
+    assert pa[0, 1, 0, 1] == 40.0  # pix1, lead1
+
+
+def test_write_init_times_multiple_slots_and_lead_offset():
+    """k init_times per call land at ti_start..ti_start+k-1; lead_offset=1 keeps lead 0 NaN."""
+    n_sp = 2
+    rows, cols = np.array([0, 0]), np.array([0, 1])
+    pa, oa = _empty_store(n_time=4, t_out=2, grid_shape=(1, 2))
+    # Two init_time blocks of n_sp rows each, one lead: block 0 → 1.0, block 1 → 2.0.
+    preds = {"LST": np.array([[1.0], [1.0], [2.0], [2.0]], dtype=np.float32)}
+    obs = {"LST": preds["LST"].copy()}
+
+    Forecast._write_init_times({"LST": (pa, oa)}, preds, obs, 1, n_sp, 1, rows, cols, (1, 2), sparse=False)
+
+    assert np.isnan(pa[0]).all(), "init_time 0 was not written — must stay NaN"
+    assert np.isnan(pa[1, 0]).all(), "lead 0 must stay NaN with lead_offset=1"
+    assert (pa[1, 1] == 1.0).all()
+    assert (pa[2, 1] == 2.0).all()
+    assert np.isnan(pa[3]).all(), "init_time 3 was not written — must stay NaN"
+
+
+def test_write_init_times_sparse_transpose():
+    """Sparse layout is (init_time, lead, pixel): row blocks transpose to (lead, pixel)."""
+    n_sp = 3
+    pa = np.full((1, 2, n_sp), np.nan, dtype=np.float32)
+    oa = pa.copy()
+    preds = {"LST": np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)}  # (pixel, lead)
+    obs = {"LST": preds["LST"].copy()}
+
+    Forecast._write_init_times({"LST": (pa, oa)}, preds, obs, 0, n_sp, 0, None, None, None, sparse=True)
+
+    np.testing.assert_array_equal(pa[0, 0], [1.0, 3.0, 5.0])  # lead 0 across pixels
+    np.testing.assert_array_equal(pa[0, 1], [2.0, 4.0, 6.0])  # lead 1 across pixels
 
 
 # ── _predict_diagnostic ───────────────────────────────────────────────────────
@@ -314,7 +290,7 @@ def test_remap_values_preserved():
 
 def test_predict_diagnostic_output_keys():
     loader = [_diag_batch() for _ in range(2)]
-    preds, obs = Forecast._predict_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS)
+    preds, obs = _run_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS)
     var = DIAG_KEYS[0][1]
     assert var in preds
     assert var in obs
@@ -323,7 +299,7 @@ def test_predict_diagnostic_output_keys():
 def test_predict_diagnostic_output_shape():
     n_batches = 3
     loader = [_diag_batch() for _ in range(n_batches)]
-    preds, obs = Forecast._predict_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS)
+    preds, obs = _run_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS)
     var = DIAG_KEYS[0][1]
     assert preds[var].shape[0] == n_batches * B
 
@@ -331,7 +307,7 @@ def test_predict_diagnostic_output_shape():
 def test_predict_diagnostic_constant_model_output():
     """Model output of constant 2.5 should be reflected in predictions after denorm."""
     loader = [_diag_batch() for _ in range(2)]
-    preds, _ = Forecast._predict_diagnostic(_ConstantDiagModel(value=2.5), torch.device("cpu"), loader, DIAG_TD_KEYS)
+    preds, _ = _run_diagnostic(_ConstantDiagModel(value=2.5), torch.device("cpu"), loader, DIAG_TD_KEYS)
     var = DIAG_KEYS[0][1]
     assert np.allclose(preds[var], 2.5), "Constant model output should be preserved exactly"
 
@@ -341,7 +317,7 @@ def test_predict_diagnostic_normaliser_called():
     n_batches = 3
     loader = [_diag_batch() for _ in range(n_batches)]
     norm = _MockNormaliser()
-    Forecast._predict_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS, normaliser=norm)
+    _run_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS, normaliser=norm)
     # denormalise called for preds AND obs for 1 variable × n_batches × 2 sides
     assert norm.calls == n_batches * 2
 
@@ -361,7 +337,7 @@ def test_rollout_output_shape_is_N_by_horizon():
     loader = [_rollout_batch() for _ in range(n_batches)]
     model = _ZeroIncrementModel()
 
-    preds, obs = Forecast._predict_rollout(
+    preds, obs = _run_rollout(
         model,
         torch.device("cpu"),
         loader,
@@ -386,7 +362,7 @@ def test_rollout_model_called_horizon_times_per_batch():
     loader = [_rollout_batch() for _ in range(n_batches)]
     model = _ZeroIncrementModel()
 
-    Forecast._predict_rollout(
+    _run_rollout(
         model,
         torch.device("cpu"),
         loader,
@@ -415,7 +391,7 @@ def test_rollout_init_state_is_t0_observed():
     loader = [batch]
     model = _ZeroIncrementModel()
 
-    Forecast._predict_rollout(
+    _run_rollout(
         model,
         torch.device("cpu"),
         loader,
@@ -451,7 +427,7 @@ def test_rollout_t0_not_a_forecast_target():
     loader = [b]
     model = _ZeroIncrementModel()
 
-    preds, obs = Forecast._predict_rollout(
+    preds, obs = _run_rollout(
         model,
         torch.device("cpu"),
         loader,
@@ -481,7 +457,7 @@ def test_rollout_autoregressive_state_update():
     loader = [b]
     model = _ConstantIncrementModel()
 
-    preds, _ = Forecast._predict_rollout(
+    preds, _ = _run_rollout(
         model,
         torch.device("cpu"),
         loader,
@@ -504,7 +480,7 @@ def test_rollout_nan_init_state_propagates():
     loader = [b]
     model = _ZeroIncrementModel()
 
-    preds, _ = Forecast._predict_rollout(
+    preds, _ = _run_rollout(
         model,
         torch.device("cpu"),
         loader,
@@ -524,7 +500,7 @@ def test_rollout_nan_init_correct_output_shape():
     b = _rollout_batch()
     b[PROG_KEYS[0]][:, 0, ...] = float("nan")
     loader = [b]
-    preds, obs = Forecast._predict_rollout(
+    preds, obs = _run_rollout(
         _ZeroIncrementModel(),
         torch.device("cpu"),
         loader,
@@ -537,13 +513,14 @@ def test_rollout_nan_init_correct_output_shape():
     assert preds[var].shape == (B, HORIZON)
 
 
-def test_rollout_normaliser_called_per_step():
-    """denormalise must be called for preds and obs at each of the horizon steps."""
+def test_rollout_normaliser_called_per_batch():
+    """denormalise is applied once per (var, side) per batch — on the stacked
+    (B, horizon) tensor, not per rollout step."""
     n_batches = 2
     loader = [_rollout_batch() for _ in range(n_batches)]
     norm = _MockNormaliser()
 
-    Forecast._predict_rollout(
+    _run_rollout(
         _ZeroIncrementModel(),
         torch.device("cpu"),
         loader,
@@ -553,114 +530,6 @@ def test_rollout_normaliser_called_per_step():
         horizon=HORIZON,
     )
 
-    # 1 prognostic var × 2 sides (pred + obs) × horizon steps × n_batches
-    expected_calls = 1 * 2 * HORIZON * n_batches
+    # 1 prognostic var × 2 sides (pred + obs) × n_batches
+    expected_calls = 1 * 2 * n_batches
     assert norm.calls == expected_calls
-
-
-# ── Forecast.predict() end-to-end ─────────────────────────────────────────────
-
-eodata = pytest.importorskip("eodata", reason="eodata not installed")
-
-
-@pytest.fixture
-def tiny_spatial_indices():
-    """4 pixel indices forming a 2×2 patch near the grid centre."""
-    from eodata.grids import EquiangularGrid
-
-    grid = EquiangularGrid(
-        resolution=0.05,
-        latitude_bounds=(80.0, -80.0),
-        longitude_bounds=(-80.0, 80.0),
-        include_ymin=True,
-        include_xmax=True,
-    )
-    n_rows, n_cols = grid.get_shape()
-    # Pick a 2×2 patch in the centre
-    r0, c0 = n_rows // 2, n_cols // 2
-    indices = np.array(
-        [
-            r0 * n_cols + c0,
-            r0 * n_cols + c0 + 1,
-            (r0 + 1) * n_cols + c0,
-            (r0 + 1) * n_cols + c0 + 1,
-        ],
-        dtype=np.int64,
-    )
-    return indices
-
-
-@pytest.fixture
-def forecast_instance(monkeypatch, tiny_spatial_indices):
-    """Forecast with mocked normaliser and a fake loader (no zarr/GPU needed)."""
-    from unittest.mock import patch
-
-    config = {
-        "seviri": {"statistics": "global", "lookback": LOOKBACK, "horizon": HORIZON},
-    }
-
-    # Patch ZScoringNormalizer so no statistics file is needed
-    mock_norm = _MockNormaliser()
-    with patch("deep_lst.evaluation.inference.ZScoringNormalizer", return_value=mock_norm):
-        n_spatial = len(tiny_spatial_indices)  # 4 pixels
-        n_time = 3  # 3 init times
-
-        # Build a loader whose samples cover n_spatial × n_time = 12 items
-        loader = [_rollout_batch(b=n_spatial, t=T) for _ in range(n_time)]
-        model = _ZeroIncrementModel()
-
-        fc = Forecast(
-            model=model,
-            device=torch.device("cpu"),
-            loader=loader,
-            td_keys=ROLLOUT_TD_KEYS,
-            config=config,
-            spatial_indices=tiny_spatial_indices,
-            prediction_mode="RolloutMSE",
-            apply_consistent_mask=False,
-        )
-    return fc, loader, model
-
-
-def test_predict_lead_times_start_at_1h(forecast_instance):
-    """Regression: ForecastResult.lead_times[0] must be 1h after lookback=0 fix."""
-    fc, _, _ = forecast_instance
-    result = fc.predict()
-    ds = result.to_xarray()
-    first_lead = pd.Timedelta(ds["lead_time"].values[0])
-    assert first_lead == pd.Timedelta("1h"), (
-        f"lead_times[0] = {first_lead}. Expected 1h. If 0h, the lead_start_h computation still uses lookback."
-    )
-
-
-def test_predict_lead_times_length(forecast_instance):
-    fc, _, _ = forecast_instance
-    result = fc.predict()
-    assert len(result.lead_times) == HORIZON
-
-
-def test_predict_result_has_correct_n_time(forecast_instance):
-    fc, loader, _ = forecast_instance
-    result = fc.predict()
-    # n_time = total_samples / n_spatial = (n_batches * B) / n_spatial
-    total_samples = len(loader) * B
-    n_spatial = len(fc.unique_spatial_idx)
-    expected_n_time = total_samples // n_spatial
-    assert result.predictions["LST"].shape[0] == expected_n_time
-
-
-def test_predict_result_spatial_shape(forecast_instance):
-    """Spatial dims of ForecastResult must match the local grid bounding box."""
-    fc, _, _ = forecast_instance
-    result = fc.predict()
-    lat_extent = len(result.lats)
-    lon_extent = len(result.lons)
-    assert result.predictions["LST"].shape[2] == lat_extent
-    assert result.predictions["LST"].shape[3] == lon_extent
-
-
-def test_predict_result_lats_lons_finite(forecast_instance):
-    fc, _, _ = forecast_instance
-    result = fc.predict()
-    assert np.all(np.isfinite(result.lats))
-    assert np.all(np.isfinite(result.lons))

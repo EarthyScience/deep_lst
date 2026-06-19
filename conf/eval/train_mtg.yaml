@@ -1,0 +1,7 @@
+# @package _global_
+eval_name: train_mtg
+spatial_indices: mtg
+
+test_dataset:
+  spatial: mtg
+  temporal: test

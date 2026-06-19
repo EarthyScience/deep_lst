@@ -15,7 +15,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from deep_lst.losses import DiagnosticCRPS, DiagnosticMSE, RolloutCRPS, RolloutMSE
+from deep_lst.losses import DiagnosticCRPS, DiagnosticMSE, RolloutCRPS, RolloutIncrementLoss, RolloutMSE
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 
 # ── shared fixtures ───────────────────────────────────────────────────────────
@@ -696,3 +696,238 @@ def test_rollout_mse_anomaly_numerical_baseline():
     print(loss.item())
     # Pin the baseline once it runs cleanly — replace XXX after first run
     assert loss.item() == pytest.approx(0.7986586093902588, abs=1e-7)
+
+
+# ── RolloutIncrementLoss ──────────────────────────────────────────────────────
+# Increment-based, dual-term loss (teacher-forced + rollout) with Smooth L1.
+# The rollout pass replicates inference-time full-window feedback.
+
+
+def _make_rollout_increment(**kwargs):
+    defaults = dict(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=PROG_KEYS,
+        prognostic_out_keys=PROG_OUT_KEYS,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )
+    defaults.update(kwargs)
+    return RolloutIncrementLoss(**defaults)
+
+
+def test_rollout_increment_returns_finite_scalar(rollout_model, rollout_batch):
+    loss = _make_rollout_increment()(_RolloutLitModule(rollout_model), rollout_batch, stage="train")
+    assert isinstance(loss, torch.Tensor)
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
+def test_rollout_increment_nonnegative(rollout_model, rollout_batch):
+    loss = _make_rollout_increment()(_RolloutLitModule(rollout_model), rollout_batch, stage="train")
+    assert loss.item() >= 0.0
+
+
+def test_rollout_increment_backward_detach(rollout_model, rollout_batch):
+    loss = _make_rollout_increment(detach_rollout=True)(_RolloutLitModule(rollout_model), rollout_batch, stage="train")
+    loss.backward()  # must not raise
+
+
+def test_rollout_increment_backward_no_detach(rollout_model, rollout_batch):
+    loss = _make_rollout_increment(detach_rollout=False)(_RolloutLitModule(rollout_model), rollout_batch, stage="train")
+    loss.backward()  # must not raise
+
+
+def test_rollout_increment_all_nan_initial_state_returns_zero(rollout_model, rollout_batch):
+    """No valid pixels at t=0 → loss must be 0 with requires_grad (parallels RolloutMSE)."""
+    b = rollout_batch.clone()
+    b[PROG_KEYS[0]][:, 0, :] = float("nan")
+    loss = _make_rollout_increment()(_RolloutLitModule(rollout_model), b, stage="train")
+    assert loss.item() == 0.0
+    assert loss.requires_grad
+
+
+def test_rollout_increment_numerical_baseline():
+    torch.manual_seed(0)
+    model = MultiModalMLP(
+        in_keys=ROLLOUT_IN_KEYS + PROG_KEYS,
+        out_keys=PROG_OUT_KEYS,
+        config={**MODEL_CONFIG, "hidden_sizes": [16, 8]},
+    )
+    batch = TensorDict(
+        {k: torch.randn(BATCH_SIZE, ROLLOUT_T, 1) for k in ROLLOUT_IN_KEYS + PROG_KEYS},
+        batch_size=[BATCH_SIZE],
+    )
+    loss = RolloutIncrementLoss(
+        in_keys=ROLLOUT_IN_KEYS,
+        prognostic_keys=PROG_KEYS,
+        prognostic_out_keys=PROG_OUT_KEYS,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )(_RolloutLitModule(model), batch, stage="train")
+    assert loss.item() == pytest.approx(0.21680456399917603, abs=1e-7)
+
+
+# ── full-window feedback characterization (lookback>0, spatial fixture) ───────
+# At t=1 no feedback has happened (rollout state = true initial, history = true
+# window), so the teacher-forced and rollout increment terms must be identical;
+# at t>=2 the fed-back predicted state makes them diverge. This pins the feedback
+# wiring that mirrors inference.py::_predict_rollout.
+
+FB_LOOKBACK = 2
+FB_FORCE = [("era5", "t2m")]
+FB_PROG = [("seviri", "LST")]
+FB_POUT = [("seviri", "LST_pred")]
+FB_CTX = [("era5", "t2m_ctx"), ("seviri", "LST_ctx")]
+FB_FEAT = {("era5", "t2m_ctx"): FB_LOOKBACK * 2, ("seviri", "LST_ctx"): FB_LOOKBACK * 2}
+
+
+def _run_feedback(horizon):
+    torch.manual_seed(0)
+    model = MultiModalMLP(
+        in_keys=FB_FORCE + FB_PROG + FB_CTX,
+        out_keys=FB_POUT,
+        config={"activation": "relu", "hidden_sizes": [16, 8], "dropout": 0.0},
+        in_feature_sizes=FB_FEAT,
+    )
+    t_total = FB_LOOKBACK + horizon + 1
+    batch = TensorDict(
+        {k: torch.randn(2, t_total, 2, 2, 1) for k in FB_FORCE + FB_PROG},
+        batch_size=[2],
+    )
+    cfg = {
+        "train_dataset": {
+            "era5": {"context_vars": ["t2m"], "horizon": horizon, "lookback": FB_LOOKBACK},
+            "seviri": {"context_vars": ["LST"], "horizon": horizon, "lookback": FB_LOOKBACK},
+        }
+    }
+
+    class _Lit:
+        def __init__(self):
+            self.model = model
+            self.config = cfg
+            self.logged = {}
+
+        def log(self, name, value, **kw):
+            self.logged[name] = value
+
+    loss_fn = RolloutIncrementLoss(
+        in_keys=FB_FORCE + FB_CTX,
+        prognostic_keys=FB_PROG,
+        prognostic_out_keys=FB_POUT,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )
+    lit = _Lit()
+    loss = loss_fn(lit, batch, stage="train")
+    return loss, lit.logged
+
+
+def test_rollout_increment_feedback_identical_at_first_step():
+    _, logged = _run_feedback(horizon=1)
+    assert torch.isclose(logged["train_loss_increment_tf_LST"], logged["train_loss_increment_ro_LST"])
+
+
+def test_rollout_increment_feedback_diverges_after_first_step():
+    _, logged = _run_feedback(horizon=2)
+    assert not torch.isclose(logged["train_loss_increment_tf_LST"], logged["train_loss_increment_ro_LST"])
+
+
+def test_rollout_increment_feedback_backward_succeeds():
+    loss, _ = _run_feedback(horizon=2)
+    loss.backward()  # gradients flow through fed-back states; must not raise
+
+
+def test_rollout_mse_feedback_runs_finite():
+    """The base RolloutLoss now feeds predictions back into the lookback context window
+    (inference-consistent). With lookback>0 the rollout must run finite and backprop —
+    exercises _init_history / _build_feedback_step_td / _update_history on the base path."""
+    torch.manual_seed(0)
+    horizon = 2
+    model = MultiModalMLP(
+        in_keys=FB_FORCE + FB_PROG + FB_CTX,
+        out_keys=FB_POUT,
+        config={"activation": "relu", "hidden_sizes": [16, 8], "dropout": 0.0},
+        in_feature_sizes=FB_FEAT,
+    )
+    t_total = FB_LOOKBACK + horizon + 1
+    batch = TensorDict(
+        {k: torch.randn(2, t_total, 2, 2, 1) for k in FB_FORCE + FB_PROG},
+        batch_size=[2],
+    )
+    cfg = {
+        "train_dataset": {
+            "era5": {"context_vars": ["t2m"], "horizon": horizon, "lookback": FB_LOOKBACK},
+            "seviri": {"context_vars": ["LST"], "horizon": horizon, "lookback": FB_LOOKBACK},
+        }
+    }
+
+    class _Lit:
+        def __init__(self):
+            self.model = model
+            self.config = cfg
+
+        def log(self, *a, **k):
+            pass
+
+    loss = RolloutMSE(
+        in_keys=FB_FORCE + FB_CTX,
+        prognostic_keys=FB_PROG,
+        prognostic_out_keys=FB_POUT,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+    )(_Lit(), batch, stage="train")
+    assert torch.isfinite(loss)
+    loss.backward()  # gradients flow through the fed-back context; must not raise
+
+
+def test_rollout_increment_nan_prior_state_finite_gradients():
+    """A NaN prognostic prior state mid-window must not poison gradients (0 * NaN).
+
+    The teacher-forced pass drops those pixels for that step (they have no increment
+    target anyway), so loss AND all parameter gradients must stay finite. Regression
+    test for the smoke-test divergence (finite loss but NaN gradient).
+    """
+    torch.manual_seed(0)
+    horizon = 3
+    model = MultiModalMLP(
+        in_keys=FB_FORCE + FB_PROG + FB_CTX,
+        out_keys=FB_POUT,
+        config={"activation": "relu", "hidden_sizes": [16, 8], "dropout": 0.0},
+        in_feature_sizes=FB_FEAT,
+    )
+    t_total = FB_LOOKBACK + horizon + 1
+    batch = TensorDict(
+        {k: torch.randn(2, t_total, 2, 2, 1) for k in FB_FORCE + FB_PROG},
+        batch_size=[2],
+    )
+    batch[("seviri", "LST")][:, FB_LOOKBACK + 1] = float("nan")  # NaN prior state mid-window
+    batch[("seviri", "LST")][:, FB_LOOKBACK] = torch.randn(2, 2, 2, 1)  # keep t0 finite (spatial mask)
+    cfg = {
+        "train_dataset": {
+            "era5": {"context_vars": ["t2m"], "horizon": horizon, "lookback": FB_LOOKBACK},
+            "seviri": {"context_vars": ["LST"], "horizon": horizon, "lookback": FB_LOOKBACK},
+        }
+    }
+
+    class _Lit:
+        def __init__(self):
+            self.model = model
+            self.config = cfg
+
+        def log(self, *a, **k):
+            pass
+
+    loss_fn = RolloutIncrementLoss(
+        in_keys=FB_FORCE + FB_CTX,
+        prognostic_keys=FB_PROG,
+        prognostic_out_keys=FB_POUT,
+        diagnostic_keys=[],
+        diagnostic_out_keys=[],
+        inc_variances={"LST": 0.0815},
+    )
+    loss = loss_fn(_Lit(), batch, stage="train")
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None), (
+        "NaN/inf in gradients — a NaN prior state poisoned the backward"
+    )

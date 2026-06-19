@@ -3,7 +3,7 @@ import os
 import hydra
 import numpy as np
 import torch
-from eodata.dataset import deep_to
+import zarr
 from eodata.eo_zarr import EOZarrStore
 from eodata.schemes.torch.base import VariableType
 from eodata.statistics import StandardStatisticsMetric
@@ -96,7 +96,7 @@ def calculate_all_statistics(
 
     use_tqdm = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
     for batch in tqdm(dataloader, disable=not use_tqdm, smoothing=0.005):
-        batch = deep_to(batch, device=device, non_blocking=True)
+        batch = batch.to(device=device, non_blocking=True)
         for key in metrics:
             if key in batch:
                 data = batch[key]
@@ -154,8 +154,9 @@ def main(cfg: DictConfig) -> None:
     }
 
     store = EOZarrStore(config["store_path"], mode="r+")
+    spatial_idx = zarr.open_group(config["store_path"], mode="r")["spatial_idx"][:]
     indices = load_samples(
-        path=paths.spatial_indices_path(modality, config["spatial"]),
+        spatial_idx=spatial_idx,
         temporal_indices_path=paths.temporal_indices_path(config["temporal"]),
     )
 

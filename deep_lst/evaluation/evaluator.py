@@ -2,12 +2,17 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
-import shapely
 import xarray as xr
-from eodata.grids import build_seviri_grid
+import zarr
 
-from deep_lst.evaluation.metrics import compute_grouped_scores, compute_scores, to_init_time, to_valid_time
-from deep_lst.evaluation.spatial import build_local_grid
+from deep_lst.evaluation.metrics import (
+    compute_grouped_scores,
+    compute_rmse_sufficient_stats,
+    compute_scores,
+    to_init_time,
+    to_valid_time,
+)
+from deep_lst.evaluation.spatial import lookup_pixel_coords
 from deep_lst.utils import ExperimentPaths
 
 _BASELINE_REGISTRY: dict[str, tuple[callable, str]] = {
@@ -114,22 +119,33 @@ class Evaluator(ABC):
         if not path.exists():
             raise FileNotFoundError(f"Eval indices not found for {self.eval_name}: {path}")
         indices_ds = np.load(path)
-        class_keys = ["kg_class", "kg_major"]
+        class_keys = ["kg_class", "kg_major", "kg_classes", "biome_classes", "modis_lc_classes", "ecoregion_classes"]
+        if self.eval_name.startswith("train_"):
+            store_token = self.eval_name.removeprefix("train_")
+        else:
+            store_token = self.eval_name if self.eval_name.startswith("eval_") else f"eval_{self.eval_name}"
+        store_path = self.paths.sampled_store_path("seviri", store_token)
 
         coords = {}
         if "pixel" in ds.dims:
-            seviri_grid = build_seviri_grid()
-            points = shapely.points(ds["lon"].values, ds["lat"].values)
-            forecast_src = np.asarray(seviri_grid.centers_tree.nearest(geometry=points))
-            npz_src = indices_ds["src_indices"]
-            npz_pos = {int(s): i for i, s in enumerate(npz_src)}
-            lookup = np.array([npz_pos[int(s)] for s in forecast_src], dtype=np.int64)
+            zg = zarr.open_group(store_path, mode="r")
+            zarr_spatial_idx = zg["spatial_idx"][:]
+            zarr_lats = zg["lat"][:]
+            zarr_lons = zg["lon"][:]
+            zarr_row_by_coord = {(float(la), float(lo)): i for i, (la, lo) in enumerate(zip(zarr_lats, zarr_lons))}
+            forecast_rows = np.array(
+                [zarr_row_by_coord[(float(la), float(lo))] for la, lo in zip(ds["lat"].values, ds["lon"].values)],
+                dtype=np.int64,
+            )
+            target_spatial = zarr_spatial_idx[forecast_rows]
+            npz_pos_by_spatial = {int(s): i for i, s in enumerate(indices_ds["src_indices"])}
+            npz_rows = np.array([npz_pos_by_spatial[int(s)] for s in target_spatial], dtype=np.int64)
             for key in class_keys:
                 if key in indices_ds.files:
-                    coords[key] = (("pixel",), indices_ds[key][lookup])
+                    coords[key] = (("pixel",), indices_ds[key][npz_rows])
         else:
-            src_indices = indices_ds["src_indices"]
-            _, _, local_rows, local_cols, grid_shape = build_local_grid(src_indices)
+            src_indices = np.unique(indices_ds["src_indices"])
+            _, _, local_rows, local_cols, grid_shape = lookup_pixel_coords(store_path, src_indices)
             if grid_shape != (ds.sizes["lat"], ds.sizes["lon"]):
                 raise ValueError(
                     f"Grid shape mismatch: expected {grid_shape}, got {(ds.sizes['lat'], ds.sizes['lon'])}"
@@ -197,6 +213,55 @@ class Evaluator(ABC):
                 for q, ql in zip(quantiles, q_labels)
             }
         )
+
+    def bootstrap_summarise(
+        self,
+        stats: xr.Dataset,
+        metric: str = "rmse",
+        block: int = 24,
+        n_boot: int = 500,
+        quantiles=(0.05, 0.50, 0.95),
+        seed: int = 0,
+    ) -> xr.Dataset:
+        """Block-bootstrap CI for a pooled metric over init_time, per lead_time.
+
+        `stats` carries additive sufficient statistics (se_sum, count) with dims
+        (init_time, lead_time) — see metrics.compute_rmse_sufficient_stats. We moving-block
+        resample init_time (blocks of `block` consecutive inits, to respect temporal
+        autocorrelation — block=1 recovers the iid/climpred bootstrap), pool each resample via
+        sqrt(Σse_sum / Σcount), and take percentiles over the bootstrap curves.
+
+        Returns the SAME schema as `summarise` ({metric}_q05/q50/q95 over lead_time) so the plots
+        are unchanged. q50 is the point estimate (pooled over ALL inits); the outer quantiles are
+        bootstrap percentiles. NOTE: `block` is in init-INDEX units, so its wall-clock span depends
+        on the init spacing (e.g. 6-hourly inits → block=4 ≈ 1 day).
+        """
+        se = stats["se_sum"].transpose("init_time", "lead_time").values
+        cnt = stats["count"].transpose("init_time", "lead_time").values
+        n_init = se.shape[0]
+
+        def pooled(rows):
+            with np.errstate(invalid="ignore", divide="ignore"):
+                return np.sqrt(se[rows].sum(0) / cnt[rows].sum(0))
+
+        block = min(block, n_init)
+        n_blocks = int(np.ceil(n_init / block))
+        starts = np.arange(n_init - block + 1)
+        rng = np.random.default_rng(seed)
+        curves = np.empty((n_boot, se.shape[1]))
+        for b in range(n_boot):
+            rows = np.concatenate([np.arange(s, s + block) for s in rng.choice(starts, n_blocks)])[:n_init]
+            curves[b] = pooled(rows)
+
+        point = pooled(np.arange(n_init))
+        data_vars = {}
+        for q in quantiles:
+            label = f"{metric}_q{int(q * 100):02d}"
+            if abs(q - 0.5) < 1e-9:
+                data_vars[label] = ("lead_time", point)
+            else:
+                data_vars[label] = ("lead_time", np.nanpercentile(curves, q * 100, axis=0))
+        return xr.Dataset(data_vars, coords={"lead_time": stats["lead_time"].values})
 
 
 class EvaluatorDiagnostics(Evaluator):
@@ -291,6 +356,7 @@ class EvaluatorVerification(Evaluator):
         lead_times = self.forecast_ds["lead_time"].values
 
         self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
+        self.rmse_stats = compute_rmse_sufficient_stats(self.pred, self.obs)
 
         self.baseline_scores = None
         self.baseline_full = None

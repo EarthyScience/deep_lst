@@ -2,6 +2,7 @@ assets/
 results/
 
 wandb/
+nas/hpo.db
 
 
 scripts/out
@@ -18,6 +19,7 @@ deep_lst/raw
 seed.md
 run_inference.log
 run_inference_setup.log
+run_inference_finalize.log
 finetune.log
 
 # Python-generated files

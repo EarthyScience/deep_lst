@@ -12,7 +12,9 @@ class ExperimentPaths:
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
     plots_root: Path = field(default_factory=lambda: Path("./plots"))
-    stores_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/wegen-stores-new/"))
+    stores_root: Path = field(
+        default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/wegen-stores/sampled_stores/")
+    )
     # --- directories ---
 
     def experiment_dir(self, experiment: str) -> Path:
@@ -98,6 +100,8 @@ class ExperimentPaths:
 
     @staticmethod
     def _eval_fname(eval_name: str) -> str:
+        if eval_name.startswith("train_"):
+            return f"eval_{eval_name.removeprefix('train_')}"
         return eval_name if eval_name.startswith("eval_") else f"eval_{eval_name}"
 
     def persistence_path(self, eval_name: str) -> Path:

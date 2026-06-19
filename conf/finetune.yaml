@@ -7,6 +7,15 @@ from_run: ???
 checkpoint: best
 
 model:
+  train_dataset:
+    seviri:
+      prognostics: [LST]
+  val_dataset:
+    seviri:
+      prognostics: [LST]
+  test_dataset:
+    seviri:
+      prognostics: [LST]
   learning_rate: 5e-5
   warmup_steps: 0
   # detach_rollout: false

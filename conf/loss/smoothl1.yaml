@@ -1,0 +1,7 @@
+# @package _global_
+
+# Smooth L1 (Huber with beta=1): quadratic for |err|<1, linear beyond.
+_loss: smoothl1
+
+model:
+  step_loss: RolloutSmoothL1

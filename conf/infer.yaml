@@ -13,19 +13,19 @@ spatial_indices: ???
 # --- optional inference flags ---
 best: false               # load best.ckpt instead of last.ckpt
 no_consistent_mask: true
-inference_horizon: 72   # required: rollout horizon in hours (e.g. 72). Use trained horizon value to reproduce training-length forecasts.
-n_chunks: null            # distributed inference: total number of GPU array jobs (or read from SLURM_ARRAY_TASK_COUNT)
-chunk_offset: null        # distributed inference: 0-indexed chunk for this job (or read from SLURM_ARRAY_TASK_ID)
+inference_horizon: 72   # rollout horizon in hours. Use the trained value to reproduce training-length forecasts.
 
 test_dataset:
+  init_hours: [0, 6, 12, 18]   # thin init times to these UTC hours (6-hourly); set null for every hour
   era5:
     preload: true
   seviri:
     preload: true
 
 analysis:
-  batch_size: 8192
+  batch_size: 24768
   num_workers: 16
+  prefetch_factor: 4
 
 hydra:
   run:

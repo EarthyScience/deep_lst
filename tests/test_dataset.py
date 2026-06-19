@@ -22,12 +22,6 @@ class MockReader:
         )
 
 
-def _write_spatial(tmp_path, mapping, src_indices):
-    path = tmp_path / "spatial.npz"
-    np.savez(path, mapping=np.asarray(mapping, dtype=np.int64), src_indices=np.asarray(src_indices, dtype=np.int64))
-    return path
-
-
 def _write_temporal(tmp_path, values):
     path = tmp_path / "temporal.npz"
     np.savez(path, time_indices=np.array(values, dtype=np.int64))
@@ -35,61 +29,28 @@ def _write_temporal(tmp_path, values):
 
 
 def make_indices(n_spatial: int, n_time: int) -> np.ndarray:
-    """Mesh spatial [0..n_spatial) × time [0..n_time), return (N,2) array."""
+    """Time-major mesh: row i*n_spatial + j = (spatial j, time i), matching load_samples."""
     space = np.arange(n_spatial, dtype=np.int64)
     time = np.arange(n_time, dtype=np.int64)
-    s, t = np.meshgrid(space, time, indexing="ij")
+    t, s = np.meshgrid(time, space, indexing="ij")
     return np.stack([s.ravel(), t.ravel()], axis=1)
 
 
-def test_load_samples_sorted(tmp_path):
-    mapping_sorted = src_indices = [10, 20, 40, 50]
-    spatial = _write_spatial(tmp_path, mapping_sorted, src_indices)
-    temporal = _write_temporal(tmp_path, [0, 1, 2])  # single time index for simplicity
-
-    samples = load_samples(spatial, temporal_indices_path=temporal)
-
-    # 4 pixels × 3 timesteps, space-first meshgrid
-    assert samples.shape == (4 * 3, 2)
-    pixel_indices = samples[:, 0].reshape(4, 3)[:, 0]
-    assert pixel_indices.tolist() == mapping_sorted
-
-
-def test_load_samples_unsorted(tmp_path):
-    mapping_unsorted = src_indices = [50, 10, 40, 20]
-    sorted_mapping = [10, 20, 40, 50]
-    spatial = _write_spatial(tmp_path, mapping_unsorted, src_indices)
-    temporal = _write_temporal(tmp_path, [0, 1, 2])  # single time index for simplicity
-
-    samples = load_samples(spatial, temporal_indices_path=temporal)
-
-    # 4 pixels × 3 timesteps, space-first meshgrid
-    assert samples.shape == (4 * 3, 2)
-    pixel_indices = samples[:, 0].reshape(4, 3)[:, 0]
-    assert pixel_indices.tolist() == sorted_mapping
-
-
-def test_load_samples_crossmodal_alignment(tmp_path):
-    spatial_sev = _write_spatial(tmp_path, [50, 10, 40, 20], [50, 10, 40, 20])
-    spatial_era = _write_spatial(tmp_path, [500, 100, 400, 200], [50, 10, 40, 20])
+def test_load_samples_meshgrid_layout(tmp_path):
+    """load_samples returns (n_time * n_spatial, 2) in time-major order:
+    indices[i*n_spatial + j] = (spatial_idx[j], time_idx[i])."""
     temporal = _write_temporal(tmp_path, [0, 1, 2])
+    spatial_idx = np.array([10, 20, 40, 50], dtype=np.int64)
 
-    seviri_samples = load_samples(spatial_sev, temporal_indices_path=temporal)
-    era5_samples = load_samples(spatial_era, temporal_indices_path=temporal)
+    samples = load_samples(spatial_idx, temporal_indices_path=str(temporal))
 
-    sev_src_sorted = np.sort(np.load(spatial_sev)["src_indices"])
-    era_src_sorted = np.sort(np.load(spatial_era)["src_indices"])
-
-    assert np.array_equal(sev_src_sorted, era_src_sorted)
-    assert np.array_equal(seviri_samples[:, 0], era5_samples[:, 0])
-
-
-def test_load_indices_missing_key_raises(tmp_path):
-    path = tmp_path / "bad_spatial.npz"
-    np.savez(path, wrong_key=np.array([1, 2, 3]))
-    temporal = _write_temporal(tmp_path, [1])
-    with pytest.raises(KeyError, match="mapping"):
-        load_samples(path, temporal_indices_path=temporal)
+    assert samples.shape == (3 * 4, 2)
+    # First n_spatial entries are time 0 across all pixels; then time 1; etc.
+    assert (samples[0:4, 1] == 0).all()
+    assert (samples[4:8, 1] == 1).all()
+    assert (samples[8:12, 1] == 2).all()
+    # Pixel column cycles through [10, 20, 40, 50] within each init_time block.
+    assert (samples[:, 0].reshape(3, 4) == np.array([10, 20, 40, 50])).all()
 
 
 def test_unimodal_len():
@@ -107,7 +68,7 @@ def test_unimodal_getitem_returns_tensordict():
 
 
 def test_unimodal_getitem_forwards_correct_indices():
-    indices = make_indices(2, 2)  # [[0,0],[0,1],[1,0],[1,1]]
+    indices = make_indices(2, 2)  # time-major: [[0,0],[1,0],[0,1],[1,1]]
     reader = MockReader()
     ds = UnimodalDataset(reader=reader, indices=indices)
 
@@ -140,23 +101,25 @@ def test_unimodal_single_sample():
     assert reader.calls == [(7, 42)]
 
 
-def test_multimodal_len():
-    indices = {
-        "era5": make_indices(3, 4),
-        "seviri": make_indices(3, 4),
-    }
+def _multimodal_simple(n_pixels: int, n_time: int):
+    """Build minimal MultimodalDataset args for (n_pixels × n_time) samples with
+    identity spatial_lookups (each modality's id == seviri position)."""
+    indices = make_indices(n_pixels, n_time)
+    identity = np.arange(n_pixels, dtype=np.int64)
+    spatial_lookups = {"era5": identity, "seviri": identity}
     readers = {"era5": MockReader(), "seviri": MockReader()}
-    ds = MultimodalDataset(reader=readers, indices=indices)
+    return readers, indices, spatial_lookups, n_pixels
+
+
+def test_multimodal_len():
+    readers, indices, lookups, n_spatial = _multimodal_simple(3, 4)
+    ds = MultimodalDataset(reader=readers, indices=indices, spatial_lookups=lookups, n_spatial=n_spatial)
     assert len(ds) == 12
 
 
 def test_multimodal_getitem_returns_tensordict_with_all_modalities():
-    indices = {
-        "era5": make_indices(2, 2),
-        "seviri": make_indices(2, 2),
-    }
-    readers = {"era5": MockReader(), "seviri": MockReader()}
-    ds = MultimodalDataset(reader=readers, indices=indices)
+    readers, indices, lookups, n_spatial = _multimodal_simple(2, 2)
+    ds = MultimodalDataset(reader=readers, indices=indices, spatial_lookups=lookups, n_spatial=n_spatial)
 
     sample = ds[0]
     assert isinstance(sample, TensorDict)
@@ -164,46 +127,56 @@ def test_multimodal_getitem_returns_tensordict_with_all_modalities():
     assert "seviri" in sample
 
 
-def test_multimodal_each_reader_called_with_its_own_indices():
-    era5_indices = make_indices(2, 2)  # [[0,0],[0,1],[1,0],[1,1]]
-    seviri_indices = make_indices(2, 2)
-
-    era5_reader = MockReader(out_shape=(4,))
-    seviri_reader = MockReader(out_shape=(8,))
-
+def test_multimodal_readers_called_via_spatial_lookup():
+    """Each modality's reader receives the spatial id from spatial_lookups[modality],
+    keyed on the shared seviri position. This is the fix for the cardinality-mismatch
+    bug: SEVIRI and ERA5 may live in different spatial id spaces, joined by per-position
+    mapping rather than zipped by raw idx."""
+    n_pixels, n_time = 3, 4
+    indices = make_indices(n_pixels, n_time)
+    spatial_lookups = {
+        "seviri": np.arange(n_pixels, dtype=np.int64),
+        "era5": np.array([0, 10, 20], dtype=np.int64),  # different space, position-aligned
+    }
+    era5_reader, seviri_reader = MockReader(), MockReader()
     ds = MultimodalDataset(
         reader={"era5": era5_reader, "seviri": seviri_reader},
-        indices={"era5": era5_indices, "seviri": seviri_indices},
+        indices=indices,
+        spatial_lookups=spatial_lookups,
+        n_spatial=n_pixels,
     )
 
-    ds[2]  # third row: spatial=1, time=0
-
-    assert era5_reader.calls[-1] == (int(era5_indices[2, 0]), int(era5_indices[2, 1]))
-    assert seviri_reader.calls[-1] == (int(seviri_indices[2, 0]), int(seviri_indices[2, 1]))
+    # Time-major: idx=5 → seviri_pos = 5 % 3 = 2, time = 5 // 3 = 1
+    # → seviri reader gets (2,1), era5 reader gets (lookup[2]=20, 1)
+    ds[5]
+    assert seviri_reader.calls[-1] == (2, 1)
+    assert era5_reader.calls[-1] == (20, 1)
 
 
 def test_multimodal_single_modality():
-    indices = {"era5": make_indices(4, 1)}
-    readers = {"era5": MockReader()}
-    ds = MultimodalDataset(reader=readers, indices=indices)
+    indices = make_indices(4, 1)
+    lookups = {"seviri": np.arange(4, dtype=np.int64)}
+    readers = {"seviri": MockReader()}
+    ds = MultimodalDataset(reader=readers, indices=indices, spatial_lookups=lookups, n_spatial=4)
 
     assert len(ds) == 4
     sample = ds[0]
-    assert "era5" in sample
+    assert "seviri" in sample
 
 
-def test_multimodal_indices_consistent_across_modalities():
-    """Document the invariant: all modalities must share (spatial, time) per idx.
-    MultimodalDataset relies on this — see __getitem__ where the top-level
-    spatial_idx/time_idx are sourced from a single reference modality."""
-    indices = {
-        "seviri": np.array([[10, 100], [20, 200]]),
-        "era5": np.array([[10, 100], [20, 200]]),
-    }
-    readers = {"seviri": MockReader(), "era5": MockReader()}
-    ds = MultimodalDataset(reader=readers, indices=indices)
+def test_multimodal_time_idx_and_spatial_idx_properties():
+    """Dataset exposes its true coverage via .time_idx and .spatial_idx — these are
+    the single source of truth used by setup/inference to size the forecast.zarr."""
+    readers, indices, lookups, n_spatial = _multimodal_simple(3, 4)
+    ds = MultimodalDataset(reader=readers, indices=indices, spatial_lookups=lookups, n_spatial=n_spatial)
 
-    for idx in range(len(ds)):
-        ref = ds.indices["seviri"][idx]
-        for m in ds.readers:
-            assert np.array_equal(ds.indices[m][idx], ref), f"Modality {m} diverges from seviri at idx={idx}"
+    assert np.array_equal(ds.spatial_idx, np.array([0, 1, 2]))
+    assert np.array_equal(ds.time_idx, np.array([0, 1, 2, 3]))
+
+
+def test_unimodal_time_idx_and_spatial_idx_properties():
+    indices = make_indices(3, 4)
+    ds = UnimodalDataset(reader=MockReader(), indices=indices)
+
+    assert np.array_equal(ds.spatial_idx, np.array([0, 1, 2]))
+    assert np.array_equal(ds.time_idx, np.array([0, 1, 2, 3]))

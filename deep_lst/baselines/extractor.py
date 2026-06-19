@@ -10,7 +10,7 @@ import pandas as pd
 import xarray as xr
 import zarr
 
-from deep_lst.evaluation.spatial import build_local_grid
+from deep_lst.evaluation.spatial import lookup_pixel_coords
 from deep_lst.utils import ExperimentPaths
 
 _SPARSE_FILL_THRESHOLD = 0.01
@@ -69,19 +69,17 @@ class BaselineExtractor(ABC):
         self.n_pixels = self.var.shape[0]
 
     def _resolve_spatial_layout(self):
-        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = build_local_grid(self.spatial_idx)
+        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = lookup_pixel_coords(
+            self.zarr_store, self.spatial_idx
+        )
         fill = self.n_pixels / (self.grid_shape[0] * self.grid_shape[1])
         self.sparse = fill < _SPARSE_FILL_THRESHOLD
         print(f"Spatial: {self.n_pixels} pixels, fill={fill:.4f} → {'sparse' if self.sparse else 'dense'} output")
 
     def _make_dataset(self, baseline: np.ndarray, test_timestamps: pd.DatetimeIndex, attrs: dict) -> xr.Dataset:
         if self.sparse:
-            if "lat" in self.zarr_store and "lon" in self.zarr_store:
-                pixel_lats = self.zarr_store["lat"][:]
-                pixel_lons = self.zarr_store["lon"][:]
-            else:
-                pixel_lats = self.lats[self.local_rows]
-                pixel_lons = self.lons[self.local_cols]
+            pixel_lats = self.lats[self.local_rows]
+            pixel_lons = self.lons[self.local_cols]
             return xr.Dataset(
                 {self.var_name: (["valid_time", "pixel"], baseline)},
                 coords={
@@ -243,6 +241,19 @@ class Era5Extractor(BaselineExtractor):
     def run(self, store: str):
         super().run(store, modality="era5")
 
+    def _resolve_spatial_layout(self):
+        # self.spatial_idx is in the SEVIRI index space (npz src_indices). The SEVIRI zarr's
+        # spatial_idx + lat/lon match that space; the ERA5 zarr's don't (its spatial_idx is in
+        # ERA5 flat space). For MTG these coincide because both zarrs are MTG-keyed; for equiang
+        # eval regions they don't — read the layout from the SEVIRI side.
+        seviri_store = zarr.open(str(self.paths.sampled_store_path("seviri", self.store_key)), mode="r")
+        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = lookup_pixel_coords(
+            seviri_store, self.spatial_idx
+        )
+        fill = self.n_pixels / (self.grid_shape[0] * self.grid_shape[1])
+        self.sparse = fill < _SPARSE_FILL_THRESHOLD
+        print(f"Spatial: {self.n_pixels} pixels, fill={fill:.4f} → {'sparse' if self.sparse else 'dense'} output")
+
     def _resolve_store(self):
         idx_path = self.paths.spatial_indices_path("era5", self.store_key)
 
@@ -261,11 +272,8 @@ class Era5Extractor(BaselineExtractor):
         skt_mapped = skt[seviri_to_era5_rank, :]  # (n_seviri, n_test)
 
         # --- Remap to SEVIRI spatial layout ---
-        self.spatial_idx = np.unique(self.src_indices)
+        # first_index[i] = position in src_indices where unique_seviri[i] first appears,
+        # so skt_mapped[first_index[i]] is the SKT for unique_seviri[i].
+        self.spatial_idx, first_index = np.unique(self.src_indices, return_index=True)
         self.n_pixels = len(self.spatial_idx)
-
-        # pixel_positions[i] = rank of self.src_indices in unique_seviri
-        _, pixel_positions = np.unique(self.src_indices, return_inverse=True)
-
-        # skt_pixels[i, :] = SKT for unique_seviri[i] — shape (n_unique, n_test)
-        self.var = skt_mapped[pixel_positions, :]
+        self.var = skt_mapped[first_index, :]

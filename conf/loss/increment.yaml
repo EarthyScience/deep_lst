@@ -1,0 +1,8 @@
+# @package _global_
+
+# Increment-based dual-term loss: teacher-forced + full-window-feedback rollout,
+# Smooth L1 (Huber beta=1) on the standardized increment. See RolloutIncrementLoss.
+_loss: increment
+
+model:
+  step_loss: RolloutIncrementLoss

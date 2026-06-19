@@ -1,0 +1,21 @@
+# @package _global_
+
+_horizon: h48
+
+train_dataset:
+  era5:
+    horizon: 48
+  seviri:
+    horizon: 48
+
+val_dataset:
+  era5:
+    horizon: 48
+  seviri:
+    horizon: 48
+
+test_dataset:
+  era5:
+    horizon: 48
+  seviri:
+    horizon: 48

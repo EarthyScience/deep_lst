@@ -1,0 +1,11 @@
+{
+  "val_loss": 0.051307257264852524,
+  "params": {
+    "learning_rate": 0.0001581828637548529,
+    "dropout": 0.051125402233324825,
+    "weight_decay": 0.0024602431712790725,
+    "hidden_sizes_idx": 3,
+    "batch_size": 32
+  },
+  "hidden_sizes": [2048, 1024, 512, 512, 256]
+}

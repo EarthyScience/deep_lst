@@ -85,6 +85,25 @@ def nse(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
     return 1.0 - ss_res / ss_tot
 
 
+@_register("var_ratio")
+def var_ratio(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
+    """Variability error: ratio of simulated to observed std, sigma_sim / sigma_obs.
+    This is the alpha term of the NSE/KGE (Gupta et al. 2009) decomposition.
+    1 = correct spread, <1 = under-dispersed, >1 = over-dispersed.
+    """
+    return pred.std(dim=dim, skipna=True) / obs.std(dim=dim, skipna=True)
+
+
+@_register("norm_bias")
+def norm_bias(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
+    """Unconditional (standardised) bias: (mean_sim - mean_obs) / sigma_obs.
+    This is the beta term of the NSE/KGE (Gupta et al. 2009) decomposition.
+    0 = unbiased; sign follows the raw bias.
+    """
+    bias = pred.mean(dim=dim, skipna=True) - obs.mean(dim=dim, skipna=True)
+    return bias / obs.std(dim=dim, skipna=True)
+
+
 def to_valid_time(da: xr.Dataset, lead_time: str | np.timedelta64 | None = None) -> xr.DataArray:
     """Select a lead time and convert init_time → valid_time."""
     lt_delta = np.timedelta64(pd.Timedelta(lead_time).value, "ns")
@@ -126,6 +145,29 @@ def compute_scores(
             data_vars[name] = METRIC_REGISTRY[name](pred, obs, dim=dim)
 
     return xr.Dataset(data_vars)
+
+
+def compute_rmse_sufficient_stats(
+    pred: xr.DataArray,
+    obs: xr.DataArray,
+) -> xr.Dataset:
+    """Per-(init_time, lead_time) additive sufficient statistics for a pooled-RMSE bootstrap.
+
+    Reduces only the SPACE dims (lat/lon/pixel), keeping init_time and lead_time. Returns:
+      - ``se_sum``: sum of squared error over space (NaNs skipped),
+      - ``count``:  number of valid (non-NaN) pixels.
+    A pooled RMSE over any set of init_times is then ``sqrt(se_sum.sum / count.sum)`` — which is
+    what the block bootstrap resamples over. Keeping the sums (not per-init RMSE) is what lets the
+    bootstrap re-pool correctly over resampled init_times.
+    """
+    se = (obs - pred) ** 2
+    space_dims = [d for d in _REDUCTION_DIMS["space"] if d in se.dims]
+    return xr.Dataset(
+        {
+            "se_sum": se.sum(dim=space_dims, skipna=True),
+            "count": se.notnull().sum(dim=space_dims),
+        }
+    )
 
 
 def compute_grouped_scores(
@@ -178,6 +220,9 @@ def compute_class_scores(
 
     class_bins = np.unique(pred[class_coord].values)
     class_bins = class_bins[class_bins != -1]  # Exclude invalid class bin if present
+    if len(class_bins) == 0:
+        # No valid class bins (e.g. anomaly path with all-NaN pixels filtering everything to -1).
+        return xr.Dataset()
     slices = []
     for class_bin in class_bins:
         pred_class = pred.where(pred.coords[class_coord] == class_bin)

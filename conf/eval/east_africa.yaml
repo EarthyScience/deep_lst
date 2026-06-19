@@ -1,7 +1,0 @@
-# @package _global_
-eval_name: east_africa
-spatial_indices: eval_east_africa
-
-test_dataset:
-  spatial: eval_east_africa
-  temporal: test
