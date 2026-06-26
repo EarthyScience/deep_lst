@@ -5,19 +5,32 @@ import torch.nn as nn
 from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
-from deep_lst.utils.config import get_context_keys
+from deep_lst.utils.config import get_packing_keys
 from deep_lst.utils.io import ExperimentPaths
 
 
 class MultiModalMLP(nn.Module):
-    def __init__(self, in_keys, out_keys, config, in_feature_sizes=None):
+    """Pointwise MLP over packed tensors.
+
+    forward(state_window, X_dyn_window, step_X_dyn) -> (..., nP + nD)
+
+    state_window : (N, L, H, W, nP)     prognostic state over the lookback (ends at t0)
+    X_dyn_window : (N, L, H, W, nF_ctx) forcing-context vars over the lookback
+    step_X_dyn   : (N, H, W, nF_all)    all `inputs` at the step being predicted
+
+    Each lookback window is imputed (NaN->0) and concatenated with a per-element validity
+    mask, then flattened over (lookback, channel) — reproducing the old `_ctx` features.
+    Output is prog-first: [:nP] = prognostic increments, [nP:] = diagnostic absolutes.
+    """
+
+    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config):
         super().__init__()
 
-        self.in_keys = in_keys
-        self.out_keys = out_keys
-        sizes = in_feature_sizes or {}
-        self.input_size = sum(sizes.get(k, 1) for k in in_keys)
-        self.target_size = len(out_keys)
+        self.n_prognostic = n_prognostic
+        self.lookback = lookback
+        # step inputs + value-and-mask flattenings of the state and forcing windows
+        self.input_size = n_input + 2 * lookback * (n_prognostic + n_forcing_context)
+        self.target_size = n_prognostic + n_diagnostic
         self.hidden_sizes = config["hidden_sizes"]
         self.dropout_p = config["dropout"]
         self.use_residual = config.get("use_residual", False)
@@ -62,19 +75,26 @@ class MultiModalMLP(nn.Module):
             nn.Linear(self.hidden_sizes[-1], self.target_size),
         )
 
-    def forward(self, td):
-        inputs = [td[k] for k in self.in_keys]
-        x = torch.cat(inputs, dim=-1)
+    def _flatten_window(self, window):
+        """(N, L, H, W, C) -> (N, H, W, 2*L*C): impute NaNs, append a validity mask, and
+        flatten the lookback and channel axes (oldest-first, value-then-mask per step)."""
+        mask = torch.isfinite(window).to(window.dtype)
+        values = torch.nan_to_num(window, nan=0.0)
+        combined = torch.cat([values, mask], dim=-1)  # (N, L, H, W, 2C)
+        N, L, H, W, twoC = combined.shape
+        combined = combined.permute(0, 2, 3, 1, 4)  # (N, H, W, L, 2C)
+        return combined.reshape(N, H, W, L * twoC)
+
+    def forward(self, state_window, X_dyn_window, step_X_dyn):
+        state_flat = self._flatten_window(state_window)  # (N, H, W, 2*L*nP)
+        dyn_flat = self._flatten_window(X_dyn_window)  # (N, H, W, 2*L*nF_ctx)
+        x = torch.cat([step_X_dyn, dyn_flat, state_flat], dim=-1)
+
         x = self.pre(x)
         if self.res_block is not None:
             x = x + self.res_block(x)
         x = self.post(x)
-        out = self.out_layer(x)
-
-        result = td.clone()
-        for key, chunk in zip(self.out_keys, out.split(1, dim=-1)):
-            result[key] = chunk
-        return result
+        return self.out_layer(x)  # (N, H, W, nP + nD)
 
 
 class LitModelModule(LightningModule):
@@ -143,34 +163,29 @@ def load_model(
     experiment: str,
     version: str,
     prefer_best: bool = False,
-    in_feature_sizes: dict | None = None,
 ):
-    """Instantiate model and load from checkpoint.
+    """Instantiate the packed model and load from checkpoint.
 
     Args:
-        config:           Full experiment config dict.
-        td_keys:          TensorDict keys from get_keys_from_config.
-        experiment:       Experiment name (matches folder under experiments/).
-        version:          Version/run name (subfolder containing checkpoints/).
-        in_feature_sizes: Optional dict mapping context keys to their feature count.
+        config:     Full experiment config dict.
+        td_keys:    TensorDict keys from get_keys_from_config (the loss reads prognostic_keys).
+        experiment: Experiment name (matches folder under experiments/).
+        version:    Version/run name (subfolder containing checkpoints/).
 
     Returns:
         lit_module: LitModelModule in eval mode, moved to GPU if available.
         device:     The torch.device the model is on.
     """
     lookback = config.get("train_dataset", {}).get("seviri", {}).get("lookback", 0)
-    if in_feature_sizes is None:
-        in_feature_sizes = {}
-    for ctx_key, size in get_context_keys(config.get("train_dataset", {}), lookback):
-        if ctx_key not in td_keys["in_keys"]:
-            td_keys["in_keys"].append(ctx_key)
-        in_feature_sizes[ctx_key] = size
+    packing = get_packing_keys(config["train_dataset"])
 
     model = MultiModalMLP(
-        in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
-        out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
+        n_prognostic=packing["n_prognostic"],
+        n_diagnostic=packing["n_diagnostic"],
+        n_input=len(packing["input_keys"]),
+        n_forcing_context=len(packing["forcing_context_keys"]),
+        lookback=lookback,
         config=config["model"],
-        in_feature_sizes=in_feature_sizes,
     )
 
     paths = ExperimentPaths()
@@ -178,31 +193,7 @@ def load_model(
         paths.best_checkpoint(experiment, version) if prefer_best else paths.latest_checkpoint(experiment, version)
     )
 
-    climatology = None
-    if config["model"].get("predict_anomaly", False):
-        from eodata.converter.variables import STORE_TIME_RANGE
-        from eodata.util.misc import assemble_statistics_from_npz
-
-        from deep_lst.dataset.climatology import ClimatologyLookup
-
-        spatial = config["train_dataset"]["spatial"]
-        stats = assemble_statistics_from_npz(
-            paths.statistics_path("seviri", config["train_dataset"]["seviri"]["statistics"])
-        )
-        climatology = ClimatologyLookup(
-            clim_path=paths.climatology_path(f"train_{spatial}", "smoothed_hourly"),
-            spatial_idx_path=paths.spatial_indices_path("seviri", spatial),
-            lookback=config["train_dataset"]["seviri"]["lookback"],
-            horizon=config["train_dataset"]["seviri"]["horizon"],
-            state_mean=float(stats["LST"]["mean"]),
-            state_std=float(stats["LST"]["std"]),
-            store_time_range=STORE_TIME_RANGE,
-            variable="LST",
-        )
-
-    lit_module = LitModelModule.load_from_checkpoint(
-        ckpt_path, model=model, config=config, **td_keys, climatology=climatology
-    )
+    lit_module = LitModelModule.load_from_checkpoint(ckpt_path, model=model, config=config, **td_keys)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     lit_module.eval()

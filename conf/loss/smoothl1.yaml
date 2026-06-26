@@ -4,4 +4,4 @@
 _loss: smoothl1
 
 model:
-  step_loss: RolloutSmoothL1
+  loss_fn: smooth_l1

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
-from deep_lst.utils.config import get_context_keys, get_keys_from_config
+from deep_lst.utils.config import get_keys_from_config, get_packing_keys
 from deep_lst.utils.io import ExperimentPaths, load_inc_variances
 
 HPO_EPOCHS = 20
@@ -60,7 +60,7 @@ def objective(
     base_config: dict,
     data_module: LitDataModule,
     td_keys: dict,
-    in_feature_sizes: dict,
+    packing: dict,
     inc_variances: dict,
 ) -> float:
     config = copy.deepcopy(base_config)
@@ -88,10 +88,12 @@ def objective(
     config["wandb_logger"] = False
 
     model = MultiModalMLP(
-        in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
-        out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
+        n_prognostic=packing["n_prognostic"],
+        n_diagnostic=packing["n_diagnostic"],
+        n_input=len(packing["input_keys"]),
+        n_forcing_context=len(packing["forcing_context_keys"]),
+        lookback=config["train_dataset"]["seviri"]["lookback"],
         config=config["model"],
-        in_feature_sizes=in_feature_sizes,
     )
     model_module = LitModelModule(
         model,
@@ -150,12 +152,7 @@ def main():
 
     # td_keys and inc_variances are horizon-independent
     td_keys = get_keys_from_config(config["train_dataset"])
-    lookback = config["train_dataset"]["seviri"]["lookback"]
-    in_feature_sizes: dict = {}
-    if lookback > 0:
-        for ctx_key, size in get_context_keys(config["train_dataset"], lookback):
-            td_keys["in_keys"].append(ctx_key)
-            in_feature_sizes[ctx_key] = size
+    packing = get_packing_keys(config["train_dataset"])
 
     paths = ExperimentPaths()
     inc_variances: dict[str, float] = {}
@@ -179,7 +176,7 @@ def main():
 
     n_trials = int(os.environ.get("HPO_N_TRIALS", "25"))
     study.optimize(
-        lambda trial: objective(trial, config, dm, td_keys, in_feature_sizes, inc_variances),
+        lambda trial: objective(trial, config, dm, td_keys, packing, inc_variances),
         n_trials=n_trials,
     )
 

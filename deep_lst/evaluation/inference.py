@@ -6,13 +6,11 @@ import pandas as pd
 import torch
 import xarray as xr
 import zarr
-from tensordict import TensorDict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from deep_lst.evaluation.spatial import lookup_pixel_coords
 from deep_lst.utils import ExperimentPaths, ZScoringNormalizer
-from deep_lst.utils.config import get_context_var_pairs
 
 PATHS = ExperimentPaths()
 
@@ -73,15 +71,12 @@ class Forecast:
         predict_dispatch = {
             "DiagnosticMSE": self._predict_diagnostic,
             "DiagnosticCRPS": self._predict_diagnostic,
-            "RolloutMSE": self._predict_rollout,
-            "RolloutSmoothL1": self._predict_rollout,
-            "RolloutCRPS": self._predict_rollout,
-            "RolloutIncrementLoss": self._predict_rollout,
+            "RolloutLoss": self._predict_rollout,
         }
         predict_fn = predict_dispatch.get(self.prediction_mode)
         if predict_fn is None:
             raise ValueError(f"Unknown prediction_mode: {self.prediction_mode}. Known: {list(predict_dispatch)}")
-        is_rollout = self.prediction_mode in ("RolloutMSE", "RolloutSmoothL1", "RolloutCRPS", "RolloutIncrementLoss")
+        is_rollout = self.prediction_mode == "RolloutLoss"
 
         gen = predict_fn(
             self.model,
@@ -363,95 +358,50 @@ class Forecast:
 
     @staticmethod
     def _predict_rollout(model, device, loader, td_keys, normaliser=None, **kwargs):
-        """Autoregressive rollout generator: yields per-batch (preds, obs) dicts of shape (B, horizon)."""
+        """Autoregressive rollout generator over the packed tensors. Mirrors the training
+        rollout loop: carry the predicted state back into the window. Yields per-batch
+        (preds, obs) dicts of shape (B, horizon), denormalised, one entry per variable."""
         prog_keys = td_keys["prognostic_keys"]
-        prog_out_keys = td_keys["prognostic_out_keys"]
         diag_keys = td_keys.get("diagnostic_keys", [])
-        diag_out_keys = td_keys.get("diagnostic_out_keys", [])
+        nP = len(prog_keys)
+        prog_vars = [key[1] for key in prog_keys]
+        diag_vars = [key[1] for key in diag_keys]
+        all_vars = prog_vars + diag_vars
 
         lookback = kwargs.get("lookback", 0)
-        inference_horizon = kwargs.get(
-            "horizon", 0
-        )  # currently reads from the modalty overwritten horizon, not from infer.yaml!
-        context_pairs = get_context_var_pairs(model.config["train_dataset"])
-
-        all_vars = [k[1] for k in prog_keys] + [k[1] for k in diag_keys]
+        horizon = kwargs.get("horizon", 0)  # reads the modality-overwritten horizon, not infer.yaml
 
         with torch.no_grad():
             for batch in tqdm(loader, desc="Predicting (rollout)"):
                 batch = batch.to(device)
+                y_prog = batch["y_prog"]
+                X_dyn = batch["X_dyn"]
+                X_dyn_ctx = batch["X_dyn_ctx"]
 
-                # Initial prognostic state is at batch index = lookback (t0)
-                prog = {key: batch[key][:, lookback, ...] for key in prog_keys}
-
-                history = {}
-                for modality, var in context_pairs:
-                    history[(modality, var)] = [batch[(modality, var)][:, i, ...] for i in range(1, lookback + 1)]
-
+                state_rollout = y_prog.clone()
                 batch_preds = {var: [] for var in all_vars}
                 batch_obs = {var: [] for var in all_vars}
 
-                predict_anomaly = model.config["model"].get("predict_anomaly", False)
-                clim_fwd = (
-                    model.climatology.lookup_forward(batch["spatial_idx"], batch["time_idx"], inference_horizon)
-                    if predict_anomaly
-                    else None
-                )
-
-                for t in range(1, inference_horizon + 1):
-                    tstep_td = TensorDict({}, batch_size=[batch.batch_size[0]])
-                    for key in td_keys["in_keys"]:
-                        if key[1].endswith("_ctx"):
-                            continue  # context keys injected below
-                        tstep_td[key] = batch[key][:, lookback + t, ...]
-                    for key in prog_keys:
-                        tstep_td[key] = prog[key]
-
-                    if lookback > 0:
-                        for modality, var in context_pairs:
-                            ctx_key = (modality, f"{var}_ctx")
-                            ctx = torch.stack(history[(modality, var)], dim=1)
-                            B, lb, H, W, C = ctx.shape
-                            valid_mask = torch.isfinite(ctx).all(dim=-1, keepdim=True)
-                            ctx_vals = torch.nan_to_num(ctx, nan=0.0)
-                            ctx_hw = ctx_vals.permute(0, 2, 3, 1, 4).reshape(B, H, W, lb * C)
-                            valid_hw = valid_mask.float().permute(0, 2, 3, 1, 4).reshape(B, H, W, lb * C)
-                            tstep_td[ctx_key] = torch.cat([ctx_hw, valid_hw], dim=-1)
-
+                for t in range(1, horizon + 1):
+                    state_window = state_rollout[:, t : lookback + t, ..., :nP]
                     with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
-                        out = model.model(tstep_td)
+                        out = model.model(state_window, X_dyn_ctx[:, t : lookback + t], X_dyn[:, lookback + t])
 
-                    for key, out_key in zip(prog_keys, prog_out_keys):
-                        var = key[1]
-                        model_increment = out[out_key].float()
+                    inc = out[..., :nP].float()
+                    diag = out[..., nP:].float()
+                    prior = state_rollout[:, lookback + t - 1, ..., :nP]
+                    state_t = prior + inc
 
-                        if clim_fwd is not None and var == "LST":
-                            pad = (1,) * (prog[key].ndim - 1)
-                            clim_t = clim_fwd[:, t].view(-1, *pad)
-                            clim_tprev = clim_fwd[:, t - 1].view(-1, *pad)
-                            clim_increment = torch.nan_to_num(clim_t - clim_tprev, nan=0.0)
-                        else:
-                            clim_increment = 0
+                    target = y_prog[:, lookback + t]
+                    for c, var in enumerate(prog_vars):
+                        batch_preds[var].append(state_t[..., c].squeeze((-2, -1)))
+                        batch_obs[var].append(target[..., c].squeeze((-2, -1)))
+                    for c, var in enumerate(diag_vars):
+                        batch_preds[var].append(diag[..., c].squeeze((-2, -1)))
+                        batch_obs[var].append(target[..., nP + c].squeeze((-2, -1)))
 
-                        state_increment = model_increment + clim_increment
-                        prog[key] = prog[key] + state_increment
-
-                        batch_preds[var].append(prog[key].squeeze((-3, -2, -1)))
-                        batch_obs[var].append(batch[key][:, lookback + t, ...].squeeze((-3, -2, -1)))
-
-                    for key, out_key in zip(diag_keys, diag_out_keys):
-                        var = key[1]
-                        batch_preds[var].append(out[out_key].float().squeeze((-3, -2, -1)))
-                        batch_obs[var].append(batch[key][:, lookback + t, ...].squeeze((-3, -2, -1)))
-
-                    if lookback > 0:
-                        for modality, var in context_pairs:
-                            history_key = (modality, var)
-                            history[history_key].pop(0)
-                            if history_key in prog_keys:
-                                history[history_key].append(prog[history_key])
-                            else:
-                                history[history_key].append(batch[history_key][:, lookback + t, ...])
+                    if t < horizon:
+                        state_rollout[:, lookback + t, ..., :nP] = state_t
 
                 preds_b = {}
                 obs_b = {}

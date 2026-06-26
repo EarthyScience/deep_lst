@@ -2,17 +2,11 @@
 from deep_lst.losses import (
     DiagnosticCRPS,
     DiagnosticMSE,
-    RolloutCRPS,
-    RolloutIncrementLoss,
-    RolloutMSE,
-    RolloutSmoothL1,
+    RolloutLoss,
 )
 
 __all__ = [
     "DiagnosticMSE",
-    "RolloutMSE",
-    "RolloutSmoothL1",
-    "RolloutIncrementLoss",
     "DiagnosticCRPS",
-    "RolloutCRPS",
+    "RolloutLoss",
 ]

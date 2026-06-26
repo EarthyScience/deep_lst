@@ -1,17 +1,19 @@
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
+from tensordict import TensorDict
 from tensordict import stack as td_stack
 
 
 @dataclass
 class Collator:
     model_id: str
+    packing_keys: dict | None = field(default=None)
 
     def __post_init__(self):
         dispatch: dict[str, Callable] = {
-            "mlp": self.stack,
+            "mlp": self.pack,
             "cnn": self.stack_and_permute,
             "resnet": self.stack_and_permute,
             "vit": self.stack_and_permute,
@@ -26,16 +28,36 @@ class Collator:
     def __call__(self, batch):
         return self._collate(batch)
 
-    def stack(self, batch):
-        """
-        batch: list of samples
-        each sample is dict: {modality_id: TensorDict}
-        returns:
-        dict: {modality_id: TensorDict with batch dim prepended}
+    def _pack(self, td, keys):
+        """Concatenate the given (modality, var) channels along the last axis, prog-first
+        order preserved. Cast to float so categoricals (int8) sit beside continuous vars."""
+        tensors = [td[key].float() for key in keys]
+        return torch.cat(tensors, dim=-1)
 
-        if pack_tensors, returns a TensorDict with additional inputs key that contains a tensor per modality stacked along channels.
+    def pack(self, batch):
+        """Pack the per-(modality,var) sample dicts into the dense tensors the packed model
+        and loss consume. Every tensor is (B, L+H+1, H, W, C); NaNs are preserved (the model
+        imputes + masks). Channel order is fixed by packing_keys (see utils.config.get_packing_keys).
+
+          y_prog     prognostics then diagnostics (the full state)
+          X_dyn      all `inputs` (step forcings, statics/categoricals included)
+          X_dyn_ctx  forcing-context vars (the lookback-window forcings)
         """
-        return td_stack(batch, dim=0)
+        td = td_stack(batch, dim=0)
+        if self.packing_keys is None:
+            return td
+
+        batch_size = td.batch_size[0]
+        return TensorDict(
+            {
+                "y_prog": self._pack(td, self.packing_keys["state_keys"]),
+                "X_dyn": self._pack(td, self.packing_keys["input_keys"]),
+                "X_dyn_ctx": self._pack(td, self.packing_keys["forcing_context_keys"]),
+                "spatial_idx": td["spatial_idx"],
+                "time_idx": td["time_idx"],
+            },
+            batch_size=[batch_size],
+        )
 
     def stack_and_permute(self, batch):
         """

@@ -18,7 +18,7 @@ from pytorch_lightning.profilers import AdvancedProfiler  # noqa: F401
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
-from deep_lst.utils.config import get_context_keys, get_keys_from_config
+from deep_lst.utils.config import get_keys_from_config, get_packing_keys
 from deep_lst.utils.io import ExperimentPaths, load_inc_variances
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
@@ -165,16 +165,10 @@ def main(cfg: DictConfig) -> None:
         )
 
     td_keys = get_keys_from_config(config["train_dataset"])
-
+    packing = get_packing_keys(config["train_dataset"])
     lookback = config["train_dataset"]["seviri"]["lookback"]
-    in_feature_sizes: dict = {}
-    if lookback > 0:
-        for ctx_key, size in get_context_keys(config["train_dataset"], lookback):
-            td_keys["in_keys"].append(ctx_key)
-            in_feature_sizes[ctx_key] = size
 
-    print(f"in_keys: {td_keys['in_keys']}")
-    print(f"in_feature_sizes: {in_feature_sizes}")
+    print(f"packing: {packing}")
 
     inc_variances: dict[str, float] = {}
     for modality, mod_cfg in config["train_dataset"].items():
@@ -182,10 +176,12 @@ def main(cfg: DictConfig) -> None:
             inc_variances.update(load_inc_variances(paths.statistics_path(modality, mod_cfg["statistics"])))
 
     model = MultiModalMLP(
-        in_keys=td_keys["in_keys"] + td_keys["prognostic_keys"],
-        out_keys=td_keys["diagnostic_out_keys"] + td_keys["prognostic_out_keys"],
+        n_prognostic=packing["n_prognostic"],
+        n_diagnostic=packing["n_diagnostic"],
+        n_input=len(packing["input_keys"]),
+        n_forcing_context=len(packing["forcing_context_keys"]),
+        lookback=lookback,
         config=config["model"],
-        in_feature_sizes=in_feature_sizes,
     )
     model_module = LitModelModule(
         model,

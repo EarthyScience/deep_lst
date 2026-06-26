@@ -20,7 +20,7 @@ from deep_lst.dataset.dataset import MultimodalDataset
 from deep_lst.evaluation.inference import Forecast
 from deep_lst.mlp.model import load_model
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.config import get_keys_from_config
+from deep_lst.utils.config import get_keys_from_config, get_packing_keys
 from deep_lst.utils.inference import load_run_config
 
 
@@ -59,7 +59,7 @@ def run_inference(cfg: DictConfig) -> None:
         num_workers=config["analysis"]["num_workers"],
         shuffle=False,
         drop_last=False,
-        collate_fn=Collator(config["model"]["name"]),
+        collate_fn=Collator(config["model"]["name"], get_packing_keys(config["test_dataset"])),
         pin_memory=config["analysis"].get("pin_memory", False),
         persistent_workers=config["analysis"]["num_workers"] > 0,
         prefetch_factor=config["analysis"].get("prefetch_factor", 2),

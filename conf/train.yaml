@@ -1,15 +1,15 @@
 defaults:
   - _self_          # base applies first; groups below have higher priority
   - model: mlp_rollout
-  - loss: mse
-  - stratification: KG
+  - loss: smoothl1
   - size: L
-  - horizon: h4
+  - stratification: mtg
+  - horizon: h24
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    ${_stratification}_${_size}
 _statistics: ${_stratification}_${_size}
-_experiment: ${_stratification}_${_loss}_${_horizon}_v6
+_experiment: ${_loss}_${_horizon}_v7
 
 modality_ids: [era5, seviri]
 
@@ -19,7 +19,7 @@ train_dataset:
   era5:
     preload: true
     modality_id: era5
-    inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
     prognostics: []
     diagnostics: []
     normalization: zscore
@@ -42,7 +42,7 @@ val_dataset:
   era5:
     preload: true
     modality_id: era5
-    inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
     prognostics: []
     diagnostics: []
     normalization: zscore
@@ -65,7 +65,7 @@ test_dataset:
   era5:
     preload: true
     modality_id: era5
-    inputs: [stl1, swvl1, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tvh, tvl, lsm, solar_zenith]
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
     prognostics: []
     diagnostics: []
     normalization: zscore

@@ -5,13 +5,14 @@ from torch.utils.data import DataLoader
 
 from deep_lst.dataset.collator import Collator
 from deep_lst.dataset.dataset import MultimodalDataset
+from deep_lst.utils.config import get_packing_keys
 
 
 class LitDataModule(pl.LightningDataModule):
     def __init__(self, **kwargs):
         super().__init__()
         self.kwargs = kwargs
-        self.collate_fn = Collator(kwargs["model"]["name"])
+        self.collate_fn = Collator(kwargs["model"]["name"], get_packing_keys(kwargs["train_dataset"]))
 
     def setup(self, stage=None):
         if hasattr(self, "train_dataset"):

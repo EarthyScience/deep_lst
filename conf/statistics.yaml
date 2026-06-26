@@ -80,7 +80,7 @@ seviri:
     - standard_error # LST retrieval uncertainty (K)
     - MH
     - MLE
-    - MLT-AS
+    - MLST-AS
     # - quality_flag   # LST quality control flag -  FIX NEEDED: SAVE AS DYNAMIC ANCILLARY IN TORCH SCHEME.
   prognostics: []
   # Variables for which temporal increment statistics (mean, std, min, max of
@@ -91,7 +91,7 @@ seviri:
   increment_variables:
     - MH
     - MLE
-    - MLT-AS
+    - MLST-AS
     - LST
     - AL-BB-DH
   row_extent: 3201   # SEVIRI Africa domain
