@@ -202,6 +202,144 @@ def category_score_violinplot(
     return fig
 
 
+def monthly_daily_violin(
+    daily_scores: xr.DataArray,
+    total: float,
+    metric: str,
+    case_label: str | None = None,
+    month_labels: dict | None = None,
+    title: str | None = None,
+    save_path: Path | None = None,
+) -> plt.Figure:
+    """Horizontal violins of daily pooled scores per month, with the total pooled score as a line.
+
+    Parameters
+    ----------
+    daily_scores : xr.DataArray
+        Per-calendar-day pooled metric on a ``day`` dim with a ``month`` coord
+        (see metrics.compute_daily_pooled). Each violin is the distribution of daily
+        scores within that month.
+    total : float
+        Pooled-over-all score, drawn as a vertical reference line (the table's total).
+    """
+    plt.rcParams.update(RC)
+    months = sorted({int(m) for m in daily_scores["month"].values})
+    color = CASE_COLORS.get(case_label, _DEFAULT_COLOR)
+    month_values = daily_scores["month"].values
+
+    fig, ax = plt.subplots(figsize=(6, max(4, len(months) * 0.5)))
+    ax.axvline(total, color="black", linestyle="--", linewidth=1.2, zorder=0, label="Global")
+
+    for i, month in enumerate(months):
+        vals = daily_scores.values[month_values == month]
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            continue
+        vp = ax.violinplot(vals, positions=[i], widths=0.7, vert=False, showmedians=True, showextrema=True)
+        for body in vp["bodies"]:
+            body.set_facecolor(color)
+            body.set_alpha(0.65)
+        for part in ("cmins", "cmaxes", "cbars"):
+            vp[part].set_color(color)
+            vp[part].set_linewidth(1.0)
+        vp["cmedians"].set_color("black")
+        vp["cmedians"].set_linewidth(1.5)
+
+    tick_labels = [str(month_labels.get(m, m)) if month_labels else str(m) for m in months]
+    ax.set_yticks(range(len(months)))
+    ax.set_yticklabels(tick_labels)
+    ax.set_ylabel("Month")
+    ax.set_xlabel(f"{metric.upper()} (K)" if metric in ("rmse", "mae", "bias") else metric.upper())
+    ax.grid(axis="x", alpha=0.3)
+    ax.legend(loc="best", framealpha=0.9)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if title:
+        ax.set_title(title)
+
+    plt.tight_layout()
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Saved: {save_path}")
+
+    return fig
+
+
+def _draw_month_violins(ax, daily_scores, total, color, months):
+    """Horizontal per-month violins on a shared month axis (positions = index into ``months``)."""
+    month_values = daily_scores["month"].values
+    ax.axvline(total, color="black", linestyle="--", linewidth=1.2, zorder=0, label="Global")
+    for i, month in enumerate(months):
+        vals = daily_scores.values[month_values == month]
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            continue
+        vp = ax.violinplot(vals, positions=[i], widths=0.7, vert=False, showmedians=True, showextrema=True)
+        for body in vp["bodies"]:
+            body.set_facecolor(color)
+            body.set_alpha(0.65)
+        for part in ("cmins", "cmaxes", "cbars"):
+            vp[part].set_color(color)
+            vp[part].set_linewidth(1.0)
+        vp["cmedians"].set_color("black")
+        vp["cmedians"].set_linewidth(1.5)
+    ax.set_yticks(range(len(months)))
+    ax.grid(axis="x", alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+def monthly_daily_violin_buckets(
+    buckets: dict,
+    metric: str,
+    case_label: str | None = None,
+    month_labels: dict | None = None,
+    title: str | None = None,
+    save_path: Path | None = None,
+) -> plt.Figure:
+    """One horizontal monthly-violin panel per lead bucket, side by side, each with its own total line.
+
+    Parameters
+    ----------
+    buckets : dict
+        ``{bucket_label: (daily_scores, total)}`` — daily_scores per VALID calendar day on a ``day``
+        dim with a ``month`` coord (see metrics.daily_rmse_by_valid_day). The total line shifts per
+        bucket (the global mean grows with lead), so each panel keeps its own.
+    """
+    plt.rcParams.update(RC)
+    labels = list(buckets)
+    color = CASE_COLORS.get(case_label, _DEFAULT_COLOR)
+    months = sorted({int(m) for daily, _ in buckets.values() for m in daily["month"].values})
+
+    fig, axes = plt.subplots(
+        1, len(labels), figsize=(5 * len(labels), max(4, len(months) * 0.5)), sharey=True, squeeze=False
+    )
+    metric_label = f"{metric.upper()} (K)" if metric in ("rmse", "mae", "bias") else metric.upper()
+    for ax, label in zip(axes[0], labels):
+        daily, total = buckets[label]
+        _draw_month_violins(ax, daily, total, color, months)
+        ax.set_xlabel(metric_label)
+        ax.set_title(label)
+        ax.legend(loc="best", framealpha=0.9)
+
+    axes[0][0].set_yticks(range(len(months)))
+    axes[0][0].set_yticklabels([str(month_labels.get(m, m)) if month_labels else str(m) for m in months])
+    axes[0][0].set_ylabel("Month (valid time)")
+    if title:
+        fig.suptitle(title)
+    plt.tight_layout()
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Saved: {save_path}")
+
+    return fig
+
+
 def error_overview_plot(
     scores_by_case: dict[str, xr.Dataset],
     metric: str = "rmse",

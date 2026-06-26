@@ -6,9 +6,14 @@ import xarray as xr
 import zarr
 
 from deep_lst.evaluation.metrics import (
+    LEAD_DAY_BUCKETS,
+    compute_daily_pooled,
     compute_grouped_scores,
+    compute_pooled_by_day,
+    compute_pooled_scores,
     compute_rmse_sufficient_stats,
     compute_scores,
+    daily_rmse_by_valid_day,
     to_init_time,
     to_valid_time,
 )
@@ -312,11 +317,15 @@ class EvaluatorDiagnostics(Evaluator):
         self.grouped = compute_grouped_scores(
             self.pred, self.obs, RAW_METRICS, self.aggregation, self.groupby, self.reduction_order
         )
+        # Per-metric (daily_scores, total) for the monthly violins -- daily pooled over space + the
+        # calendar day's timesteps, total pooled over everything. Computed here so plot_runner stays thin.
+        self.daily_pooled = {m: compute_daily_pooled(self.pred, self.obs, m) for m in RAW_METRICS}
 
         self.pred_anom = None
         self.obs_anom = None
         self.climate_scores = None
         self.climate_grouped = None
+        self.daily_pooled_anom = None
 
         if self.baseline_ds is not None:
             aligned = self._align_baseline(self.obs["valid_time"].values)
@@ -339,6 +348,9 @@ class EvaluatorDiagnostics(Evaluator):
                 self.climate_grouped = compute_grouped_scores(
                     self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation, self.groupby, self.reduction_order
                 )
+                self.daily_pooled_anom = {
+                    m: compute_daily_pooled(self.pred_anom, self.obs_anom, m) for m in ANOMALY_METRICS
+                }
         else:
             self.baseline_aligned = None
             self.baseline_scores = None
@@ -358,10 +370,31 @@ class EvaluatorVerification(Evaluator):
         self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
         self.rmse_stats = compute_rmse_sufficient_stats(self.pred, self.obs)
 
+        # Pooled (climpred-style) average-tendency scores: init + space pooled together in the
+        # squared-error domain, per lead and per forecast-day bucket. lead 0 is the placeholder,
+        # dropped. These feed the by-lead/by-day plots and stay consistent with table_runner.
+        pred_no0 = self.pred.isel(lead_time=slice(1, None))
+        obs_no0 = self.obs.isel(lead_time=slice(1, None))
+        self.pooled_scores = compute_pooled_scores(pred_no0, obs_no0, self.metrics)
+        self.pooled_scores_day = compute_pooled_by_day(pred_no0, obs_no0, self.metrics)
+
+        # Per-(valid calendar day) pooled RMSE within forecast-day buckets 1 and 10, from the
+        # sufficient stats above — feeds the monthly bucket violins (near vs far horizon).
+        self.daily_pooled_bucket = {}
+        lead_hours = (self.pred["lead_time"] / np.timedelta64(1, "h")).astype(int).values
+        for day_number in (1, 10):
+            low, high = LEAD_DAY_BUCKETS[day_number - 1]
+            lead_idx = np.where((lead_hours >= low) & (lead_hours <= high))[0]
+            if lead_idx.size == 0:
+                continue
+            self.daily_pooled_bucket[f"Day {day_number}"] = daily_rmse_by_valid_day(self.rmse_stats, lead_idx)
+
         self.baseline_scores = None
         self.baseline_full = None
         self.climate_scores = None
         self.skill_scores = None
+        self.pooled_skill_day = None
+        self.pooled_climate_day = None
 
         if self.baseline_ds is not None:
             baseline_slices = []
@@ -373,11 +406,20 @@ class EvaluatorVerification(Evaluator):
             baseline_full = xr.concat(baseline_slices, dim=lt_index)
             self.baseline_full = baseline_full
             self.baseline_scores = compute_scores(baseline_full, self.obs, self.metrics, self.aggregation)
+            pooled_baseline_day = compute_pooled_by_day(
+                baseline_full.isel(lead_time=slice(1, None)), obs_no0, self.metrics
+            )
+            self.pooled_skill_day = 1 - self.pooled_scores_day / pooled_baseline_day
 
             if self.baseline in CLIMATE_BASELINES and self.compute_anomaly:
                 pred_anom = self.pred - baseline_full
                 obs_anom = self.obs - baseline_full
                 self.climate_scores = compute_scores(pred_anom, obs_anom, ANOMALY_METRICS, self.aggregation)
+                self.pooled_climate_day = compute_pooled_by_day(
+                    pred_anom.isel(lead_time=slice(1, None)),
+                    obs_anom.isel(lead_time=slice(1, None)),
+                    ANOMALY_METRICS,
+                )
 
             self.skill_scores = self.scores / self.baseline_scores
 

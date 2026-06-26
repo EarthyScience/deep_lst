@@ -2,83 +2,74 @@ from pathlib import Path
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.metrics import to_valid_time
-from deep_lst.evaluation.plots._design import (
-    BASELINE_LINESTYLE,
-    CASE_COLORS,
-    CASE_LINESTYLES,
-    DEFAULT_COLOR,
-    OBS_COLOR,
-    RC,
-)
-
-PRED_COLOR = CASE_COLORS.get("MLP-Rollout", "#d62728")
-ERA5_COLOR = CASE_COLORS.get("ERA5", "#1f77b4")
-
-_BASELINE_COLORS = CASE_COLORS
-_BASELINE_DEFAULT_COLOR = DEFAULT_COLOR
+from deep_lst.evaluation.plots._design import OBS_COLOR, RC
 
 
 def timeseries_plot(
     ds: xr.Dataset,
     var: str = "LST",
-    lead_time: str = "1h",
-    baselines: dict[str, xr.DataArray] | None = None,
+    leads_h: tuple[int, ...] = (1, 3, 24),
     save_path: Path = None,
     title: str = None,
     eval_region: str = "",
-    show_std: bool = True,
-    case_label: str | None = None,
 ) -> plt.Figure:
-    """Region-mean time series of pred vs obs at a fixed lead time."""
+    """Region-mean obs by valid_time, with region-mean forecasts at several lead times overlaid.
+
+    Each forecast lead is plotted at its own valid time (valid = init + lead), so the same valid
+    time is reached from earlier inits at longer lead; the spread between the lead series shows
+    error growth in the time domain. Obs is the region-mean SEVIRI series (taken at the first
+    available lead). Leads not present in the horizon are skipped.
+    """
     plt.rcParams.update(RC)
+    pred_da = ds[f"{var}_pred"]
+    obs_da = ds[f"{var}_obs"]
 
-    pred = to_valid_time(ds[f"{var}_pred"].sel(lead_time=lead_time), lead_time=lead_time)
-    obs = to_valid_time(ds[f"{var}_obs"].sel(lead_time=lead_time), lead_time=lead_time)
+    lead_hours = (pred_da["lead_time"] / np.timedelta64(1, "h")).astype(int).values
+    leads_h = [h for h in leads_h if h in lead_hours]
+    if not leads_h:
+        return None
 
-    # Spatial mean and std (over all non-time dims: lat/lon for dense, pixel for sparse)
-    spatial_dims = [d for d in pred.dims if d != "valid_time"]
-    pred_mean = pred.mean(dim=spatial_dims, skipna=True)
-    obs_mean = obs.mean(dim=spatial_dims, skipna=True)
-    times = pd.DatetimeIndex(pred_mean["valid_time"].values)
+    obs_lead = pd.Timedelta(hours=leads_h[0])  # obs by valid_time at the first available lead (lead 0 is a placeholder)
+    obs = to_valid_time(obs_da.sel(lead_time=obs_lead), lead_time=obs_lead)
+    obs_mean = obs.mean(dim=[d for d in obs.dims if d != "valid_time"], skipna=True)
+    obs_times = pd.DatetimeIndex(obs_mean["valid_time"].values)
 
     fig, ax = plt.subplots(figsize=(14, 4))
-
-    _pred_color = CASE_COLORS.get(case_label, PRED_COLOR) if case_label else PRED_COLOR
-    _pred_label = f"{case_label} (lt={lead_time})" if case_label else f"Model pred (lt={lead_time})"
     ax.plot(
-        times, obs_mean.values, color=OBS_COLOR, linewidth=1.0, marker=".", markersize=2, label="SEVIRI obs", zorder=3
-    )
-    ax.plot(
-        times,
-        pred_mean.values,
-        color=_pred_color,
+        obs_times,
+        obs_mean.values,
+        color=OBS_COLOR,
         linewidth=1.0,
         marker=".",
-        markersize=2,
-        label=_pred_label,
-        zorder=4,
-        alpha=0.85,
+        markersize=3,
+        label="SEVIRI obs",
+        zorder=3,
     )
 
-    if show_std:
-        pred_std = pred.std(dim=spatial_dims, skipna=True)
-        obs_std = obs.std(dim=spatial_dims, skipna=True)
-        ax.fill_between(times, obs_mean - obs_std, obs_mean + obs_std, color=OBS_COLOR, alpha=0.15, zorder=2)
-        ax.fill_between(times, pred_mean - pred_std, pred_mean + pred_std, color=_pred_color, alpha=0.15, zorder=2)
+    cmap = plt.get_cmap("viridis")
+    for i, h in enumerate(leads_h):
+        lead = pd.Timedelta(hours=h)
+        pred = to_valid_time(pred_da.sel(lead_time=lead), lead_time=lead)
+        pred_mean = pred.mean(dim=[d for d in pred.dims if d != "valid_time"], skipna=True)
+        times = pd.DatetimeIndex(pred_mean["valid_time"].values)
+        color = cmap(i / max(1, len(leads_h) - 1))
+        ax.plot(
+            times,
+            pred_mean.values,
+            linestyle="none",
+            marker=".",
+            markersize=5,
+            color=color,
+            label=f"forecast, lead={h} h",
+            zorder=4,
+        )
 
-    for label, da in (baselines or {}).items():
-        bl_aligned = da.reindex(valid_time=pred["valid_time"])
-        spatial_dims = [d for d in bl_aligned.dims if d != "valid_time"]
-        bl_mean = bl_aligned.mean(dim=spatial_dims, skipna=True) if spatial_dims else bl_aligned
-        color = _BASELINE_COLORS.get(label, _BASELINE_DEFAULT_COLOR)
-        ls = CASE_LINESTYLES.get(label, BASELINE_LINESTYLE)
-        ax.plot(times, bl_mean.values, color=color, linestyle=ls, linewidth=1.0, label=label, zorder=2, alpha=0.75)
-
-    ax.set_xlabel("Date (UTC)")
+    ax.set_xlabel("valid_time (UTC)")
     ax.set_ylabel(f"{var} (K)")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
     ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
@@ -89,11 +80,10 @@ def timeseries_plot(
     ax.spines["right"].set_visible(False)
 
     if title is None:
-        title = f"{eval_region} — region-mean {var}, lead_time={lead_time}"
+        title = f"{eval_region} — region-mean {var} by valid time"
     ax.set_title(title)
 
     plt.tight_layout()
-
     if save_path is not None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)

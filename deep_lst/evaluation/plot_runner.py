@@ -12,14 +12,16 @@ from deep_lst.evaluation.evaluator import (
     EvaluatorDiagnostics,
     EvaluatorVerification,
 )
-from deep_lst.evaluation.metrics import compute_class_scores, compute_grouped_scores, compute_scores
+from deep_lst.evaluation.metrics import compute_class_scores, compute_scores
 from deep_lst.evaluation.plots.cdf import day_night_summary, lst_cdf_plot, rmse_cdf_plot
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import (
+    acc_day_night_plot,
     error_growth_by_init_plot,
     error_growth_daily_plot,
     error_growth_day_night_plot,
     error_growth_plot,
+    skill_day_night_plot,
     skill_plot,
 )
 from deep_lst.evaluation.plots.fingerprint import fingerprint_plot, improvement_da
@@ -30,7 +32,12 @@ from deep_lst.evaluation.plots.init_time import (
     score_over_init_plot,
 )
 from deep_lst.evaluation.plots.maps import acc_map, improvement_map_multi, lead_bucket_map_grid, lead_bucket_rmse_grid
-from deep_lst.evaluation.plots.scores import category_score_violinplot, error_overview_plot
+from deep_lst.evaluation.plots.scores import (
+    category_score_violinplot,
+    error_overview_plot,
+    monthly_daily_violin,
+    monthly_daily_violin_buckets,
+)
 from deep_lst.evaluation.plots.spectra import (
     _grid_spacing_km,
     compute_spatial_power_spectrum,
@@ -39,7 +46,7 @@ from deep_lst.evaluation.plots.spectra import (
     temporal_power_spectrum_plot,
 )
 from deep_lst.evaluation.plots.timeseries import timeseries_plot
-from deep_lst.evaluation.plots.verification import activity_plot
+from deep_lst.evaluation.plots.verification import activity_plot, srmse_by_latitude
 
 _MONTH_LABELS = {
     1: "Jan",
@@ -66,6 +73,25 @@ def _fit_buckets(n_lead):
     out-of-range isel on short-horizon evals). Falls back to all available leads if shorter than Day 1."""
     fitted = {label: list(leads) for label, leads in _LEAD_BUCKETS.items() if (leads.stop - 1) <= (n_lead - 1)}
     return fitted or {"All leads": list(range(1, n_lead))}
+
+
+def _grid_vmax(tod_values, labels, percentile, use_abs):
+    """Shared colour-scale max pooled across several tod dicts {bucket: {label: DataArray}}, so the
+    day and night map figures are comparable. abs for diverging maps (improvement/skill), raw for
+    the sequential error maps."""
+    pool = []
+    for values in tod_values:
+        for bucket in values:
+            for label in labels:
+                da = values[bucket].get(label)
+                if da is None:
+                    continue
+                arr = da.values[np.isfinite(da.values)].ravel()
+                pool.append(np.abs(arr) if use_abs else arr)
+    if not pool:
+        return None
+    pooled = np.concatenate(pool)
+    return float(np.nanpercentile(pooled, percentile)) if pooled.size else None
 
 
 def _bucket_tod_rmse(field, obs, lead_idx, tod):
@@ -124,19 +150,11 @@ class PlotRunnerDiagnostics:
     # --- fast eval ---
 
     def plot_timeseries(self):
-        bl = {
-            label: bl_ev.baseline_aligned
-            for label, bl_ev in self.baselines.items()
-            if getattr(bl_ev, "baseline_aligned", None) is not None
-        }
         timeseries_plot(
             self.ev.forecast_ds,
             var=self.ev.var,
-            lead_time=self.ev.lead_time,
-            baselines=bl or None,
             save_path=self.plots_dir / f"{self.ev.var}_timeseries.pdf",
             eval_region=self.ev.eval_name,
-            case_label=self.label,
         )
 
     def plot_fingerprint(self):
@@ -230,39 +248,18 @@ class PlotRunnerDiagnostics:
         return labels
 
     def plot_monthly_score_violin(self):
-        # Raw-field metrics
-        raw_scores = compute_grouped_scores(
-            self.ev.pred, self.ev.obs, RAW_METRICS, aggregation="region_time", groupby="monthly"
-        )
-        for m in RAW_METRICS:
-            if m not in raw_scores:
-                continue
-            category_score_violinplot(
-                raw_scores,
+        # Per month, the distribution of daily pooled scores (horizontal violins) with the total
+        # pooled score as a vertical reference line. Computed on the evaluator (self.ev.daily_pooled).
+        daily_pooled = dict(self.ev.daily_pooled)
+        if self.ev.daily_pooled_anom is not None:
+            daily_pooled.update(self.ev.daily_pooled_anom)
+        for m, (daily_scores, total) in daily_pooled.items():
+            monthly_daily_violin(
+                daily_scores,
+                total,
                 metric=m,
-                category_dim="month",
                 case_label=self.label,
-                category_labels=_MONTH_LABELS,
-                xlabel="Month",
-                title=f"{self.ev.eval_name} — {m.upper()} by month (lead_time={self.ev.lead_time})",
-                save_path=self.plots_dir / f"{self.ev.var}_monthly_score_violin_{m}.pdf",
-            )
-        # Anomaly metrics
-        if self.ev.pred_anom is None:
-            return
-        anom_scores = compute_grouped_scores(
-            self.ev.pred_anom, self.ev.obs_anom, ANOMALY_METRICS, aggregation="region_time", groupby="monthly"
-        )
-        for m in ANOMALY_METRICS:
-            if m not in anom_scores:
-                continue
-            category_score_violinplot(
-                anom_scores,
-                metric=m,
-                category_dim="month",
-                case_label=self.label,
-                category_labels=_MONTH_LABELS,
-                xlabel="Month",
+                month_labels=_MONTH_LABELS,
                 title=f"{self.ev.eval_name} — {m.upper()} by month (lead_time={self.ev.lead_time})",
                 save_path=self.plots_dir / f"{self.ev.var}_monthly_score_violin_{m}.pdf",
             )
@@ -481,19 +478,22 @@ class PlotRunnerVerification:
         self.baselines = baseline_evaluators or {}
 
     def run(self, plots: list[str] | None = None):
-        self.scores_summary = self.ev.summarise(self.ev.scores)
-        self.skill_references = {}
-        self.climate_references = {}
+        # Pooled average-tendency references come straight off the baseline evaluators (each holds the
+        # model-vs-that-baseline pooled skill / climate scores). climate_scores_raw keeps the per-
+        # (init, lead) ACC for the init×lead heatmap.
         self.climate_scores_raw = {}
+        self.skill_day_references = {}
+        self.activity_day_references = {}
         for label, bl_ev in self.baselines.items():
-            skill = getattr(bl_ev, "skill_scores", None)
-            if skill is not None:
-                self.skill_references[label] = self.ev.summarise(1 - skill)
             cs = getattr(bl_ev, "climate_scores", None)
             if cs is not None:
-                cs_computed = cs.compute()
-                self.climate_scores_raw[label] = cs_computed
-                self.climate_references[label] = self.ev.summarise(cs_computed)
+                self.climate_scores_raw[label] = cs.compute()
+            skill_day = getattr(bl_ev, "pooled_skill_day", None)
+            if skill_day is not None:
+                self.skill_day_references[label] = skill_day
+            climate_day = getattr(bl_ev, "pooled_climate_day", None)
+            if climate_day is not None:
+                self.activity_day_references[label] = climate_day
         requested = set(plots) if plots else None
         for name in sorted(dir(self)):
             if name.startswith("plot_"):
@@ -655,10 +655,10 @@ class PlotRunnerVerification:
 
     def plot_error_growth(self):
         for m in RAW_METRICS:
-            if m not in self.ev.scores:
+            if m not in self.ev.pooled_scores:
                 continue
             error_growth_plot(
-                self.scores_summary,
+                self.ev.pooled_scores,
                 case_label=self.label,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_error_growth_{m}.pdf",
@@ -667,10 +667,10 @@ class PlotRunnerVerification:
 
     def plot_error_growth_daily(self):
         for m in RAW_METRICS:
-            if m not in self.ev.scores:
+            if m not in self.ev.pooled_scores_day:
                 continue
             error_growth_daily_plot(
-                self.scores_summary,
+                self.ev.pooled_scores_day,
                 case_label=self.label,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_error_growth_daily_{m}.pdf",
@@ -737,7 +737,10 @@ class PlotRunnerVerification:
         buckets = _fit_buckets(self.ev.pred.sizes["lead_time"])  # clamp to the forecast horizon
         bucket_labels = list(buckets)
         baseline_labels = list(baselines)
-        for tod, tod_label in (("day", "daytime 10–15 h"), ("night", "nighttime 22–03 h")):
+        tods = (("day", "daytime 10–15 h"), ("night", "nighttime 22–03 h"))
+
+        error_by_tod, improvement_by_tod, skill_by_tod = {}, {}, {}
+        for tod, _ in tods:
             improvement = {b: {} for b in bucket_labels}
             skill = {b: {} for b in bucket_labels}
             error = {b: {} for b in bucket_labels}
@@ -749,16 +752,27 @@ class PlotRunnerVerification:
                     error[b][bl_label] = rmse_bl
                     improvement[b][bl_label] = rmse_bl - rmse_model
                     skill[b][bl_label] = 1 - rmse_model / rmse_bl
+            error_by_tod[tod] = error
+            improvement_by_tod[tod] = improvement
+            skill_by_tod[tod] = skill
+
+        # Shared colour scales across day & night so the two figures are directly comparable.
+        error_vmax = _grid_vmax(error_by_tod.values(), [self.label, *baseline_labels], 98, use_abs=False)
+        improvement_vmax = _grid_vmax(improvement_by_tod.values(), baseline_labels, 95, use_abs=True)
+        skill_vmax = _grid_vmax(skill_by_tod.values(), baseline_labels, 95, use_abs=True)
+
+        for tod, tod_label in tods:
             lead_bucket_rmse_grid(
-                error,
+                error_by_tod[tod],
                 bucket_labels,
                 [self.label, *baseline_labels],
                 self.plots_dir / f"{self.ev.var}_error_map_{tod}.pdf",
                 tod_label=tod_label,
                 eval_region=self.ev.eval_name,
+                vmax=error_vmax,
             )
             lead_bucket_map_grid(
-                improvement,
+                improvement_by_tod[tod],
                 bucket_labels,
                 baseline_labels,
                 self.plots_dir / f"{self.ev.var}_improvement_map_{tod}.pdf",
@@ -766,9 +780,10 @@ class PlotRunnerVerification:
                 tod_label=tod_label,
                 model_label=self.label,
                 eval_region=self.ev.eval_name,
+                vmax=improvement_vmax,
             )
             lead_bucket_map_grid(
-                skill,
+                skill_by_tod[tod],
                 bucket_labels,
                 baseline_labels,
                 self.plots_dir / f"{self.ev.var}_skill_map_{tod}.pdf",
@@ -776,39 +791,98 @@ class PlotRunnerVerification:
                 tod_label=tod_label,
                 model_label=self.label,
                 eval_region=self.ev.eval_name,
+                vmax=skill_vmax,
             )
 
     def plot_skill_scores(self):
-        if not self.skill_references:
+        if not self.skill_day_references:
             return
         for m in RAW_METRICS:
-            if m not in self.ev.scores:
+            if m not in self.ev.pooled_scores_day:
                 continue
             skill_plot(
-                self.skill_references,
+                self.skill_day_references,
                 case_label=self.label,
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_skill_{m}.pdf",
                 eval_region=self.ev.eval_name,
             )
 
-    def plot_climate_acc(self):
-        if not self.climate_references:
+    def plot_skill_day_night(self):
+        # RMSE skill vs lead, day/night panels, one line per baseline (pooled-RMSE-then-skill, no band).
+        if "lead_time" not in self.ev.pred.dims or not self.baselines:
             return
-        skill_plot(
-            self.climate_references,
+        baselines = {
+            label: bl_ev.baseline_full
+            for label, bl_ev in self.baselines.items()
+            if getattr(bl_ev, "baseline_full", None) is not None
+        }
+        if not baselines:
+            return
+        skill_day_night_plot(
+            self.ev.pred,
+            self.ev.obs,
+            baselines,
+            self.ev.var,
+            self.plots_dir / f"{self.ev.var}_skill_day_night.pdf",
+            self.ev.eval_name,
+        )
+
+    def plot_climate_acc(self):
+        # ACC vs lead, day/night as two curves in one panel (no band). Single climatological reference.
+        if "lead_time" not in self.ev.pred.dims:
+            return
+        climate_baselines = {
+            label: bl_ev
+            for label, bl_ev in self.baselines.items()
+            if getattr(bl_ev, "baseline_full", None) is not None and getattr(bl_ev, "climate_scores", None) is not None
+        }
+        if not climate_baselines:
+            return
+        if len(climate_baselines) > 1:
+            print(f"  plot_climate_acc: multiple climate references {list(climate_baselines)}; using the first")
+        bl_ev = next(iter(climate_baselines.values()))
+        acc_day_night_plot(
+            self.ev.pred,
+            self.ev.obs,
+            bl_ev.baseline_full,
+            self.ev.var,
+            self.plots_dir / f"{self.ev.var}_climate_acc.pdf",
+            self.ev.eval_name,
+        )
+
+    def plot_monthly_daily_violin(self):
+        # Per-month distribution of daily pooled RMSE, one panel per forecast-day bucket (Day 1, Day 10),
+        # grouped by valid-time calendar day. Each panel keeps its own pooled total line.
+        if not getattr(self.ev, "daily_pooled_bucket", None):
+            return
+        monthly_daily_violin_buckets(
+            self.ev.daily_pooled_bucket,
+            metric="rmse",
             case_label=self.label,
-            metric="acc",
-            save_path=self.plots_dir / f"{self.ev.var}_climate_acc.pdf",
+            month_labels=_MONTH_LABELS,
+            title=f"{self.ev.eval_name} — RMSE by month, forecast-day buckets",
+            save_path=self.plots_dir / f"{self.ev.var}_monthly_daily_violin.pdf",
+        )
+
+    def plot_srmse_by_latitude(self):
+        # Only for the temporal-extrapolation eval over the spread-out training sites; elsewhere the
+        # latitude range is too narrow for a meaningful profile.
+        if self.ev.eval_name != "train_mtg" or "lead_time" not in self.ev.pred.dims or "lat" not in self.ev.pred.coords:
+            return
+        srmse_by_latitude(
+            self.ev.pred,
+            self.ev.obs,
+            self.ev.var,
+            save_path=self.plots_dir / f"{self.ev.var}_srmse_by_latitude.pdf",
             eval_region=self.ev.eval_name,
         )
 
     def plot_climate_activity(self):
-        if not self.climate_references:
+        if not self.activity_day_references:
             return
         activity_plot(
-            self.climate_references,
-            case_label=self.label,
+            self.activity_day_references,
             save_path=self.plots_dir / f"{self.ev.var}_climate_activity.pdf",
             eval_region=self.ev.eval_name,
         )

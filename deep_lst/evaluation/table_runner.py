@@ -5,18 +5,21 @@ Design goal: flat and readable, so every cell traces to one small function.
 Rows of a table  = holdout regions (plus the "temporal" holdout).
 Columns          = temporal scales: validity | hourly | daytime | nighttime
                    | amplitude | daily | total.
-Lead windows     = "nowcast" (lead 1-24 h) and "full" (lead >= 1 h); one table each.
-Table sets       = "sRMSE"  (per-pixel standardised RMSE, model + each baseline)
+Lead windows     = "nowcast" (lead 1-24 h), "full" (lead >= 1 h), and "dayN" (the
+                   24 h of forecast day N, e.g. day1 = 1-24 h, day10 = 217-240 h);
+                   one table each.
+Table sets       = "sRMSE"  (standardised RMSE, model + each baseline)
                    "RMSE"   (raw RMSE, model + each baseline)
                    "skill"  (1 - RMSE_model / RMSE_baseline, one table per baseline).
 
-Aggregation: for every (init_time, pixel) we reduce the leads in the window to a
-single RMSE, giving an empirical distribution over init x space. We report its
-median and the 5th/95th percentiles as the CI. No bootstrap.
+Aggregation: every cell is a single metric value pooled over all samples in the
+window (init x lead x space) in the squared-error domain -- the climpred /
+xskillscore philosophy. No per-(init, pixel) distribution, no CIs.
 
-Standardisation (sRMSE set): divide each pixel's RMSE by that pixel's temporal
-std of observations (over the window's init x lead samples). Per-pixel, NOT a
-common std -- see results/verification/std_comparison_sim.py for why.
+Standardisation (sRMSE set): divide each column's pooled metric by the std of
+observations pooled over the SAME transformed samples, so numerator and
+denominator collapse the same dimensions. This supersedes the earlier per-pixel
+std (see results/verification/std_comparison_sim.py for that prior rationale).
 """
 
 import argparse
@@ -29,10 +32,8 @@ import xarray as xr
 from deep_lst.evaluation.evaluator import EvaluatorVerification
 from deep_lst.evaluation.metrics import METRIC_REGISTRY
 
-SPACE_DIMS = ("pixel", "lat", "lon")
 NOWCAST_MAX_HOURS = 24
 COLUMNS = ("validity", "daytime", "nighttime", "amplitude", "daily", "total")
-QUANTILES = (0.05, 0.95)
 
 # Region display names; "temporal" holdout reads the training store held out in time.
 REGION_EVAL_NAME = {"temporal": "train_mtg"}
@@ -51,18 +52,26 @@ REGION_DISPLAY = {
 
 
 # --- small shared helpers ----------------------------------------------------
-def _space_dims(da: xr.DataArray) -> list[str]:
-    return [d for d in SPACE_DIMS if d in da.dims]
-
-
 def _lead_hours(da: xr.DataArray) -> np.ndarray:
     return (da["lead_time"].values / np.timedelta64(1, "h")).astype(int)
 
 
+def _day_window_bounds(window: str) -> tuple[int, int] | None:
+    """Inclusive lead-hour bounds for a 'dayN' window (24 h of forecast day N), else None."""
+    if not window.startswith("day") or not window[3:].isdigit():
+        return None
+    day = int(window[3:])
+    return (day - 1) * 24 + 1, day * 24
+
+
 def _select_window(da: xr.DataArray, window: str) -> xr.DataArray:
     lead_hours = _lead_hours(da)
+    day_bounds = _day_window_bounds(window)
     if window == "nowcast":
         keep = (lead_hours >= 1) & (lead_hours <= NOWCAST_MAX_HOURS)
+    elif day_bounds is not None:
+        low, high = day_bounds
+        keep = (lead_hours >= low) & (lead_hours <= high)
     else:
         keep = lead_hours >= 1
     return da.isel(lead_time=np.where(keep)[0])
@@ -130,90 +139,79 @@ def _daily_amplitude(da: xr.DataArray) -> xr.DataArray:
     return _diurnal_range(_daily_blocks(da))
 
 
-def column_samples(pred: xr.DataArray, obs: xr.DataArray, metric: str) -> dict[str, xr.DataArray]:
-    """Per-(init, pixel) metric value for each distribution column.
+def _column_fields(pred: xr.DataArray, obs: xr.DataArray, column: str):
+    """Transform pred/obs for one metric column before the pooled reduction.
 
-    The metric (rmse, bias, mae, ...) comes from metrics.METRIC_REGISTRY, so the
-    table is metric-agnostic. daytime/nighttime reduce lead_time under an hour
-    mask; daily/amplitude first collapse leads into the daily mean / daily range,
-    then reduce over the day blocks.
+    daytime/nighttime mask leads to a valid-hour window (still hourly); daily takes
+    the daily-mean field (RMSE of daily means); amplitude takes the daily diurnal
+    range; total keeps the raw hourly fields.
+
+    For daily/amplitude the daily means are formed AFTER masking pred to the obs-valid
+    hours, so pred and obs are averaged over the same (clear-sky) hours. Otherwise pred's
+    daily mean spans all 24 h while obs's spans only clear-sky hours, and LST's strong,
+    diurnally-biased cloud sampling injects a spurious daily error (daily > total).
     """
+    if column == "daytime":
+        return _mask_time_of_day(pred, "day"), _mask_time_of_day(obs, "day")
+    if column == "nighttime":
+        return _mask_time_of_day(pred, "night"), _mask_time_of_day(obs, "night")
+    if column == "amplitude":
+        pred = pred.where(obs.notnull())
+        return _daily_amplitude(pred), _daily_amplitude(obs)
+    if column == "daily":
+        pred = pred.where(obs.notnull())
+        return _daily_mean(pred), _daily_mean(obs)
+    return pred, obs
+
+
+def pooled_metric(pred: xr.DataArray, obs: xr.DataArray, metric: str) -> float:
+    """Single metric value pooled over every dim (squared-error domain)."""
     metric_fn = METRIC_REGISTRY[metric]
-    return {
-        "daytime": metric_fn(_mask_time_of_day(pred, "day"), _mask_time_of_day(obs, "day"), dim="lead_time"),
-        "nighttime": metric_fn(_mask_time_of_day(pred, "night"), _mask_time_of_day(obs, "night"), dim="lead_time"),
-        "amplitude": metric_fn(_daily_amplitude(pred), _daily_amplitude(obs), dim="day"),
-        "daily": metric_fn(_daily_mean(pred), _daily_mean(obs), dim="day"),
-    }
+    return float(metric_fn(pred, obs, dim=list(pred.dims)))
 
 
-def total_value(pred: xr.DataArray, obs: xr.DataArray, metric: str) -> float:
-    """Single metric value pooled over all init, lead and space samples."""
-    return float(METRIC_REGISTRY[metric](pred, obs, dim=list(pred.dims)))
-
-
-# --- standardisation and summary --------------------------------------------
-def temporal_std(obs: xr.DataArray) -> xr.DataArray:
-    """Per-pixel temporal std of obs over the window's init x lead samples."""
-    return obs.std(dim=["init_time", "lead_time"], skipna=True)
-
-
-def summarise(sample: xr.DataArray, std: xr.DataArray | None) -> tuple[float, float, float]:
-    if std is not None:
-        sample = sample / std
-    reduce_dims = [d for d in ("init_time", *SPACE_DIMS) if d in sample.dims]
-    median = float(sample.median(dim=reduce_dims))
-    q_low = float(sample.quantile(QUANTILES[0], dim=reduce_dims))
-    q_high = float(sample.quantile(QUANTILES[1], dim=reduce_dims))
-    return median, q_low, q_high
+def pooled_std(obs: xr.DataArray) -> float:
+    """Std of obs pooled over every dim -- the denominator matched to pooled_metric."""
+    return float(obs.std(skipna=True))
 
 
 def validity_pct(obs: xr.DataArray) -> float:
-    finite_fraction = obs.notnull().mean(dim=["init_time", "lead_time"]) * 100.0
-    return float(finite_fraction.median(dim=_space_dims(obs)))
-
-
-# --- cell formatting ---------------------------------------------------------
-def _fmt_ci(median: float, q_low: float, q_high: float) -> str:
-    return f"{median:.3f} [{q_low:.3f}, {q_high:.3f}]"
+    """Percentage of valid obs, pooled over every dim."""
+    return float(obs.notnull().mean()) * 100.0
 
 
 # --- row builders (numeric core + formatting) --------------------------------
-DISTRIBUTION_COLUMNS = ("daytime", "nighttime", "amplitude", "daily")
+METRIC_COLUMNS = ("daytime", "nighttime", "amplitude", "daily", "total")
 
 
 def row_values(pred: xr.DataArray, obs: xr.DataArray, metric: str, standardise: bool) -> dict:
-    """Numeric row: {validity: float, <dist col>: (median, q05, q95), total: float}.
+    """Numeric row: {validity: float, <metric col>: float}; one pooled value per cell.
 
-    standardise divides each pixel's metric by that pixel's temporal std(obs).
+    standardise divides each column's pooled metric by the pooled std of obs over the
+    same transformed samples (matched aggregation).
     """
-    std = temporal_std(obs) if standardise else None
-    samples = column_samples(pred, obs, metric)
-
     values = {"validity": validity_pct(obs)}
-    for column, sample in samples.items():
-        values[column] = summarise(sample, std)
-
-    total = total_value(pred, obs, metric)
-    if standardise:
-        total = total / float(obs.std(skipna=True))
-    values["total"] = total
+    for column in METRIC_COLUMNS:
+        pred_column, obs_column = _column_fields(pred, obs, column)
+        value = pooled_metric(pred_column, obs_column, metric)
+        if standardise:
+            value = value / pooled_std(obs_column)
+        values[column] = value
     return values
 
 
 def format_row(values: dict) -> dict[str, str]:
-    row = {"validity": f"{values['validity']:.1f}\\%", "total": f"{values['total']:.3f}"}
-    for column in DISTRIBUTION_COLUMNS:
-        row[column] = _fmt_ci(*values[column])
+    row = {"validity": f"{values['validity']:.1f}\\%"}
+    for column in METRIC_COLUMNS:
+        row[column] = f"{values[column]:.3f}"
     return row
 
 
 def skill_row(model_values: dict, baseline_values: dict) -> dict[str, str]:
-    """Skill 1 - metric_model / metric_baseline, from the per-column medians (point, no CI)."""
+    """Skill 1 - metric_model / metric_baseline, per pooled column value."""
     row = {"validity": f"{model_values['validity']:.1f}\\%"}
-    for column in DISTRIBUTION_COLUMNS:
-        row[column] = f"{1.0 - model_values[column][0] / baseline_values[column][0]:.3f}"
-    row["total"] = f"{1.0 - model_values['total'] / baseline_values['total']:.3f}"
+    for column in METRIC_COLUMNS:
+        row[column] = f"{1.0 - model_values[column] / baseline_values[column]:.3f}"
     return row
 
 
@@ -277,8 +275,8 @@ def _caption(metric, kind, entity, window):
     if kind == "skill":
         return f"Skill (1 - {metric}/{metric}) of the model against {entity}, {window} window."
     if kind == "std":
-        return f"Standardised {metric} (per-pixel / std(obs)) for {entity}, {window} window. Median [5th, 95th percentile] over init times and space."
-    return f"{metric} for {entity}, {window} window. Median [5th, 95th percentile] over init times and space."
+        return f"Standardised {metric} ({metric} / std(obs), pooled over init times, leads and space) for {entity}, {window} window."
+    return f"{metric} pooled over init times, leads and space for {entity}, {window} window."
 
 
 def build_tables(experiment, version, regions, var, baselines, temporal, windows, metrics, kinds):
@@ -300,6 +298,9 @@ def build_tables(experiment, version, regions, var, baselines, temporal, windows
             # Load the windowed slice into memory: percentiles over multiple dims
             # are not supported on dask arrays, and test periods are small.
             obs = _select_window(obs_full, window).load()
+            if obs.sizes.get("lead_time", 0) == 0:
+                print(f"  [skip] {region_key} {window}: no lead times in window")
+                continue
             windowed = {name: _select_window(da, window).load() for name, da in predictions.items()}
 
             for metric in metrics:

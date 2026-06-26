@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from deep_lst.evaluation.plots._design import RC
+from deep_lst.evaluation.plots._design import RC_MAP
 
 _PROJ = ccrs.PlateCarree()
 
@@ -62,7 +62,7 @@ def bias_maps(
     -------
     plt.Figure
     """
-    plt.rcParams.update(RC)
+    plt.rcParams.update(RC_MAP)
     cases = list(bias_by_case.keys())
     n = len(cases)
 
@@ -126,7 +126,7 @@ def acc_map(
     eval_region : str
     title : str, optional
     """
-    plt.rcParams.update(RC)
+    plt.rcParams.update(RC_MAP)
 
     cmap = plt.cm.get_cmap("RdYlGn", 10)
     fig, ax = plt.subplots(figsize=(7, 6), subplot_kw={"projection": _PROJ})
@@ -185,7 +185,7 @@ def improvement_map_multi(
     -------
     plt.Figure
     """
-    plt.rcParams.update(RC)
+    plt.rcParams.update(RC_MAP)
     cases = list(rmse_by_baseline.keys())
     n = len(cases)
     if n == 0:
@@ -241,22 +241,26 @@ def improvement_map_multi(
     return fig
 
 
-def lead_bucket_map_grid(values, bucket_labels, baseline_labels, save_path, kind, tod_label, model_label, eval_region):
+def lead_bucket_map_grid(
+    values, bucket_labels, baseline_labels, save_path, kind, tod_label, model_label, eval_region, vmax=None
+):
     """Grid of per-pixel skill maps: rows = lead buckets, cols = baselines.
 
     values[bucket_label][baseline_label] = DataArray(lat, lon). Both 'improvement'
     (RMSE_baseline − RMSE_model, K) and 'skill' (1 − RMSE_model/RMSE_baseline) use a diverging
-    RdBu map centred on 0 (positive = model beats baseline)."""
-    plt.rcParams.update(RC)
+    RdBu map centred on 0 (positive = model beats baseline). Pass ``vmax`` to share the scale
+    across separate figures (e.g. day vs night); when None it defaults to the 95th percentile here."""
+    plt.rcParams.update(RC_MAP)
     n_row, n_col = len(bucket_labels), len(baseline_labels)
-    pool = [
-        values[b][bl].values[np.isfinite(values[b][bl].values)].ravel()
-        for b in bucket_labels
-        for bl in baseline_labels
-        if values[b].get(bl) is not None
-    ]
-    all_vals = np.concatenate(pool) if pool else np.array([1.0])
-    vmax = float(np.nanpercentile(np.abs(all_vals), 95)) if all_vals.size else 1.0
+    if vmax is None:
+        pool = [
+            values[b][bl].values[np.isfinite(values[b][bl].values)].ravel()
+            for b in bucket_labels
+            for bl in baseline_labels
+            if values[b].get(bl) is not None
+        ]
+        all_vals = np.concatenate(pool) if pool else np.array([1.0])
+        vmax = float(np.nanpercentile(np.abs(all_vals), 95)) if all_vals.size else 1.0
 
     fig, axes = plt.subplots(
         n_row, n_col, figsize=(5.2 * n_col, 4.6 * n_row), subplot_kw={"projection": _PROJ}, squeeze=False
@@ -290,19 +294,22 @@ def lead_bucket_map_grid(values, bucket_labels, baseline_labels, save_path, kind
     return fig
 
 
-def lead_bucket_rmse_grid(values, bucket_labels, col_labels, save_path, tod_label, eval_region):
-    """Grid of per-pixel RMSE maps: rows = lead buckets, cols = [model] + baselines (sequential cmap,
-    shared 0→vmax). values[bucket_label][col_label] = DataArray(lat, lon)."""
-    plt.rcParams.update(RC)
+def lead_bucket_rmse_grid(values, bucket_labels, col_labels, save_path, tod_label, eval_region, vmax=None):
+    """Grid of per-pixel RMSE maps: rows = lead buckets, cols = [model] + baselines (RdBu_r,
+    blue = low error → red = high error, shared 0→vmax). values[bucket_label][col_label] =
+    DataArray(lat, lon). Pass ``vmax`` to share the scale across separate figures (e.g. day vs
+    night, so colours are comparable); when None it defaults to the 98th percentile here."""
+    plt.rcParams.update(RC_MAP)
     n_row, n_col = len(bucket_labels), len(col_labels)
-    pool = [
-        values[b][c].values[np.isfinite(values[b][c].values)].ravel()
-        for b in bucket_labels
-        for c in col_labels
-        if values[b].get(c) is not None
-    ]
-    all_vals = np.concatenate(pool) if pool else np.array([5.0])
-    vmax = float(np.nanpercentile(all_vals, 98)) if all_vals.size else 5.0
+    if vmax is None:
+        pool = [
+            values[b][c].values[np.isfinite(values[b][c].values)].ravel()
+            for b in bucket_labels
+            for c in col_labels
+            if values[b].get(c) is not None
+        ]
+        all_vals = np.concatenate(pool) if pool else np.array([5.0])
+        vmax = float(np.nanpercentile(all_vals, 98)) if all_vals.size else 5.0
 
     fig, axes = plt.subplots(
         n_row, n_col, figsize=(4.6 * n_col, 4.6 * n_row), subplot_kw={"projection": _PROJ}, squeeze=False
@@ -315,7 +322,7 @@ def lead_bucket_rmse_grid(values, bucket_labels, col_labels, save_path, tod_labe
             if da is None:
                 ax.set_visible(False)
                 continue
-            im = da.plot(ax=ax, cmap="viridis", vmin=0, vmax=vmax, add_colorbar=False, transform=_PROJ)
+            im = da.plot(ax=ax, cmap="RdBu_r", vmin=0, vmax=vmax, add_colorbar=False, transform=_PROJ)
             _add_map_features(ax)
             ax.set_title(c if i == 0 else "")
             if j == 0:
@@ -368,7 +375,7 @@ def improvement_map(
     -------
     plt.Figure
     """
-    plt.rcParams.update(RC)
+    plt.rcParams.update(RC_MAP)
 
     improvement = rmse_baseline - rmse_model  # positive = model better
 

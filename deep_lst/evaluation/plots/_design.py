@@ -66,4 +66,15 @@ RC_ANIMATION: dict = {
     "figure.titlesize": 13,
 }
 
+# Larger fonts for the multi-panel spatial maps, whose big figures make the shared RC look small.
+RC_MAP: dict = {
+    "font.size": 18,
+    "axes.labelsize": 19,
+    "axes.titlesize": 19,
+    "xtick.labelsize": 16,
+    "ytick.labelsize": 16,
+    "legend.fontsize": 16,
+    "figure.titlesize": 20,
+}
+
 _LABEL_ALIASES = {"hourly clim": "Climatology", "smoothed clim": "Climatology (smooth)", "persistence": "Persistence"}
