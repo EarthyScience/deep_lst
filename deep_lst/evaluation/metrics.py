@@ -154,6 +154,11 @@ def to_init_time(da: xr.Dataset, lead_time: str | np.timedelta64 | None = None) 
     return da.assign_coords(valid_time=init_times).rename({"valid_time": "init_time"})
 
 
+def to_lead_hours(da: xr.DataArray) -> np.ndarray:
+    """Lead time of each lead_time coordinate as integer hours."""
+    return (da["lead_time"] / np.timedelta64(1, "h")).astype(int).values
+
+
 def compute_scores(
     pred: xr.DataArray,
     obs: xr.DataArray,
@@ -183,6 +188,11 @@ def compute_scores(
     return xr.Dataset(data_vars)
 
 
+def pool_metric(pred: xr.DataArray, obs: xr.DataArray, metric: str, dim) -> xr.DataArray:
+    """Reduce one registered metric over `dim` in the squared-error domain."""
+    return METRIC_REGISTRY[metric](pred, obs, dim=dim)
+
+
 def compute_pooled_scores(
     pred: xr.DataArray,
     obs: xr.DataArray,
@@ -194,7 +204,7 @@ def compute_pooled_scores(
     the squared-error domain, never space-RMSE-then-init-mean.
     """
     pooled_dims = [d for d in pred.dims if d != "lead_time"]
-    return xr.Dataset({name: METRIC_REGISTRY[name](pred, obs, dim=pooled_dims) for name in metrics})
+    return xr.Dataset({name: pool_metric(pred, obs, name, pooled_dims) for name in metrics})
 
 
 def compute_pooled_by_day(
@@ -208,7 +218,7 @@ def compute_pooled_by_day(
     the table_runner columns. Returns a dataset on a 'day' dim with a 'day_label' coord; empty
     buckets (beyond the horizon) are dropped.
     """
-    lead_hours = (pred["lead_time"] / np.timedelta64(1, "h")).astype(int).values
+    lead_hours = to_lead_hours(pred)
     day_indices, day_labels, slices = [], [], []
     for day_idx, (low, high) in enumerate(LEAD_DAY_BUCKETS, start=1):
         lead_idx = np.where((lead_hours >= low) & (lead_hours <= high))[0]
@@ -217,7 +227,7 @@ def compute_pooled_by_day(
         pred_bucket = pred.isel(lead_time=lead_idx)
         obs_bucket = obs.isel(lead_time=lead_idx)
         reduce_dims = list(pred_bucket.dims)
-        bucket_scores = {name: METRIC_REGISTRY[name](pred_bucket, obs_bucket, dim=reduce_dims) for name in metrics}
+        bucket_scores = {name: pool_metric(pred_bucket, obs_bucket, name, reduce_dims) for name in metrics}
         slices.append(xr.Dataset(bucket_scores))
         day_indices.append(day_idx)
         day_labels.append(f"Day {day_idx}")

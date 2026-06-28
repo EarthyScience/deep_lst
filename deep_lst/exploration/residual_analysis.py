@@ -1,29 +1,35 @@
-"""ERA5 LST error vs surface drivers — multi-region spatial/seasonal GAM (bam), 2024.
+"""ERA5 LST error vs surface drivers — PER-REGION spatial/seasonal GAMs (mgcv bam), 2024.
 
-Builds a tidy per-(region, pixel, month) table of daytime/nighttime ERA5 RMSE and candidate drivers
-(FVC, albedo, DEM, diurnal amplitude), then fits mgcv bam() GAMs to ask which drivers structure the
-error once season and smooth space are controlled, and to partition the explained deviance into
-covariate-unique / space-unique / shared (confounded) parts.
+One stable single-region model is fit per (region, response); results are reassembled for cross-region
+comparison. (A single all-regions model with by=region smooths was rank-deficient / non-convergent;
+per-region fits reuse the formula that fits cleanly and compare more directly.)
 
-Model (per response, vegetated pixels FVC>0, Gamma-log):
-    rmse ~ region                                    # per-region intercepts
-         + s(fvc)+s(albedo)+s(dem)+s(amplitude)
-         + s(month, bs='cc', by=region)              # fixed per-region seasonal curve
-         + ti(fvc, month, bs=c('tp','cc'))           # does the FVC effect change over the year
-         + te(lon, lat, by=region)                   # per-region smooth space (lon/lat not comparable across regions)
+Pipeline (CLI subcommands -> separate SLURM stages):
+    build         parallel per-region table build (multiprocessing) -> one parquet
+    fit <0..17>   fit ONE (region, response): full/cov/space, save partition + summary + rds + curves
+    aggregate     combine -> partition.csv (region x response a/b/c), terms.csv, curves.csv
+    plot          overlay the per-region partial-effect curves per term/response
 
-Run in the R-enabled env (rpy2 needs R_HOME, which `mamba run` sets):
-    mamba run -n deep_lst_rgam python deep_lst/exploration/residual_analysis.py
+Per-region model (vegetated FVC>0, Gamma-log):
+    rmse ~ s(fvc)+s(albedo)+s(dem)+s(amplitude) + s(month,bs='cc') + ti(fvc,month) + te(lon,lat)
+
+Run via scripts/diagnostics/run_residual_analysis.sh. rpy2/R imported lazily so the build is R-free.
 """
 
+import argparse
+import json
 import os
+import time
+import warnings
+from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-N_THREADS = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))  # bam(discrete) uses these
+warnings.filterwarnings("ignore", category=RuntimeWarning)  # all-NaN-slice noise from cloudy pixels
+N_THREADS = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
 ERA5_PATTERN = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/era5/eval_{}.nc"
 SAMPLED_PATTERN = "/Net/Groups/BGI/tscratch/mwessel/wegen-stores/sampled_stores/seviri_sampled_eval_{}.zarr"
@@ -38,13 +44,15 @@ REGIONS = [
     "west_africa",
     "yangambi",
 ]
-RUN_NAME = "era5_allregions"  # output subfolder under results/gam
+RUN_NAME = "era5_allregions"
 OUT_DIR = Path("/Net/Groups/BGI/people/mwessel/deep_lst/results/gam") / RUN_NAME
+TABLE_PATH = OUT_DIR / "table.parquet"
 YEAR = 2024
 DAY_HOURS = (10, 15)  # inclusive UTC valid-hour window
 NIGHT_HOURS = (22, 3)  # wraps midnight
 
 
+# --- stage 1: build ----------------------------------------------------------
 def region_table(region):
     """Tidy per-(pixel, month) table for one region: day/night ERA5 RMSE + drivers, for YEAR."""
     era5 = xr.open_dataset(ERA5_PATTERN.format(region))
@@ -77,13 +85,12 @@ def region_table(region):
         day_mask = (hour >= DAY_HOURS[0]) & (hour <= DAY_HOURS[1])
         night_mask = (hour >= NIGHT_HOURS[0]) | (hour <= NIGHT_HOURS[1])
         n_day = len(era5_idx) // 24
-        with np.errstate(invalid="ignore"):
-            rmse_day = np.sqrt(np.nanmean(squared_error[day_mask], axis=0))
-            rmse_night = np.sqrt(np.nanmean(squared_error[night_mask], axis=0))
-            mean_cycle = np.nanmean(lst.reshape(n_day, 24, -1), axis=0)
-            amplitude = np.nanpercentile(mean_cycle, 95, axis=0) - np.nanpercentile(mean_cycle, 5, axis=0)
-            fvc_pixel = np.nanmean(fvc, axis=0)
-            albedo_pixel = np.nanmean(albedo, axis=0)
+        rmse_day = np.sqrt(np.nanmean(squared_error[day_mask], axis=0))
+        rmse_night = np.sqrt(np.nanmean(squared_error[night_mask], axis=0))
+        mean_cycle = np.nanmean(lst.reshape(n_day, 24, -1), axis=0)
+        amplitude = np.nanpercentile(mean_cycle, 95, axis=0) - np.nanpercentile(mean_cycle, 5, axis=0)
+        fvc_pixel = np.nanmean(fvc, axis=0)
+        albedo_pixel = np.nanmean(albedo, axis=0)
 
         months.append(
             pd.DataFrame(
@@ -107,134 +114,278 @@ def region_table(region):
     return pd.concat(months, ignore_index=True)
 
 
-def build_table():
-    """Concatenate per-region tables into one multi-region (region, pixel, month) table."""
+def _region_table_named(region):
+    return region, region_table(region)
+
+
+def build():
+    t0 = time.perf_counter()
+    n_workers = min(len(REGIONS), max(N_THREADS, 1))
+    print(f"building {len(REGIONS)} region tables with {n_workers} workers...", flush=True)
     tables = []
-    for region in REGIONS:
-        tables.append(region_table(region))
-        print(f"  built {region}: {len(tables[-1])} rows")
+    with Pool(processes=n_workers) as pool:
+        for region, tab in pool.imap_unordered(_region_table_named, REGIONS):
+            tables.append(tab)
+            print(f"  {region}: {len(tab)} rows ({time.perf_counter() - t0:.0f}s elapsed)", flush=True)
     table = pd.concat(tables, ignore_index=True)
     table["is_bare"] = (table["fvc"] == 0).astype(int)
-    return table
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    table.to_parquet(TABLE_PATH)
+    print(f"saved {TABLE_PATH}: {len(table)} rows ({time.perf_counter() - t0:.0f}s)", flush=True)
 
 
-# --- GAM (mgcv via rpy2) -----------------------------------------------------
-import rpy2.robjects as ro  # noqa: E402
-from rpy2.robjects import pandas2ri  # noqa: E402
-from rpy2.robjects.conversion import localconverter  # noqa: E402
-from rpy2.robjects.packages import importr  # noqa: E402
+# --- stage 2: fit (mgcv via rpy2, lazy import) -------------------------------
+_R = {}
 
-mgcv = importr("mgcv")
-grdevices = importr("grDevices")
-GAMMA_LOG = ro.r('Gamma(link="log")')
-MONTH_KNOTS = ro.r("list(month = c(0.5, 12.5))")  # cyclic wrap between Dec and Jan
+
+def _r():
+    if not _R:
+        import rpy2.robjects as ro
+        from rpy2.robjects import pandas2ri
+        from rpy2.robjects.conversion import localconverter
+        from rpy2.robjects.packages import importr
+
+        _R.update(
+            ro=ro,
+            pandas2ri=pandas2ri,
+            localconverter=localconverter,
+            mgcv=importr("mgcv"),
+            grdevices=importr("grDevices"),
+            family=ro.r('Gamma(link="log")'),
+            knots=ro.r("list(month = c(0.5, 12.5))"),
+            predict_terms=ro.r("function(m, nd) predict(m, newdata=nd, type='terms', se.fit=TRUE)"),
+        )
+    return _R
+
 
 _SMOOTHS = "s(fvc) + s(albedo) + s(dem) + s(amplitude)"
-_SEASON = "s(month, bs='cc', k=6, by=region)"
-_FVC_SEASON = "ti(fvc, month, bs=c('tp','cc'), k=c(6, 6))"
-_SPACE = "te(lon, lat, by=region)"
-
-FORMULA_FULL = f"{{y}} ~ region + {_SMOOTHS} + {_SEASON} + {_FVC_SEASON} + {_SPACE}"
-FORMULA_COV = f"{{y}} ~ region + {_SMOOTHS} + {_SEASON} + {_FVC_SEASON}"
-FORMULA_SPACE = "{y} ~ region + " + _SPACE
-
-GAM_COLUMNS = ["fvc", "albedo", "dem", "amplitude", "month", "lon", "lat", "region"]
+MODELS = {
+    "full": f"{{y}} ~ {_SMOOTHS} + s(month, bs='cc', k=6) + ti(fvc, month, bs=c('tp','cc'), k=c(6, 6)) + te(lon, lat)",
+    "cov": f"{{y}} ~ {_SMOOTHS} + s(month, bs='cc', k=6) + ti(fvc, month, bs=c('tp','cc'), k=c(6, 6))",
+    "space": "{y} ~ te(lon, lat)",
+}
+RESPONSES = ["rmse_day", "rmse_night"]
+FIT_TASKS = [(region, response) for region in REGIONS for response in RESPONSES]  # 18 tasks
+GAM_COLUMNS = ["fvc", "albedo", "dem", "amplitude", "month", "lon", "lat"]
+CURVE_TERMS = ["fvc", "albedo", "dem", "amplitude", "month"]  # 1-D smooths exported for overlay
+GRID_N = 100
+MIN_ROWS = 500  # cells with fewer valid pixel-months are skipped (e.g. yangambi: permanent cloud -> 0)
 
 
 def _fit(formula, r_df):
-    return mgcv.bam(
-        ro.Formula(formula),
-        data=r_df,
-        family=GAMMA_LOG,
-        knots=MONTH_KNOTS,
-        method="fREML",
-        discrete=True,
-        nthreads=N_THREADS,
-    )
+    # gam(REML), not bam(discrete): per-region data is small (~30k rows) and gam centres te() cleanly
+    # (bam discrete triggered a te "reparameterization unstable" warning + an inflated intercept).
+    r = _r()
+    return r["mgcv"].gam(r["ro"].Formula(formula), data=r_df, family=r["family"], knots=r["knots"], method="REML")
 
 
 def _dev_expl(fit):
-    return float(ro.r["summary"](fit).rx2("dev.expl")[0])
+    return float(_r()["ro"].r["summary"](fit).rx2("dev.expl")[0])
 
 
 def _summary_text(fit):
+    ro = _r()["ro"]
     return "\n".join(ro.r["capture.output"](ro.r["summary"](fit)))
 
 
-def _smooth_table(fit, response):
+def _smooth_table(fit, region, response):
+    ro = _r()["ro"]
     s_table = ro.r["summary"](fit).rx2("s.table")
     df = pd.DataFrame(np.array(s_table), columns=list(ro.r["colnames"](s_table)))
     df.insert(0, "term", list(ro.r["rownames"](s_table)))
+    df.insert(0, "region", region)
     df.insert(0, "response", response)
     return df
 
 
-def _save_concurvity(fit, response, out_dir):
-    conc = mgcv.concurvity(fit, full=True)
-    df = pd.DataFrame(np.array(conc), index=list(ro.r["rownames"](conc)), columns=list(ro.r["colnames"](conc)))
-    df.to_csv(out_dir / f"concurvity_{response}.csv")
+def _save_concurvity(fit, tag):
+    r = _r()
+    conc = r["mgcv"].concurvity(fit, full=True)
+    df = pd.DataFrame(
+        np.array(conc), index=list(r["ro"].r["rownames"](conc)), columns=list(r["ro"].r["colnames"](conc))
+    )
+    df.to_csv(OUT_DIR / f"concurvity_{tag}.csv")
 
 
-def _save_partial_effects(fit, veg, response, out_dir):
-    grdevices.pdf(str(out_dir / f"partial_effects_{response}.pdf"), width=12, height=8)
-    ro.r["plot"](fit, pages=0, scheme=2, shade=True, seWithMean=True)
-    grdevices.dev_off()
-
-    terms = ro.r["predict"](fit, type="terms")
-    effects = pd.DataFrame(np.array(terms), columns=[f"effect:{c}" for c in ro.r["colnames"](terms)])
-    out = pd.concat([veg[GAM_COLUMNS].reset_index(drop=True), effects], axis=1)
-    out.to_csv(out_dir / f"partial_effects_{response}.csv", index=False)
+def _save_partial_pdf(fit, tag):
+    r = _r()
+    r["grdevices"].pdf(str(OUT_DIR / f"partial_effects_{tag}.pdf"), width=12, height=8)
+    r["ro"].r["plot"](fit, pages=0, scheme=2, shade=True, seWithMean=True)
+    r["grdevices"].dev_off()
 
 
-def fit_gam(table, response, tod_label, out_dir):
-    """Gamma-log bam() on vegetated pixels; variance-partition + save summary/rds/partial/concurvity."""
-    keep = ["fvc", "albedo", "dem", "amplitude", response]
-    veg = table[(table["fvc"] > 0) & (table[response] > 0)].dropna(subset=keep + ["lon", "lat"]).copy()
-    veg["region"] = veg["region"].astype("category")
-    with localconverter(ro.default_converter + pandas2ri.converter):
-        r_df = ro.conversion.py2rpy(veg[GAM_COLUMNS + [response]])
+def _partial_curves(fit, data, region, response):
+    """1-D smooth partial-effect curves on each region's OWN covariate range (no extrapolation beyond
+    its data). type='terms' isolates each smooth (its contribution depends only on its own covariate),
+    so the held values don't affect the curve. Returns long df: response, region, term, x, fit, se."""
+    r = _r()
+    holds = {c: float(np.nanmedian(data[c])) for c in GAM_COLUMNS}
+    rows = []
+    for term in CURVE_TERMS:
+        if term == "month":
+            grid = np.arange(1, 13, dtype=float)
+        else:
+            grid = np.linspace(float(data[term].min()), float(data[term].max()), GRID_N)
+        newdata = pd.DataFrame({c: np.full(len(grid), holds[c]) for c in GAM_COLUMNS})
+        newdata[term] = grid
+        with r["localconverter"](r["ro"].default_converter + r["pandas2ri"].converter):
+            nd = r["ro"].conversion.py2rpy(newdata)
+        pred = r["predict_terms"](fit, nd)
+        fit_mat = np.array(pred.rx2("fit"))
+        se_mat = np.array(pred.rx2("se.fit"))
+        cols = list(r["ro"].r["colnames"](pred.rx2("fit")))
+        j = cols.index(f"s({term})")
+        rows.append(
+            pd.DataFrame(
+                {
+                    "response": response,
+                    "region": region,
+                    "term": term,
+                    "x": grid,
+                    "fit": fit_mat[:, j],
+                    "se": se_mat[:, j],
+                }
+            )
+        )
+    return pd.concat(rows, ignore_index=True)
 
-    full = _fit(FORMULA_FULL.format(y=response), r_df)
-    cov = _fit(FORMULA_COV.format(y=response), r_df)
-    space = _fit(FORMULA_SPACE.format(y=response), r_df)
-    d_full, d_cov, d_space = _dev_expl(full), _dev_expl(cov), _dev_expl(space)
 
-    print(f"\n===== {tod_label}: vegetated pixels (n={len(veg)}), Gamma(log) bam =====")
-    print(f"deviance explained:  full={d_full:.3f}  covariates-only={d_cov:.3f}  space-only={d_space:.3f}")
-    print(f"  covariate-unique a = full - space      = {d_full - d_space:.3f}")
-    print(f"  space-unique     b = full - covariates = {d_full - d_cov:.3f}")
-    print(f"  shared/confounded c = cov + space - full = {d_cov + d_space - d_full:.3f}")
-    print(ro.r["summary"](full))
+def fit_cell(index):
+    """Fit full/cov/space for one (region, response); save partition + summary + rds + curves."""
+    region, response = FIT_TASKS[index]
+    t0 = time.perf_counter()
+    table = pd.read_parquet(TABLE_PATH)
+    sub = (
+        table[(table["region"] == region) & (table["fvc"] > 0) & (table[response] > 0)]
+        .dropna(subset=["fvc", "albedo", "dem", "amplitude", response, "lon", "lat"])
+        .copy()
+    )
 
-    (out_dir / f"gam_summary_{response}.txt").write_text(_summary_text(full))
-    ro.r["saveRDS"](full, file=str(out_dir / f"gam_{response}.rds"))
-    _save_concurvity(full, response, out_dir)
-    _save_partial_effects(full, veg, response, out_dir)
+    if len(sub) < MIN_ROWS:  # not enough clear-sky data to fit (e.g. rainforest daytime) -> skip, don't fail
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        (OUT_DIR / f"partition_{region}_{response}.json").write_text(
+            json.dumps(
+                {
+                    "region": region,
+                    "response": response,
+                    "n": int(len(sub)),
+                    "skipped": True,
+                    "dev_full": None,
+                    "dev_cov": None,
+                    "dev_space": None,
+                    "a_cov_unique": None,
+                    "b_space_unique": None,
+                    "c_shared": None,
+                }
+            )
+        )
+        print(f"[{index}] {region}_{response}: SKIPPED (only {len(sub)} valid rows < {MIN_ROWS})", flush=True)
+        return
 
-    partition = {
-        "response": response,
-        "n": len(veg),
-        "dev_full": d_full,
-        "dev_cov": d_cov,
-        "dev_space": d_space,
-        "a_cov_unique": d_full - d_space,
-        "b_space_unique": d_full - d_cov,
-        "c_shared": d_cov + d_space - d_full,
-    }
-    return partition, _smooth_table(full, response)
+    r = _r()
+    with r["localconverter"](r["ro"].default_converter + r["pandas2ri"].converter):
+        r_df = r["ro"].conversion.py2rpy(sub[GAM_COLUMNS + [response]])
+    fits = {m: _fit(MODELS[m].format(y=response), r_df) for m in MODELS}
+    dev = {m: _dev_expl(fits[m]) for m in MODELS}
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    tag = f"{region}_{response}"
+    (OUT_DIR / f"gam_summary_{tag}.txt").write_text(_summary_text(fits["full"]))
+    r["ro"].r["saveRDS"](fits["full"], file=str(OUT_DIR / f"gam_full_{tag}.rds"))
+    _smooth_table(fits["full"], region, response).to_csv(OUT_DIR / f"terms_{tag}.csv", index=False)
+    _save_concurvity(fits["full"], tag)
+    _save_partial_pdf(fits["full"], tag)
+    _partial_curves(fits["full"], sub, region, response).to_csv(OUT_DIR / f"curves_{tag}.csv", index=False)
+    (OUT_DIR / f"partition_{tag}.json").write_text(
+        json.dumps(
+            {
+                "region": region,
+                "response": response,
+                "n": int(len(sub)),
+                "dev_full": dev["full"],
+                "dev_cov": dev["cov"],
+                "dev_space": dev["space"],
+                "a_cov_unique": dev["full"] - dev["space"],
+                "b_space_unique": dev["full"] - dev["cov"],
+                "c_shared": dev["cov"] + dev["space"] - dev["full"],
+            }
+        )
+    )
+    print(
+        f"[{index}] {tag}: n={len(sub)} dev full/cov/space={dev['full']:.3f}/{dev['cov']:.3f}/{dev['space']:.3f} ({time.perf_counter() - t0:.0f}s)",
+        flush=True,
+    )
+
+
+# --- stage 3: aggregate ------------------------------------------------------
+def aggregate():
+    # Iterate the known (region, response) tags so stale files from earlier runs aren't picked up.
+    parts, terms, curves = [], [], []
+    for region, response in FIT_TASKS:
+        tag = f"{region}_{response}"
+        if (OUT_DIR / f"partition_{tag}.json").exists():
+            parts.append(json.loads((OUT_DIR / f"partition_{tag}.json").read_text()))
+        if (OUT_DIR / f"terms_{tag}.csv").exists():
+            terms.append(pd.read_csv(OUT_DIR / f"terms_{tag}.csv"))
+        if (OUT_DIR / f"curves_{tag}.csv").exists():
+            curves.append(pd.read_csv(OUT_DIR / f"curves_{tag}.csv"))
+    pd.DataFrame(parts).to_csv(OUT_DIR / "partition.csv", index=False)
+    if terms:
+        pd.concat(terms, ignore_index=True).to_csv(OUT_DIR / "terms.csv", index=False)
+    if curves:
+        pd.concat(curves, ignore_index=True).to_csv(OUT_DIR / "curves.csv", index=False)
+    print(f"aggregated -> {OUT_DIR}/partition.csv, terms.csv, curves.csv", flush=True)
+
+
+# --- stage 4: plot (overlay regions per term; pure python, no R) -------------
+def plot():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    curves = pd.read_csv(OUT_DIR / "curves.csv")
+    regions = sorted(curves["region"].unique())
+    cmap = plt.get_cmap("tab10")
+    colors = {region: cmap(i % 10) for i, region in enumerate(regions)}
+
+    for response in RESPONSES:
+        terms = list(CURVE_TERMS)
+        fig, axes = plt.subplots(1, len(terms), figsize=(4 * len(terms), 4.2), squeeze=False)
+        for ax, term in zip(axes[0], terms):
+            for region in regions:
+                c = curves[(curves["response"] == response) & (curves["term"] == term) & (curves["region"] == region)]
+                if c.empty:
+                    continue
+                ax.plot(c["x"], c["fit"], color=colors[region], linewidth=1.5, label=region)
+                ax.fill_between(c["x"], c["fit"] - c["se"], c["fit"] + c["se"], color=colors[region], alpha=0.12)
+            ax.axhline(0, color="black", linewidth=0.6, linestyle="--")
+            ax.set_xlabel(term)
+            ax.set_title(f"s({term})")
+        axes[0][0].set_ylabel(f"partial effect on log {response}")
+        axes[0][-1].legend(fontsize=7, ncol=1, loc="best")
+        fig.suptitle(f"Per-region partial-effect curves — {response}")
+        fig.tight_layout()
+        fig.savefig(OUT_DIR / f"curves_{response}.pdf", bbox_inches="tight")
+        plt.close(fig)
+        print(f"saved {OUT_DIR}/curves_{response}.pdf", flush=True)
 
 
 if __name__ == "__main__":
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    table = build_table()
-    print("table rows:", len(table), "| regions:", table["region"].nunique())
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("build")
+    fit_parser = sub.add_parser("fit")
+    fit_parser.add_argument("index", type=int, help="task index 0..17 (region x response)")
+    sub.add_parser("aggregate")
+    sub.add_parser("plot")
+    args = parser.parse_args()
 
-    partitions, smooth_tables = [], []
-    for response, tod_label in (("rmse_day", "DAYTIME"), ("rmse_night", "NIGHTTIME")):
-        partition, smooth = fit_gam(table, response, tod_label, OUT_DIR)
-        partitions.append(partition)
-        smooth_tables.append(smooth)
-
-    pd.DataFrame(partitions).to_csv(OUT_DIR / "partition.csv", index=False)
-    pd.concat(smooth_tables, ignore_index=True).to_csv(OUT_DIR / "terms.csv", index=False)
-    print("\nresults saved to", OUT_DIR)
+    if args.cmd == "build":
+        build()
+    elif args.cmd == "fit":
+        fit_cell(args.index)
+    elif args.cmd == "aggregate":
+        aggregate()
+    elif args.cmd == "plot":
+        plot()

@@ -15,6 +15,7 @@ from deep_lst.evaluation.metrics import (
     compute_scores,
     daily_rmse_by_valid_day,
     to_init_time,
+    to_lead_hours,
     to_valid_time,
 )
 from deep_lst.evaluation.spatial import lookup_pixel_coords
@@ -365,8 +366,6 @@ class EvaluatorVerification(Evaluator):
     """
 
     def _compute(self):
-        lead_times = self.forecast_ds["lead_time"].values
-
         self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
         self.rmse_stats = compute_rmse_sufficient_stats(self.pred, self.obs)
 
@@ -381,7 +380,7 @@ class EvaluatorVerification(Evaluator):
         # Per-(valid calendar day) pooled RMSE within forecast-day buckets 1 and 10, from the
         # sufficient stats above — feeds the monthly bucket violins (near vs far horizon).
         self.daily_pooled_bucket = {}
-        lead_hours = (self.pred["lead_time"] / np.timedelta64(1, "h")).astype(int).values
+        lead_hours = to_lead_hours(self.pred)
         for day_number in (1, 10):
             low, high = LEAD_DAY_BUCKETS[day_number - 1]
             lead_idx = np.where((lead_hours >= low) & (lead_hours <= high))[0]
@@ -397,13 +396,7 @@ class EvaluatorVerification(Evaluator):
         self.pooled_climate_day = None
 
         if self.baseline_ds is not None:
-            baseline_slices = []
-            for lead_time in lead_times:
-                pred_lt = self.pred.sel(lead_time=lead_time)
-                baseline_slices.append(self._process_baseline(pred_lt, lead_time))
-
-            lt_index = pd.Index(lead_times, name="lead_time")
-            baseline_full = xr.concat(baseline_slices, dim=lt_index)
+            baseline_full = self._baseline_full()
             self.baseline_full = baseline_full
             self.baseline_scores = compute_scores(baseline_full, self.obs, self.metrics, self.aggregation)
             pooled_baseline_day = compute_pooled_by_day(
@@ -422,6 +415,12 @@ class EvaluatorVerification(Evaluator):
                 )
 
             self.skill_scores = self.scores / self.baseline_scores
+
+    def _baseline_full(self) -> xr.DataArray:
+        """Align the loaded baseline to each lead and concat into the (init_time, lead_time, space) cube."""
+        lead_times = self.pred["lead_time"].values
+        slices = [self._process_baseline(self.pred.sel(lead_time=lead_time), lead_time) for lead_time in lead_times]
+        return xr.concat(slices, dim=pd.Index(lead_times, name="lead_time"))
 
     def _process_baseline(self, pred_lt, lead_time) -> xr.DataArray:
         lead_time_hour = int(pd.Timedelta(lead_time).total_seconds() // 3600)

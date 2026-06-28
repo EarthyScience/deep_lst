@@ -149,6 +149,18 @@ class ExperimentPaths:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def tables_dir(self, experiment: str, version: str, kind: str) -> Path:
+        """Evaluation tables grouped by family: kind in {scores, fc_limits, validity}."""
+        d = self.results_root / "tables" / f"{experiment}_{version}" / kind
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def figures_dir(self, experiment: str, version: str) -> Path:
+        """Per-model figure directory, parallel to the tables tree."""
+        d = self.results_root / "plots" / f"{experiment}_{version}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
 
 def load_inc_variances(path: Path) -> dict[str, float]:
     """Return {var: sigma_inc_norm^2} extracted from a statistics .npz file.

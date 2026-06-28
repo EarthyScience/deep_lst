@@ -23,17 +23,26 @@ std (see results/verification/std_comparison_sim.py for that prior rationale).
 """
 
 import argparse
-from pathlib import Path
+import json
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.evaluator import EvaluatorVerification
-from deep_lst.evaluation.metrics import METRIC_REGISTRY
+from deep_lst.evaluation.latex import latex_table, write_month_tables
+from deep_lst.evaluation.metrics import pool_metric, to_lead_hours
+from deep_lst.evaluation.plots.month_grid import MONTHS, _latitude_labels, continuous_norm, month_grid_heatmap
+from deep_lst.utils import ExperimentPaths
+
+PATHS = ExperimentPaths()
 
 NOWCAST_MAX_HOURS = 24
 COLUMNS = ("validity", "daytime", "nighttime", "amplitude", "daily", "total")
+
+# Monthly-RMSE mode (--monthly): same pooling as the score tables, split by init month.
+DAYNIGHT = ("day", "night")
+TRAINING_REGION_KEY = "temporal"  # the train_mtg holdout column in REGION_DISPLAY
 
 # Region display names; "temporal" holdout reads the training store held out in time.
 REGION_EVAL_NAME = {"temporal": "train_mtg"}
@@ -52,10 +61,6 @@ REGION_DISPLAY = {
 
 
 # --- small shared helpers ----------------------------------------------------
-def _lead_hours(da: xr.DataArray) -> np.ndarray:
-    return (da["lead_time"].values / np.timedelta64(1, "h")).astype(int)
-
-
 def _day_window_bounds(window: str) -> tuple[int, int] | None:
     """Inclusive lead-hour bounds for a 'dayN' window (24 h of forecast day N), else None."""
     if not window.startswith("day") or not window[3:].isdigit():
@@ -65,7 +70,7 @@ def _day_window_bounds(window: str) -> tuple[int, int] | None:
 
 
 def _select_window(da: xr.DataArray, window: str) -> xr.DataArray:
-    lead_hours = _lead_hours(da)
+    lead_hours = to_lead_hours(da)
     day_bounds = _day_window_bounds(window)
     if window == "nowcast":
         keep = (lead_hours >= 1) & (lead_hours <= NOWCAST_MAX_HOURS)
@@ -81,7 +86,7 @@ def _valid_hour(da: xr.DataArray) -> xr.DataArray:
     """Hour-of-day of each (init_time, lead_time) valid time, as a 2D field."""
     init_hour = pd.DatetimeIndex(da["init_time"].values).hour
     init_hour = xr.DataArray(init_hour, dims="init_time", coords={"init_time": da["init_time"]})
-    lead_hour = xr.DataArray(_lead_hours(da), dims="lead_time", coords={"lead_time": da["lead_time"]})
+    lead_hour = xr.DataArray(to_lead_hours(da), dims="lead_time", coords={"lead_time": da["lead_time"]})
     return (init_hour + lead_hour) % 24
 
 
@@ -166,8 +171,7 @@ def _column_fields(pred: xr.DataArray, obs: xr.DataArray, column: str):
 
 def pooled_metric(pred: xr.DataArray, obs: xr.DataArray, metric: str) -> float:
     """Single metric value pooled over every dim (squared-error domain)."""
-    metric_fn = METRIC_REGISTRY[metric]
-    return float(metric_fn(pred, obs, dim=list(pred.dims)))
+    return float(pool_metric(pred, obs, metric, list(pred.dims)))
 
 
 def pooled_std(obs: xr.DataArray) -> float:
@@ -216,13 +220,13 @@ def skill_row(model_values: dict, baseline_values: dict) -> dict[str, str]:
 
 
 # --- data loading ------------------------------------------------------------
-def load_entities(experiment, version, eval_name, var, baselines, temporal):
+def load_entities(experiment, version, eval_name, var, baselines, temporal, attach_classes=False):
     """Return (obs, {entity_name: prediction_da}), all materialised in memory.
 
     The forecast zarr is chunked with the whole lead axis in one chunk, so the
     evaluator's per-lead baseline masking would re-read every chunk once per lead
     (tens of minutes per region). We load the test-period forecast ONCE, then reuse
-    the evaluator's own alignment (`_process_baseline`) against that in-memory array,
+    the evaluator's own alignment (`_baseline_full`) against that in-memory array,
     which makes each baseline a few seconds and gives identical results.
     """
     evaluator = EvaluatorVerification(
@@ -238,39 +242,26 @@ def load_entities(experiment, version, eval_name, var, baselines, temporal):
         metrics=("rmse",),
         compute_anomaly=False,
     )
-    forecast_ds = evaluator._filter(evaluator._load_forecast()).load()
+    forecast_ds = evaluator._filter(evaluator._load_forecast())
+    if attach_classes:
+        forecast_ds = evaluator._attach_class_coords(forecast_ds)  # per-pixel class coords (kg, modis_lc, ...)
+    forecast_ds = forecast_ds.load()
     evaluator.pred = forecast_ds[f"{var}_pred"]
     evaluator.obs = forecast_ds[f"{var}_obs"]
 
     obs = evaluator.obs
     predictions = {"model": evaluator.pred}
-    lead_times = forecast_ds["lead_time"].values
 
     for baseline in baselines:
         evaluator.baseline = baseline
         evaluator.baseline_ds = evaluator._load_baseline()
         evaluator.baseline_ds = evaluator._subset_pixels(evaluator.baseline_ds, evaluator.pred.isel(lead_time=0))
-        slices = [
-            evaluator._process_baseline(evaluator.pred.sel(lead_time=lead_time), lead_time) for lead_time in lead_times
-        ]
-        baseline_full = xr.concat(slices, dim=pd.Index(lead_times, name="lead_time"))
+        baseline_full = evaluator._baseline_full()
         predictions[baseline] = baseline_full.load()
     return obs, predictions
 
 
 # --- table assembly ----------------------------------------------------------
-def to_latex(rows: dict[str, dict[str, str]], caption: str, label: str) -> str:
-    col_spec = "c|" + "|".join("c" for _ in COLUMNS)
-    header = " & " + " & ".join(COLUMNS) + r" \\"
-    lines = [r"\begin{table}[]", r"    \centering", f"    \\begin{{tabular}}{{{col_spec}}}", "    " + header]
-    for region_key, row in rows.items():
-        display = REGION_DISPLAY.get(region_key, region_key)
-        cells = " & ".join(row[column] for column in COLUMNS)
-        lines.append(f"    {display} & {cells} \\\\")
-    lines += [r"    \end{tabular}", f"    \\caption{{{caption}}}", f"    \\label{{{label}}}", r"\end{table}"]
-    return "\n".join(lines)
-
-
 def _caption(metric, kind, entity, window):
     if kind == "skill":
         return f"Skill (1 - {metric}/{metric}) of the model against {entity}, {window} window."
@@ -324,21 +315,219 @@ def build_tables(experiment, version, regions, var, baselines, temporal, windows
     return tables_rows
 
 
+# --- monthly-RMSE mode: pooled RMSE per (region|class, month, day/night, window) ------------------
+def _month_window_rmse(model, obs, month, kind, window):
+    """Pooled RMSE [K] for one (init-month, day/night, lead-window) cell, over init x leads x space.
+
+    Reuses the score-table pooling (`_select_window`, `_mask_time_of_day`, `pooled_metric`); the only
+    extra axis is the init-month groupby. Returns NaN when the masked window has no valid obs.
+    """
+    init_months = pd.DatetimeIndex(model["init_time"].values).month
+    in_month = init_months == month
+    model_sel = _select_window(model.isel(init_time=in_month), window)
+    obs_sel = _select_window(_mask_time_of_day(obs.isel(init_time=in_month), kind), window)
+    if int(obs_sel.notnull().sum()) == 0:
+        return float("nan")
+    return pooled_metric(model_sel, obs_sel, "rmse")
+
+
+def monthly_rmse_records(experiment, version, region_specs, temporal, windows, var="LST"):
+    """One record per (region, month, day/night, window): pooled RMSE. region_specs: (label, eval_name)."""
+    records = []
+    for label, eval_name in region_specs:
+        try:
+            obs, predictions = load_entities(experiment, version, eval_name, var, [], temporal)
+        except FileNotFoundError as error:
+            print(f"  [skip] {label} ({eval_name}): {error}")
+            continue
+        model = predictions["model"]
+        latitude = float(obs["lat"].mean())
+        for month in MONTHS:
+            for kind in DAYNIGHT:
+                for window in windows:
+                    records.append(
+                        {
+                            "region": label,
+                            "latitude": latitude,
+                            "month": month,
+                            "daynight": kind,
+                            "window": window,
+                            "rmse": _month_window_rmse(model, obs, month, kind, window),
+                        }
+                    )
+        print(f"  {label:<14} done")
+    return records
+
+
+def monthly_rmse_class_records(
+    experiment, version, eval_name, class_key, class_labels, temporal, windows, var="LST", min_pixels=20
+):
+    """One record per (class, month, day/night, window) for one site, pooling pixels by `class_key`."""
+    obs, predictions = load_entities(experiment, version, eval_name, var, [], temporal, attach_classes=True)
+    model = predictions["model"]
+    class_coord = model[class_key]
+
+    records = []
+    for class_id in np.unique(class_coord.values):
+        if class_id == -1:
+            continue
+        pixel_mask = (class_coord == class_id).values
+        if pixel_mask.sum() < min_pixels:
+            print(
+                f"  [skip] class {int(class_id):>3}  {class_labels.get(str(int(class_id)), class_id)} ({int(pixel_mask.sum())} px < {min_pixels})"
+            )
+            continue
+        model_class = model.isel(pixel=pixel_mask)
+        obs_class = obs.isel(pixel=pixel_mask)
+        label = class_labels.get(str(int(class_id)), str(int(class_id)))
+        for month in MONTHS:
+            for kind in DAYNIGHT:
+                for window in windows:
+                    records.append(
+                        {
+                            "region": label,
+                            "class_id": int(class_id),
+                            "month": month,
+                            "daynight": kind,
+                            "window": window,
+                            "rmse": _month_window_rmse(model_class, obs_class, month, kind, window),
+                        }
+                    )
+        print(f"  class {int(class_id):>3}  {label:<32} ({int(pixel_mask.sum())} px) done")
+    return records
+
+
+def _rmse_cell(record):
+    """LaTeX table cell: RMSE to two decimals, '--' when empty."""
+    value = record["rmse"]
+    if value is None or not np.isfinite(value):
+        return "--"
+    return f"{value:.2f}"
+
+
+def run_monthly(args):
+    """Monthly pooled-RMSE heatmaps + tables for regions and land-cover classes (shared scale/window)."""
+    region_specs = [(REGION_DISPLAY[key], REGION_EVAL_NAME.get(key, key)) for key in REGION_DISPLAY]
+    training_label = REGION_DISPLAY[TRAINING_REGION_KEY]
+    windows = tuple(args.windows)
+
+    region_df = pd.DataFrame.from_records(
+        monthly_rmse_records(args.experiment, args.version, region_specs, args.temporal, windows, args.variable)
+    )
+    class_labels = json.loads(PATHS.eval_meta_path("seviri").read_text())[f"{args.by_class}_labels"]
+    class_df = pd.DataFrame.from_records(
+        monthly_rmse_class_records(
+            args.experiment,
+            args.version,
+            args.class_eval_name,
+            args.by_class,
+            class_labels,
+            args.temporal,
+            windows,
+            args.variable,
+        )
+    )
+
+    tables_dir = PATHS.tables_dir(args.experiment, args.version, "monthly_rmse")
+    figures_dir = PATHS.figures_dir(args.experiment, args.version)
+
+    # region column order: training holdout first, then eval regions by descending latitude.
+    lat_by_region = region_df.groupby("region")["latitude"].first()
+    eval_regions = [region for region in lat_by_region.index if region != training_label]
+    region_order = [training_label] + sorted(eval_regions, key=lat_by_region.get, reverse=True)
+    region_top = _latitude_labels(region_df, region_order, training_label)
+    class_order = class_df[["region", "class_id"]].drop_duplicates().sort_values("class_id")["region"].tolist()
+
+    for window in windows:
+        region_win = region_df[region_df["window"] == window]
+        class_win = class_df[class_df["window"] == window]
+        # one colour scale per window, shared across the region and class heatmaps.
+        both = np.concatenate([region_win["rmse"].to_numpy(), class_win["rmse"].to_numpy()])
+        cmap, norm = continuous_norm(float(np.nanmin(both)), float(np.nanmax(both)))
+        stem = f"{args.experiment}_{args.version}_{window}"
+
+        region_win.to_csv(tables_dir / f"{stem}_regions.csv", index=False)
+        class_win.to_csv(tables_dir / f"{stem}_{args.by_class}.csv", index=False)
+        write_month_tables(
+            region_win.to_dict("records"),
+            region_order,
+            tables_dir,
+            f"{stem}_regions",
+            f"Monthly RMSE [K] ({window}) by region for {args.experiment}",
+            f"tab:{stem}_regions",
+            _rmse_cell,
+            MONTHS,
+            DAYNIGHT,
+        )
+        write_month_tables(
+            class_win.to_dict("records"),
+            class_order,
+            tables_dir,
+            f"{stem}_{args.by_class}",
+            f"Monthly RMSE [K] ({window}) by {args.by_class} for {args.experiment}",
+            f"tab:{stem}_{args.by_class}",
+            _rmse_cell,
+            MONTHS,
+            DAYNIGHT,
+        )
+        month_grid_heatmap(
+            region_win,
+            region_order,
+            "rmse",
+            figures_dir / f"{stem}_regions.pdf",
+            cmap=cmap,
+            norm=norm,
+            cbar_label="RMSE [K]",
+            top_labels=region_top,
+            separator_x=0.5,
+            col_gridlines=True,
+            figsize_per_col=1.2,
+            figsize_base=2.0,
+        )
+        month_grid_heatmap(
+            class_win,
+            class_order,
+            "rmse",
+            figures_dir / f"{stem}_{args.by_class}.pdf",
+            cmap=cmap,
+            norm=norm,
+            cbar_label="RMSE [K]",
+            figsize_per_col=0.55,
+            figsize_base=3.0,
+        )
+    print("\nDone.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment", required=True)
     parser.add_argument("--version", default="version_0")
     parser.add_argument("--variable", default="LST")
-    parser.add_argument("--regions", nargs="+", required=True)
-    parser.add_argument("--baselines", nargs="+", required=True)
+    parser.add_argument("--regions", nargs="+", default=None)
+    parser.add_argument("--baselines", nargs="+", default=None)
     parser.add_argument("--temporal", nargs="+", default=["test_period_00"])
     parser.add_argument("--windows", nargs="+", default=["nowcast", "full"])
     parser.add_argument("--metrics", nargs="+", default=["rmse"], help="any name in metrics.METRIC_REGISTRY")
     parser.add_argument("--sets", nargs="+", default=["raw", "std", "skill"], choices=["raw", "std", "skill"])
+    parser.add_argument(
+        "--monthly",
+        action="store_true",
+        help="Monthly pooled-RMSE heatmaps + tables (regions + classes) instead of the score tables.",
+    )
+    parser.add_argument("--by-class", default="modis_lc_classes", help="Class coord pooled in --monthly class heatmap.")
+    parser.add_argument(
+        "--class-eval-name", default="train_mtg", help="Site whose pixels are pooled in --monthly class mode."
+    )
     args = parser.parse_args()
 
-    out_dir = Path("results") / "tables" / f"{args.experiment}_{args.version}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.monthly:
+        run_monthly(args)
+        return
+
+    if args.regions is None or args.baselines is None:
+        parser.error("--regions and --baselines are required unless --monthly is set")
+
+    out_dir = PATHS.tables_dir(args.experiment, args.version, "scores")
 
     tables_rows = build_tables(
         args.experiment,
@@ -354,7 +543,7 @@ def main():
 
     for (metric, kind, window, entity), rows in tables_rows.items():
         name = f"{metric}_{kind}_{entity}_{window}"
-        latex = to_latex(rows, _caption(metric, kind, entity, window), f"tab:{name}")
+        latex = latex_table(rows, COLUMNS, _caption(metric, kind, entity, window), f"tab:{name}", REGION_DISPLAY)
         print(f"\n===== {name} =====\n{latex}")
         out_path = out_dir / f"{name}.tex"
         out_path.write_text(latex + "\n")

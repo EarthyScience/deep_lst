@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
 
+from deep_lst.evaluation.metrics import to_lead_hours
 from deep_lst.evaluation.plots._design import RC
 
 # (title, valid-hour predicate) — matches the notebook's day/night windows
@@ -32,10 +33,6 @@ def _init_hours(pred) -> np.ndarray:
     return (pred["init_time"].values.astype("datetime64[h]").astype("int64")) % 24
 
 
-def _lead_hours(pred) -> np.ndarray:
-    return (pred["lead_time"].values / np.timedelta64(1, "h")).astype(int)
-
-
 def _lead_colorbar(fig, axes, leads):
     sm = cm.ScalarMappable(cmap="Blues", norm=plt.Normalize(leads[0], leads[-1]))
     sm.set_array([])
@@ -49,7 +46,7 @@ def day_night_summary(pred, obs, leads=range(1, 25)):
     leads = list(leads)
     pred = pred.isel(lead_time=leads).load()
     obs = obs.isel(lead_time=leads).load()
-    ih, lead_h = _init_hours(pred), _lead_hours(pred)
+    ih, lead_h = _init_hours(pred), to_lead_hours(pred)
     out = {}
     for title, mfn in _PANELS:
         sse = n_err = n_valid = n_total = 0
@@ -90,7 +87,7 @@ def lst_cdf_plot(pred, obs, var, save_path, eval_region, leads=range(1, 25), sum
     # Load only the requested leads into memory once — per-lead lazy-dask .values is pathologically slow.
     pred = pred.isel(lead_time=leads).load()
     obs = obs.isel(lead_time=leads).load()
-    ih, lead_h = _init_hours(pred), _lead_hours(pred)
+    ih, lead_h = _init_hours(pred), to_lead_hours(pred)
     colors = cm.Blues(np.linspace(0.3, 1.0, len(leads)))
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
@@ -125,7 +122,7 @@ def rmse_cdf_plot(pred, obs, var, save_path, eval_region, leads=range(1, 25), su
     plt.rcParams.update(RC)
     leads = list(leads)
     err = (pred - obs).isel(lead_time=leads).load()  # load the lead subset once (lazy per-lead is slow)
-    ih, lead_h = _init_hours(err), _lead_hours(err)
+    ih, lead_h = _init_hours(err), to_lead_hours(err)
     colors = cm.Blues(np.linspace(0.3, 1.0, len(leads)))
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
