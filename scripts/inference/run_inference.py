@@ -73,7 +73,7 @@ def run_inference(cfg: DictConfig) -> None:
         config=config["test_dataset"],
         spatial_indices=dataset.spatial_idx,
         prediction_mode=config["model"]["step_loss"],
-        apply_consistent_mask=not cfg.no_consistent_mask,
+        apply_lw_mask=cfg.land_water_mask,
     )
 
     output_path = paths.forecast_path(cfg.experiment, cfg.version, cfg.eval_name)

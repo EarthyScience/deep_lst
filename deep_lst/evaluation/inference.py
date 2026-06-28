@@ -35,7 +35,7 @@ class Forecast:
         config: dict,
         spatial_indices: np.ndarray,
         prediction_mode: str = "diagnostic",
-        apply_consistent_mask: bool = True,
+        apply_lw_mask: bool = True,
     ):
         self.model = model
         self.device = device
@@ -43,7 +43,7 @@ class Forecast:
         self.td_keys = td_keys
         self.config = config
         self.prediction_mode = prediction_mode
-        self.apply_consistent_mask = apply_consistent_mask
+        self.apply_lw_mask = apply_lw_mask
 
         self.normaliser = ZScoringNormalizer(PATHS.statistics_path("seviri", config["seviri"]["statistics"]))
 
@@ -55,6 +55,9 @@ class Forecast:
         self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = lookup_pixel_coords(
             seviri_store_path, self.unique_spatial_idx
         )
+
+        if self.apply_lw_mask:
+            self.non_land = self._load_non_land_mask(seviri_store_path, self.unique_spatial_idx)
 
         fill = len(self.unique_spatial_idx) / (self.grid_shape[0] * self.grid_shape[1])
         self.sparse = fill < _SPARSE_FILL_THRESHOLD
@@ -124,8 +127,6 @@ class Forecast:
         ti_cursor = 0
 
         for preds_b, obs_b in chain([first_batch], gen):
-            if self.apply_consistent_mask and is_rollout:
-                preds_b, obs_b = self._apply_consistent_mask(preds_b, obs_b)
             for var in all_vars:
                 carry_p[var].append(preds_b[var])
                 carry_o[var].append(obs_b[var])
@@ -137,6 +138,13 @@ class Forecast:
             cut = n_complete * n_spatial
             block_p = {var: np.concatenate(carry_p[var], axis=0) for var in all_vars}
             block_o = {var: np.concatenate(carry_o[var], axis=0) for var in all_vars}
+            if self.apply_lw_mask:
+                # The first `cut` rows are n_complete whole init-times of n_spatial pixels each,
+                # in unique_spatial_idx order — so tiling non_land to length cut aligns row-for-row.
+                non_land_rows = np.tile(self.non_land, n_complete)
+                for var in all_vars:
+                    block_p[var][:cut][non_land_rows] = np.nan
+                    block_o[var][:cut][non_land_rows] = np.nan
             self._write_init_times(
                 zarr_arrays,
                 {var: a[:cut] for var, a in block_p.items()},
@@ -416,16 +424,15 @@ class Forecast:
                 yield preds_b, obs_b
 
     @staticmethod
-    def _apply_consistent_mask(
-        preds: dict[str, np.ndarray], obs: dict[str, np.ndarray]
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-        preds_masked = {}
-        obs_masked = {}
-        for var in obs:
-            o = obs[var]
-            p = preds[var]
+    def _load_non_land_mask(store_path, unique_spatial_idx):
+        """Boolean (N,) aligned to unique_spatial_idx; True = non-land pixel to be dropped.
 
-            all_valid = np.all(np.isfinite(o), axis=1, keepdims=True) & np.all(np.isfinite(p), axis=1, keepdims=True)
-            preds_masked[var] = np.where(all_valid, p, np.nan)
-            obs_masked[var] = np.where(all_valid, o, np.nan)
-        return preds_masked, obs_masked
+        LWMASK is the LSA SAF USGS-IGBP land-water mask: 1=land, 0=sea, 3=inland water
+        (off-disk is NaN). Keep only land, so anything other than 1 is dropped — this also
+        removes inland water bodies (value 3), which the sea-only convention would miss.
+        """
+        store = zarr.open_group(str(store_path), mode="r")
+        store_spatial_idx = store["spatial_idx"][:]
+        lwmask = store["LWMASK"][:]
+        positions = np.searchsorted(store_spatial_idx, unique_spatial_idx)
+        return lwmask[positions] != 1

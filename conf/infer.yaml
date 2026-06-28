@@ -12,7 +12,7 @@ spatial_indices: ???
 
 # --- optional inference flags ---
 best: false               # load best.ckpt instead of last.ckpt
-no_consistent_mask: true
+land_water_mask: true   # keep only LWMASK==1 (land); drop sea + inland water (LWMASK 0/3)
 inference_horizon: 72   # rollout horizon in hours. Use the trained value to reproduce training-length forecasts.
 
 test_dataset:

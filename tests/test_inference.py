@@ -3,11 +3,6 @@
 Hermetic — no zarr stores, no real data, no GPU required.
 
 Covered:
-  _apply_consistent_mask
-    - all-finite input passes through unchanged
-    - NaN in obs at any lead time propagates to all lead times for that sample
-    - mask is applied per-variable independently
-
   _write_init_times
     - scatter into whole init_time slots (time-major row blocks)
     - pixels outside the sparse set stay NaN
@@ -63,18 +58,33 @@ DIAG_TD_KEYS = {
     "diagnostic_out_keys": DIAG_OUT_KEYS,
 }
 
-# Batch shape: (B, T, 1, 1, 1) — single pixel, single channel.
-# The three trailing spatial/channel dims are needed because _predict_rollout
-# calls .squeeze((-3, -2, -1)) on model output.
+# Diagnostic batch shape: (B, 1, 1, 1) — _predict_diagnostic squeezes (-3, -2, -1).
 SPATIAL = (1, 1, 1)
 
+# Packed-tensor layout (post-collator) consumed by _predict_rollout:
+#   y_prog    (B, T, H, W, nP+nD)  prognostics first, then diagnostics
+#   X_dyn     (B, T, H, W, nF_all) step forcings
+#   X_dyn_ctx (B, T, H, W, nF_ctx) lookback-window forcings (empty slice at lookback=0)
+# Single pixel (H=W=1); the rollout squeezes H,W to yield (B, horizon) per variable.
+N_PROG = 1  # prognostic channels in y_prog (matches PROG_KEYS)
+N_DIAG = 0  # diagnostic channels (rollout tests use none)
+N_TARGET = N_PROG + N_DIAG
+N_INPUT = 2  # X_dyn channels (forcings the mock models ignore)
+N_CTX = 1  # X_dyn_ctx channels (unused at lookback=0)
+GRID = (1, 1)  # H, W
 
-def _rollout_batch(b=B, t=T, finite=True):
-    """TensorDict with shape (b, t, *SPATIAL) for all rollout keys."""
-    data = {}
-    for k in IN_KEYS + PROG_KEYS:
-        tensor = torch.randn(b, t, *SPATIAL) if finite else torch.full((b, t, *SPATIAL), float("nan"))
-        data[k] = tensor
+
+def _rollout_batch(b=B, t=T):
+    """Packed-tensor TensorDict (post-collator format) for the rollout path.
+
+    Channel 0 of y_prog is the single prognostic var (PROG_KEYS[0]); tests set the
+    init state via y_prog[:, 0, ..., 0] and read targets from y_prog[:, 1:, ..., 0].
+    """
+    data = {
+        "y_prog": torch.randn(b, t, *GRID, N_TARGET),
+        "X_dyn": torch.randn(b, t, *GRID, N_INPUT),
+        "X_dyn_ctx": torch.randn(b, t, *GRID, N_CTX),
+    }
     return TensorDict(data, batch_size=[b])
 
 
@@ -88,42 +98,40 @@ def _diag_batch(b=B, finite=True):
     return TensorDict(data, batch_size=[b])
 
 
-# _predict_rollout reads:
-#   - model.config["train_dataset"] for context-var pairs (empty → no context, fine at LOOKBACK=0)
-#   - model.config["model"]["predict_anomaly"] to gate climatology lookup (default False)
+# Placeholder config carried by the mock models; neither _predict_rollout nor
+# _predict_diagnostic reads model.config in the current packed-tensor API.
 _EMPTY_TRAIN_CONFIG = {"train_dataset": {}, "model": {}}
 
 
 class _ZeroIncrementModel:
-    """Rollout model: always returns a zero increment for the prognostic key."""
+    """Rollout model: returns a zero increment (and zero diagnostics) every step.
+
+    Signature matches MultiModalMLP.forward(state_window, X_dyn_window, step_X_dyn).
+    """
 
     def __init__(self):
         self.model = self
-        self.config = _EMPTY_TRAIN_CONFIG
         self.call_count = 0
-        self.prog_states_at_call: list = []  # records prog state snapshot each call
 
-    def __call__(self, td):
+    def __call__(self, state_window, X_dyn_window, step_X_dyn):
         self.call_count += 1
-        self.prog_states_at_call.append(td[PROG_KEYS[0]].clone())
-        result = td.clone()
-        result[PROG_OUT_KEYS[0]] = torch.zeros_like(td[PROG_KEYS[0]])
-        return result
+        n, h, w = step_X_dyn.shape[:3]
+        return torch.zeros(n, h, w, N_TARGET)
 
 
 class _ConstantIncrementModel:
-    """Rollout model: always adds 1.0 to the prognostic state."""
+    """Rollout model: returns a +1.0 increment for every prognostic channel."""
 
     def __init__(self):
         self.model = self
-        self.config = _EMPTY_TRAIN_CONFIG
         self.call_count = 0
 
-    def __call__(self, td):
+    def __call__(self, state_window, X_dyn_window, step_X_dyn):
         self.call_count += 1
-        result = td.clone()
-        result[PROG_OUT_KEYS[0]] = torch.ones_like(td[PROG_KEYS[0]])
-        return result
+        n, h, w = step_X_dyn.shape[:3]
+        out = torch.zeros(n, h, w, N_TARGET)
+        out[..., :N_PROG] = 1.0
+        return out
 
 
 class _ConstantDiagModel:
@@ -165,51 +173,6 @@ def _run_rollout(*args, **kwargs):
 
 def _run_diagnostic(*args, **kwargs):
     return _collect(Forecast._predict_diagnostic(*args, **kwargs))
-
-
-# ── _apply_consistent_mask ────────────────────────────────────────────────────
-
-
-def test_mask_all_finite_passes_through():
-    preds = {"LST": np.ones((6, HORIZON))}
-    obs = {"LST": np.ones((6, HORIZON))}
-    pm, om = Forecast._apply_consistent_mask(preds, obs)
-    assert np.all(np.isfinite(pm["LST"]))
-    assert np.all(np.isfinite(om["LST"]))
-
-
-def test_mask_nan_in_one_lead_propagates_to_all():
-    """A single NaN in obs at lead 1 for sample 2 → all leads for sample 2 become NaN."""
-    obs = np.ones((6, HORIZON))
-    obs[2, 1] = np.nan
-    preds = {"LST": np.ones((6, HORIZON))}
-    pm, om = Forecast._apply_consistent_mask(preds, {"LST": obs})
-    assert np.all(np.isnan(pm["LST"][2, :])), "All pred leads for sample 2 should be NaN"
-    assert np.all(np.isnan(om["LST"][2, :])), "All obs leads for sample 2 should be NaN"
-    assert np.all(np.isfinite(pm["LST"][0, :])), "Unaffected sample 0 should remain finite"
-
-
-def test_mask_pred_nan_also_propagates():
-    """NaN in preds (not obs) propagates to all leads for that sample.
-    Rollout can produce NaN predictions from a NaN init state even when obs clears later,
-    so the mask requires BOTH obs and pred to be fully finite (see _apply_consistent_mask)."""
-    preds = np.ones((4, HORIZON))
-    preds[1, 0] = np.nan
-    obs = np.ones((4, HORIZON))
-    pm, om = Forecast._apply_consistent_mask({"LST": preds}, {"LST": obs})
-    assert np.all(np.isnan(pm["LST"][1, :])), "All pred leads for sample 1 should be NaN"
-    assert np.all(np.isnan(om["LST"][1, :])), "All obs leads for sample 1 should be NaN"
-    assert np.all(np.isfinite(pm["LST"][0, :])), "Unaffected sample 0 pred should remain finite"
-    assert np.all(np.isfinite(om["LST"][0, :])), "Unaffected sample 0 obs should remain finite"
-
-
-def test_mask_independent_per_variable():
-    preds = {"LST": np.ones((4, 3)), "T2": np.ones((4, 3))}
-    obs = {"LST": np.ones((4, 3)), "T2": np.ones((4, 3))}
-    obs["LST"][1, 0] = np.nan
-    pm, om = Forecast._apply_consistent_mask(preds, obs)
-    assert np.all(np.isnan(om["LST"][1, :]))
-    assert np.all(np.isfinite(om["T2"])), "T2 should be unaffected by LST mask"
 
 
 # ── _write_init_times ──────────────────────────────────────────────────────────
@@ -381,18 +344,20 @@ def test_rollout_model_called_horizon_times_per_batch():
 
 def test_rollout_init_state_is_t0_observed():
     """
-    The first call to the model must see prog = batch[:,0,...] (observed at t=0),
-    not a predicted value.
+    The rollout must anchor on the observed t=0 state (y_prog[:, 0]).
 
-    With zero-increment model the state never changes, so all model calls receive
-    the same state = batch[:,0,...].
+    At lookback=0 the model receives no state window — the autoregressive carry is
+    the rollout's `prior = state_rollout[:, t-1]`. With a zero-increment model the
+    state never changes, so every lead-time prediction equals the t=0 observation,
+    proving the first prior was the observed init and not a later target.
     """
-    batch = _rollout_batch(b=1)  # single sample for easy comparison
-    loader = [batch]
-    model = _ZeroIncrementModel()
+    b = _rollout_batch(b=1)  # single sample for easy comparison
+    b["y_prog"][:, 0, ..., 0] = 7.0  # observed init state
+    b["y_prog"][:, 1:, ..., 0] = -1.0  # later targets must not leak into preds
+    loader = [b]
 
-    _run_rollout(
-        model,
+    preds, _ = _run_rollout(
+        _ZeroIncrementModel(),
         torch.device("cpu"),
         loader,
         ROLLOUT_TD_KEYS,
@@ -401,13 +366,11 @@ def test_rollout_init_state_is_t0_observed():
         horizon=HORIZON,
     )
 
-    init_state = batch[PROG_KEYS[0]][:, 0, ...].numpy()
-    first_call_state = model.prog_states_at_call[0].numpy()
-
-    np.testing.assert_array_equal(
-        first_call_state,
-        init_state,
-        err_msg="First model call did not receive the observed t=0 state.",
+    var = PROG_KEYS[0][1]
+    np.testing.assert_allclose(
+        preds[var],
+        7.0,
+        err_msg="Predictions are not anchored on the observed t=0 state.",
     )
 
 
@@ -422,8 +385,8 @@ def test_rollout_t0_not_a_forecast_target():
     batch[:,2,...], batch[:,3,...] — none of which are 99.0.
     """
     b = _rollout_batch()
-    b[PROG_KEYS[0]][:, 0, ...] = 99.0  # sentinel at t=0 (init, not a target)
-    b[PROG_KEYS[0]][:, 1:, ...] = 0.0  # targets t=1..horizon = 0.0
+    b["y_prog"][:, 0, ..., 0] = 99.0  # sentinel at t=0 (init, not a target)
+    b["y_prog"][:, 1:, ..., 0] = 0.0  # targets t=1..horizon = 0.0
     loader = [b]
     model = _ZeroIncrementModel()
 
@@ -438,7 +401,7 @@ def test_rollout_t0_not_a_forecast_target():
     )
 
     var = PROG_KEYS[0][1]
-    # obs must come from batch[:,1,...], batch[:,2,...], batch[:,3,...] — all 0.0
+    # obs must come from y_prog[:,1], y_prog[:,2], y_prog[:,3] — all 0.0
     assert not np.any(obs[var] == 99.0), (
         "obs contains the t=0 sentinel value (99.0) — t=0 is being used as a "
         "forecast target, which violates the lookback=0 convention."
@@ -453,7 +416,7 @@ def test_rollout_autoregressive_state_update():
     """
     init_val = 5.0
     b = _rollout_batch(b=1)
-    b[PROG_KEYS[0]][:] = init_val  # all timesteps set to 5.0; only t=0 used for init
+    b["y_prog"][:, :, ..., 0] = init_val  # all timesteps 5.0; only t=0 used as init
     loader = [b]
     model = _ConstantIncrementModel()
 
@@ -476,7 +439,7 @@ def test_rollout_autoregressive_state_update():
 def test_rollout_nan_init_state_propagates():
     """All-NaN init state (t=0) should produce NaN outputs for all lead times."""
     b = _rollout_batch()
-    b[PROG_KEYS[0]][:, 0, ...] = float("nan")  # corrupt init
+    b["y_prog"][:, 0, ..., 0] = float("nan")  # corrupt init
     loader = [b]
     model = _ZeroIncrementModel()
 
@@ -498,7 +461,7 @@ def test_rollout_nan_init_state_propagates():
 def test_rollout_nan_init_correct_output_shape():
     """Even with NaN init, output shape must be (N_total, horizon)."""
     b = _rollout_batch()
-    b[PROG_KEYS[0]][:, 0, ...] = float("nan")
+    b["y_prog"][:, 0, ..., 0] = float("nan")
     loader = [b]
     preds, obs = _run_rollout(
         _ZeroIncrementModel(),
