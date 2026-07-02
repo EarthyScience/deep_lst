@@ -33,6 +33,12 @@ def score_boxplots(
     save_path: Path = None,
     title: str = None,
     ylabel: str = None,
+    figsize: tuple = None,
+    box_width: float = 0.5,
+    rotate_xticks: float = 0,
+    group_counts: dict = None,
+    legend_loc: str = "upper right",
+    legend_bbox: tuple = None,
 ) -> plt.Figure:
     """Grouped boxplots of a score across groups and cases.
 
@@ -66,7 +72,7 @@ def score_boxplots(
     group_spacing = n_cases + 1.5
     offsets = np.linspace(-(n_cases - 1) / 2, (n_cases - 1) / 2, n_cases) * 0.6
 
-    fig, ax = plt.subplots(figsize=(max(6, n_groups * n_cases * 0.9), 5))
+    fig, ax = plt.subplots(figsize=figsize or (max(6, n_groups * n_cases * 0.9), 5))
 
     for g_idx, group in enumerate(groups):
         x_center = g_idx * group_spacing
@@ -85,7 +91,7 @@ def score_boxplots(
             bp = ax.boxplot(
                 vals,
                 positions=[x_pos],
-                widths=0.5,
+                widths=box_width,
                 patch_artist=True,
                 boxprops=dict(facecolor=color, alpha=0.6),
                 medianprops=dict(color="black", linewidth=1.5),
@@ -98,11 +104,22 @@ def score_boxplots(
             if g_idx == 0:
                 bp["boxes"][0].set_label(case)
 
+    if group_counts is not None:
+        for g_idx, group in enumerate(groups):
+            ax.annotate(
+                f"n={group_counts.get(group, 0)}",
+                xy=(g_idx * group_spacing, 1.01),
+                xycoords=("data", "axes fraction"),
+                ha="center",
+                va="bottom",
+                fontsize=7,
+            )
+
     ax.set_xticks([g * group_spacing for g in range(n_groups)])
-    ax.set_xticklabels(groups)
+    ax.set_xticklabels(groups, rotation=rotate_xticks, ha="right" if rotate_xticks else "center")
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel or metric.upper())
-    ax.legend(loc="upper right")
+    ax.legend(loc=legend_loc, bbox_to_anchor=legend_bbox)
     ax.grid(axis="y", alpha=0.3)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

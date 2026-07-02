@@ -265,7 +265,6 @@ def lead_bucket_map_grid(
     fig, axes = plt.subplots(
         n_row, n_col, figsize=(5.2 * n_col, 4.6 * n_row), subplot_kw={"projection": _PROJ}, squeeze=False
     )
-    im = None
     for i, b in enumerate(bucket_labels):
         for j, bl in enumerate(baseline_labels):
             ax = axes[i][j]
@@ -273,18 +272,12 @@ def lead_bucket_map_grid(
             if da is None:
                 ax.set_visible(False)
                 continue
-            im = da.plot(ax=ax, cmap="RdBu", vmin=-vmax, vmax=vmax, add_colorbar=False, transform=_PROJ)
             _add_map_features(ax)
             ax.set_title(f"vs {bl}" if i == 0 else "")
             if j == 0:
                 ax.text(-0.32, 0.5, b, transform=ax.transAxes, rotation=90, va="center", ha="center", fontweight="bold")
 
     fig.subplots_adjust(left=0.10, wspace=0.35, hspace=0.10, right=0.89)
-    cbar_ax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
-    cbar = fig.colorbar(im, cax=cbar_ax)
-    label = "RMSE(baseline) − RMSE(model) [K]" if kind == "improvement" else "Skill  1 − RMSE_model/RMSE_baseline"
-    cbar.set_label(f"{label}\nPositive = {model_label} better", rotation=270, labelpad=30)
-    fig.suptitle(f"{eval_region} — {kind} maps, {tod_label}  ({model_label})", y=1.0)
 
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,7 +325,6 @@ def lead_bucket_rmse_grid(values, bucket_labels, col_labels, save_path, tod_labe
     cbar_ax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
     cbar = fig.colorbar(im, cax=cbar_ax)
     cbar.set_label("RMSE [K]", rotation=270, labelpad=18)
-    fig.suptitle(f"{eval_region} — RMSE maps, {tod_label}", y=1.0)
 
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)

@@ -24,7 +24,6 @@ from deep_lst.evaluation.plots.error_growth import (
     skill_day_night_plot,
     skill_plot,
 )
-from deep_lst.evaluation.plots.fingerprint import fingerprint_plot, improvement_da
 from deep_lst.evaluation.plots.init_time import (
     diurnal_lead_heatmap,
     diurnal_lead_lines,
@@ -155,21 +154,6 @@ class PlotRunnerDiagnostics:
             var=self.ev.var,
             save_path=self.plots_dir / f"{self.ev.var}_timeseries.pdf",
             eval_region=self.ev.eval_name,
-        )
-
-    def plot_fingerprint(self):
-        fp_data = {f"{self.label} pred": self.ev.pred, "obs": self.ev.obs}
-        fp_data.update(
-            {
-                label: bl_ev.baseline_aligned
-                for label, bl_ev in self.baselines.items()
-                if getattr(bl_ev, "baseline_aligned", None) is not None
-            }
-        )
-        fingerprint_plot(
-            fp_data,
-            save_path=self.plots_dir / f"{self.ev.var}_fingerprint.pdf",
-            title=f"{self.ev.eval_name} — fingerprint (lead_time={self.ev.lead_time})",
         )
 
     def plot_temporal_power_spectrum(self):
@@ -342,22 +326,6 @@ class PlotRunnerDiagnostics:
                 metric=m,
                 save_path=self.plots_dir / f"{self.ev.var}_error_overview_{m}.pdf",
                 title=f"{self.ev.eval_name} — {m.upper()} (lead_time={self.ev.lead_time})",
-            )
-
-    def plot_improvement_fingerprint(self):
-        if not self.baselines:
-            return
-        for label, bl_ev in self.baselines.items():
-            bl = getattr(bl_ev, "baseline_aligned", None)
-            if bl is None:
-                continue
-            safe = label.replace(" ", "_")
-            fingerprint_plot(
-                {f"{self.label} vs {label}": improvement_da(self.ev.pred, self.ev.obs, bl)},
-                vcenter=0.0,
-                cbar_label="ΔMAE (K)",
-                title=f"{self.ev.eval_name} — improvement vs {label}",
-                save_path=self.plots_dir / f"{self.ev.var}_improvement_{safe}.pdf",
             )
 
     def _with_delta(self, ds: xr.Dataset) -> xr.Dataset:

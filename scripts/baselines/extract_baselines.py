@@ -1,6 +1,6 @@
 """
 Extract baseline from specific store.
-uv run scripts/benchmarks/extract_baselines.py --store eval_dahra --test_year 2024
+uv run scripts/benchmarks/extract_baselines.py --store eval_mtg --test_year 2024
 """
 
 import argparse

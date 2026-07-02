@@ -1,0 +1,6 @@
+# @package _global_
+eval_name: eval_eval_mtg
+spatial_indices: eval_mtg        # existing 400-px indices_eval_mtg.npz
+test_dataset:
+  spatial: eval_eval_mtg         # your renamed 400-px sampled stores
+  temporal: test

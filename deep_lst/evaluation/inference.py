@@ -427,12 +427,13 @@ class Forecast:
     def _load_non_land_mask(store_path, unique_spatial_idx):
         """Boolean (N,) aligned to unique_spatial_idx; True = non-land pixel to be dropped.
 
-        LWMASK is the LSA SAF USGS-IGBP land-water mask: 1=land, 0=sea, 3=inland water
-        (off-disk is NaN). Keep only land, so anything other than 1 is dropped — this also
-        removes inland water bodies (value 3), which the sea-only convention would miss.
+        Uses LANDCOV (LSA SAF USGS-IGBP land cover): classes 1-16 are land, 17 is ocean,
+        18 is inland water bodies. Keep land only — drop 17 and 18. LANDCOV is preferred
+        over LWMASK because it is correctly populated in every store, whereas LWMASK is
+        all-zero (broken) in the mtg training store.
         """
         store = zarr.open_group(str(store_path), mode="r")
         store_spatial_idx = store["spatial_idx"][:]
-        lwmask = store["LWMASK"][:]
+        landcov = store["LANDCOV"][:]
         positions = np.searchsorted(store_spatial_idx, unique_spatial_idx)
-        return lwmask[positions] != 1
+        return np.isin(landcov[positions], (17, 18))

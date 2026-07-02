@@ -1,5 +1,7 @@
 assets/
 results/
+plots/
+tables
 
 wandb/
 nas/hpo.db

@@ -32,7 +32,14 @@ import xarray as xr
 from deep_lst.evaluation.evaluator import EvaluatorVerification
 from deep_lst.evaluation.latex import latex_table, write_month_tables
 from deep_lst.evaluation.metrics import pool_metric, to_lead_hours
-from deep_lst.evaluation.plots.month_grid import MONTHS, _latitude_labels, continuous_norm, month_grid_heatmap
+from deep_lst.evaluation.plots.month_grid import (
+    MONTHS,
+    _latitude_labels,
+    fingerprint_decomposition_heatmap,
+    fingerprint_decomposition_honest_heatmap,
+    fingerprint_rmse_heatmap,
+    monthly_rmse_heatmap,
+)
 from deep_lst.utils import ExperimentPaths
 
 PATHS = ExperimentPaths()
@@ -331,8 +338,30 @@ def _month_window_rmse(model, obs, month, kind, window):
     return pooled_metric(model_sel, obs_sel, "rmse")
 
 
+def _month_window_rmse_decomp(model, obs, month, kind, window):
+    """(raw, debiased) pooled RMSE [K] for one (init-month, day/night, lead-window) cell.
+
+    debiased removes each pixel's mean error within the cell (per-pixel centering, _pooled_rmse_decomp).
+    These cells pool the whole window x all init-days x space, so per-pixel n is large and the in-sample
+    DoF artifact is negligible -- the cleanest place to report a debiased RMSE.
+    """
+    init_months = pd.DatetimeIndex(model["init_time"].values).month
+    in_month = init_months == month
+    model_sel = _select_window(model.isel(init_time=in_month), window)
+    obs_sel = _select_window(_mask_time_of_day(obs.isel(init_time=in_month), kind), window)
+    raw, debiased, _ = _pooled_rmse_decomp(model_sel, obs_sel)
+    return raw, debiased
+
+
+def _bias_rmse(raw, debiased):
+    """Removed-bias RMSE [K] = sqrt(raw^2 - debiased^2) from the raw^2 = debiased^2 + bias^2 split."""
+    if raw is None or debiased is None or not (np.isfinite(raw) and np.isfinite(debiased)):
+        return float("nan")
+    return float(np.sqrt(max(raw**2 - debiased**2, 0.0)))
+
+
 def monthly_rmse_records(experiment, version, region_specs, temporal, windows, var="LST"):
-    """One record per (region, month, day/night, window): pooled RMSE. region_specs: (label, eval_name)."""
+    """One record per (region, month, day/night, window): raw + per-pixel-debiased pooled RMSE."""
     records = []
     for label, eval_name in region_specs:
         try:
@@ -345,6 +374,7 @@ def monthly_rmse_records(experiment, version, region_specs, temporal, windows, v
         for month in MONTHS:
             for kind in DAYNIGHT:
                 for window in windows:
+                    raw, debiased = _month_window_rmse_decomp(model, obs, month, kind, window)
                     records.append(
                         {
                             "region": label,
@@ -352,7 +382,9 @@ def monthly_rmse_records(experiment, version, region_specs, temporal, windows, v
                             "month": month,
                             "daynight": kind,
                             "window": window,
-                            "rmse": _month_window_rmse(model, obs, month, kind, window),
+                            "rmse": raw,
+                            "rmse_debiased": debiased,
+                            "rmse_bias": _bias_rmse(raw, debiased),
                         }
                     )
         print(f"  {label:<14} done")
@@ -405,6 +437,14 @@ def _rmse_cell(record):
     return f"{value:.2f}"
 
 
+def _rmse_debiased_cell(record):
+    """LaTeX table cell: per-pixel-debiased RMSE to two decimals, '--' when empty."""
+    value = record["rmse_debiased"]
+    if value is None or not np.isfinite(value):
+        return "--"
+    return f"{value:.2f}"
+
+
 def run_monthly(args):
     """Monthly pooled-RMSE heatmaps + tables for regions and land-cover classes (shared scale/window)."""
     region_specs = [(REGION_DISPLAY[key], REGION_EVAL_NAME.get(key, key)) for key in REGION_DISPLAY]
@@ -441,9 +481,6 @@ def run_monthly(args):
     for window in windows:
         region_win = region_df[region_df["window"] == window]
         class_win = class_df[class_df["window"] == window]
-        # one colour scale per window, shared across the region and class heatmaps.
-        both = np.concatenate([region_win["rmse"].to_numpy(), class_win["rmse"].to_numpy()])
-        cmap, norm = continuous_norm(float(np.nanmin(both)), float(np.nanmax(both)))
         stem = f"{args.experiment}_{args.version}_{window}"
 
         region_win.to_csv(tables_dir / f"{stem}_regions.csv", index=False)
@@ -460,6 +497,17 @@ def run_monthly(args):
             DAYNIGHT,
         )
         write_month_tables(
+            region_win.to_dict("records"),
+            region_order,
+            tables_dir,
+            f"{stem}_regions_debiased",
+            f"Monthly per-pixel-debiased RMSE [K] ({window}) by region for {args.experiment}",
+            f"tab:{stem}_regions_debiased",
+            _rmse_debiased_cell,
+            MONTHS,
+            DAYNIGHT,
+        )
+        write_month_tables(
             class_win.to_dict("records"),
             class_order,
             tables_dir,
@@ -470,31 +518,320 @@ def run_monthly(args):
             MONTHS,
             DAYNIGHT,
         )
-        month_grid_heatmap(
+        # raw + debiased share ONE K scale (debiased then visibly <= raw); bias gets its own scale.
+        both = np.concatenate([region_win["rmse"].to_numpy(float), region_win["rmse_debiased"].to_numpy(float)])
+        shared = (float(np.nanmin(both)), float(np.nanmax(both)))
+        monthly_rmse_heatmap(
             region_win,
             region_order,
-            "rmse",
             figures_dir / f"{stem}_regions.pdf",
-            cmap=cmap,
-            norm=norm,
-            cbar_label="RMSE [K]",
+            value_col="rmse",
+            value_range=shared,
             top_labels=region_top,
             separator_x=0.5,
             col_gridlines=True,
             figsize_per_col=1.2,
             figsize_base=2.0,
         )
-        month_grid_heatmap(
+        monthly_rmse_heatmap(
+            region_win,
+            region_order,
+            figures_dir / f"{stem}_regions_debiased.pdf",
+            value_col="rmse_debiased",
+            value_range=shared,
+            cbar_label="RMSE debiased [K]",
+            top_labels=region_top,
+            separator_x=0.5,
+            col_gridlines=True,
+            figsize_per_col=1.2,
+            figsize_base=2.0,
+        )
+        monthly_rmse_heatmap(
+            region_win,
+            region_order,
+            figures_dir / f"{stem}_regions_bias.pdf",
+            value_col="rmse_bias",
+            cbar_label="Bias RMSE [K]",
+            top_labels=region_top,
+            separator_x=0.5,
+            col_gridlines=True,
+            figsize_per_col=1.2,
+            figsize_base=2.0,
+        )
+        monthly_rmse_heatmap(
             class_win,
             class_order,
-            "rmse",
             figures_dir / f"{stem}_{args.by_class}.pdf",
-            cmap=cmap,
-            norm=norm,
-            cbar_label="RMSE [K]",
             figsize_per_col=0.55,
             figsize_base=3.0,
         )
+    print("\nDone.")
+
+
+# --- fingerprint mode: month x hour-of-day RMSE per region (one panel per lead window) ------------
+def _month_hour_suffstats(model, obs, window):
+    """Per-pixel-per-cell sufficient stats on the month x hour grid, for one lead window.
+
+    Returns sum_e (S1=Sigma e), sum_e2 (S2=Sigma e^2), count (n) each (288, n_pixel) with
+    cell = (month-1)*24 + hour, plus per-cell n_samples (forecast (init, lead) pairs in the cell) and
+    n_distinct (unique target timestamps) for the pseudo-replication check. error e = pred - obs.
+    Shared by the raw/centered decomposition and the Bessel-corrected one (no model re-evaluation).
+    """
+    error = _select_window(model - obs, window)
+    space = [dim for dim in error.dims if dim not in ("init_time", "lead_time")]
+    values = error.transpose("init_time", "lead_time", *space).values
+    n_pixel = int(np.prod(values.shape[2:]))
+    flat_error = values.reshape(-1, n_pixel)  # (init*lead, pixel); NaN where obs missing
+
+    init = pd.DatetimeIndex(error["init_time"].values).values
+    lead = pd.TimedeltaIndex(error["lead_time"].values).values
+    valid = pd.DatetimeIndex((init[:, None] + lead[None, :]).ravel())
+    bucket = (valid.month.values - 1) * 24 + valid.hour.values  # 0..287, per (init, lead) cell
+    valid_i8 = valid.asi8  # int64 ns, for counting distinct target timestamps
+
+    finite = np.isfinite(flat_error)
+    filled = np.where(finite, flat_error, 0.0)
+    sum_e = np.zeros((288, n_pixel))
+    sum_e2 = np.zeros((288, n_pixel))
+    count = np.zeros((288, n_pixel))
+    n_samples = np.zeros(288)
+    n_distinct = np.zeros(288)
+    for cell in range(288):
+        rows = bucket == cell
+        if not rows.any():
+            continue
+        sum_e[cell] = filled[rows].sum(axis=0)
+        sum_e2[cell] = (filled[rows] ** 2).sum(axis=0)
+        count[cell] = finite[rows].sum(axis=0)
+        n_samples[cell] = int(rows.sum())
+        n_distinct[cell] = np.unique(valid_i8[rows]).size
+    return sum_e, sum_e2, count, n_samples, n_distinct
+
+
+def _decomp_from_suffstats(sum_e, sum_e2, count):
+    """(raw, centered) (24 hour x 12 month) RMSE [K] from suff stats; in-sample centering, as before."""
+    total = count.sum(axis=1)
+    raw_sse = sum_e2.sum(axis=1)
+    per_pixel_ss = np.maximum(sum_e2 - np.divide(sum_e**2, count, out=np.zeros_like(sum_e), where=count > 0), 0.0)
+    centered_sse = per_pixel_ss.sum(axis=1)
+    raw = np.sqrt(np.divide(raw_sse, total, out=np.full(288, np.nan), where=total > 0)).reshape(12, 24)
+    centered = np.sqrt(np.divide(centered_sse, total, out=np.full(288, np.nan), where=total > 0)).reshape(12, 24)
+    return raw.T, centered.T  # each (hour, month)
+
+
+def _month_hour_rmse_decomp(model, obs, window):
+    """(raw, centered) RMSE [K] (24 hour x 12 month) for one window; in-sample centering (unchanged)."""
+    sum_e, sum_e2, count, _, _ = _month_hour_suffstats(model, obs, window)
+    return _decomp_from_suffstats(sum_e, sum_e2, count)
+
+
+def _month_hour_honest(sum_e, sum_e2, count, n_samples, n_distinct):
+    """Bessel-corrected decomposition + sampling diagnostics, all (24 hour, 12 month) grids.
+
+    Drops pixels with n_p < 2 (SSdev undefined); Bessel weight n_p/(n_p-1) per pixel; raw is restricted
+    to the SAME n_p >= 2 pixels (apples-to-apples). honest_collapse_pct and corrected_bias2 are returned
+    UNCLAMPED -- <= 0 means the bias is statistically indistinguishable from zero.
+    """
+    used = count >= 2
+    ssdev = np.maximum(sum_e2 - np.divide(sum_e**2, count, out=np.zeros_like(sum_e), where=count > 0), 0.0)
+
+    n_used_sum = np.where(used, count, 0.0).sum(axis=1)  # Sigma n_p over n_p >= 2 pixels
+    raw_sse = np.where(used, sum_e2, 0.0).sum(axis=1)
+    bessel_num = np.where(used, count / np.maximum(count - 1.0, 1.0) * ssdev, 0.0).sum(axis=1)
+
+    raw_mse = np.divide(raw_sse, n_used_sum, out=np.full(288, np.nan), where=n_used_sum > 0)
+    bessel_mse = np.divide(bessel_num, n_used_sum, out=np.full(288, np.nan), where=n_used_sum > 0)
+    corrected_bias2 = raw_mse - bessel_mse  # may be negative -- kept as-is
+    honest_collapse_pct = 100.0 * np.divide(corrected_bias2, raw_mse, out=np.full(288, np.nan), where=raw_mse > 0)
+
+    observed = count >= 1
+    n_obs = observed.sum(axis=1).astype(float)
+    dropped_frac = np.divide((count == 1).sum(axis=1).astype(float), n_obs, out=np.full(288, np.nan), where=n_obs > 0)
+    median_n = np.nanmedian(np.where(observed, count, np.nan), axis=1)
+    ratio = np.divide(n_samples, n_distinct, out=np.full(288, np.nan), where=n_distinct > 0)
+
+    def grid(arr):
+        return arr.reshape(12, 24).T
+
+    return {
+        "median_n": grid(median_n),
+        "dropped_frac": grid(dropped_frac),
+        "honest_collapse_pct": grid(honest_collapse_pct),
+        "corrected_rmse": grid(np.sqrt(np.maximum(bessel_mse, 0.0))),
+        "corrected_bias2": grid(corrected_bias2),
+        "raw_restricted_rmse": grid(np.sqrt(np.maximum(raw_mse, 0.0))),
+        "n_samples": grid(n_samples.astype(float)),
+        "n_distinct": grid(n_distinct.astype(float)),
+        "ratio": grid(ratio),
+    }
+
+
+def run_fingerprint(args):
+    """Per-region month x hour-of-day RMSE fingerprints (one panel per lead window)."""
+    windows = tuple(args.windows)
+    tables_dir = PATHS.tables_dir(args.experiment, args.version, "fingerprint")
+    figures_dir = PATHS.figures_dir(args.experiment, args.version) / "fingerprints"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{args.experiment}_{args.version}"
+
+    for key in REGION_DISPLAY:
+        eval_name = REGION_EVAL_NAME.get(key, key)
+        display = REGION_DISPLAY[key]
+        try:
+            obs, predictions = load_entities(args.experiment, args.version, eval_name, args.variable, [], args.temporal)
+        except FileNotFoundError as error:
+            print(f"  [skip] {display} ({eval_name}): {error}")
+            continue
+        model = predictions["model"]
+
+        records, panels, decomp, honest_by_window = [], [], {}, {}
+        for window in windows:
+            sum_e, sum_e2, count, n_samples, n_distinct = _month_hour_suffstats(model, obs, window)
+            raw, centered = _decomp_from_suffstats(sum_e, sum_e2, count)  # each (24 hour, 12 month)
+            collapse = 100.0 * (1.0 - np.divide(centered**2, raw**2, out=np.full_like(raw, np.nan), where=raw > 0))
+            honest = _month_hour_honest(sum_e, sum_e2, count, n_samples, n_distinct)
+            decomp[window] = (raw, centered, collapse)
+            honest_by_window[window] = honest
+            panels.append((f"{display} — {window}", raw))
+            for hour in range(24):
+                for month in range(12):
+                    records.append(
+                        {
+                            "region": display,
+                            "eval_name": eval_name,
+                            "window": window,
+                            "month": month + 1,
+                            "hour": hour,
+                            "rmse": float(raw[hour, month]),
+                            "rmse_centered": float(centered[hour, month]),
+                            "collapse_pct": float(collapse[hour, month]),
+                            "median_n": float(honest["median_n"][hour, month]),
+                            "dropped_frac": float(honest["dropped_frac"][hour, month]),
+                            "rmse_centered_bessel": float(honest["corrected_rmse"][hour, month]),
+                            "honest_collapse_pct": float(honest["honest_collapse_pct"][hour, month]),
+                            "corrected_bias2": float(honest["corrected_bias2"][hour, month]),
+                            "raw_restricted_rmse": float(honest["raw_restricted_rmse"][hour, month]),
+                            "n_samples": float(honest["n_samples"][hour, month]),
+                            "n_distinct_targets": float(honest["n_distinct"][hour, month]),
+                            "replication_ratio": float(honest["ratio"][hour, month]),
+                        }
+                    )
+        pd.DataFrame.from_records(records).to_csv(tables_dir / f"{stem}_{key}.csv", index=False)
+        fingerprint_rmse_heatmap(panels, figures_dir / f"{stem}_{key}_fingerprint.pdf")
+
+        decomp_window = "full" if "full" in decomp else windows[-1]
+        raw, centered, collapse = decomp[decomp_window]
+        fingerprint_decomposition_heatmap(
+            raw,
+            centered,
+            collapse,
+            f"{display} — {decomp_window}: per-pixel bias decomposition",
+            figures_dir / f"{stem}_{key}_decomposition.pdf",
+        )
+        honest = honest_by_window[decomp_window]
+        fingerprint_decomposition_honest_heatmap(
+            raw,
+            centered,
+            collapse,
+            honest["median_n"],
+            honest["honest_collapse_pct"],
+            honest["corrected_rmse"],
+            f"{display} — {decomp_window}: Bessel-corrected decomposition",
+            figures_dir / f"{stem}_{key}_decomposition_honest.pdf",
+        )
+        _print_honest_summary(display, key, decomp[decomp_window], honest)
+        print(f"  {display:<14} done")
+    print("\nDone.")
+
+
+def _print_honest_summary(display, key, decomp_full, honest):
+    """For yangambi/sahel, print the peak-RMSE daytime cell: raw vs honest %collapsed, median n_p, ratio."""
+    if key not in ("yangambi", "sahel_niger"):
+        return
+    raw, _, collapse = decomp_full
+    daytime = np.full_like(raw, np.nan)
+    daytime[10:16, :] = raw[10:16, :]  # daytime hours 10-15h
+    if not np.isfinite(daytime).any():
+        return
+    hour, month = np.unravel_index(np.nanargmax(daytime), daytime.shape)
+    print(
+        f"  [summary] {display:<10} peak-day cell month={month + 1:02d} hour={hour:02d}: "
+        f"rawRMSE={raw[hour, month]:.2f}K  raw%collapse={collapse[hour, month]:.0f}  "
+        f"honest%collapse={honest['honest_collapse_pct'][hour, month]:.0f}  "
+        f"median_n={honest['median_n'][hour, month]:.0f}  replication_ratio={honest['ratio'][hour, month]:.1f}"
+    )
+
+
+# --- decomposition tables: pooled raw RMSE | per-pixel-debiased RMSE | % MSE collapsed -------------
+DECOMP_TODS = ("total", "daytime", "nighttime")
+
+
+def _pooled_rmse_decomp(pred, obs):
+    """(raw, debiased, collapse%) pooled RMSE; debiased removes each pixel's mean error first.
+
+    Per-pixel bias = mean error over the column's (init, lead) samples for that pixel; debiased RMSE
+    is sqrt of the per-pixel temporal variance pooled over pixels. raw^2 = debiased^2 + spatial-bias^2.
+    """
+    error = pred - obs
+    reduce = [dim for dim in ("init_time", "lead_time") if dim in error.dims]
+    count = error.notnull().sum(reduce)
+    sum_e = error.sum(reduce, skipna=True)
+    sum_e2 = (error**2).sum(reduce, skipna=True)
+    total = float(count.sum())
+    if total == 0:
+        return float("nan"), float("nan"), float("nan")
+    raw = float(np.sqrt(float(sum_e2.sum()) / total))
+    per_pixel_ss = (sum_e2 - sum_e**2 / count.where(count > 0)).clip(min=0)  # guard float cancellation
+    debiased = float(np.sqrt(float(per_pixel_ss.sum()) / total))
+    collapse = 100.0 * (1.0 - (debiased / raw) ** 2) if raw > 0 else float("nan")
+    return raw, debiased, collapse
+
+
+def _decomp_cells(model_window, obs_window):
+    """Formatted {col: cell} for one (region, window): raw/debiased RMSE + collapse per time-of-day."""
+    cells = {}
+    for tod in DECOMP_TODS:
+        pred_col, obs_col = _column_fields(model_window, obs_window, tod)
+        raw, debiased, collapse = _pooled_rmse_decomp(pred_col, obs_col)
+        cells[f"{tod} RMSE"] = "--" if np.isnan(raw) else f"{raw:.2f}"
+        cells[f"{tod} deb"] = "--" if np.isnan(debiased) else f"{debiased:.2f}"
+        cells[f"{tod} coll"] = "--" if np.isnan(collapse) else f"{collapse:.0f}\\%"
+    return cells
+
+
+def run_decomposition(args):
+    """Compact per-region bias-decomposition tables (raw | debiased | % collapsed) per lead window."""
+    windows = tuple(args.windows)
+    out_dir = PATHS.tables_dir(args.experiment, args.version, "decomposition")
+    columns = [f"{tod} {metric}" for tod in DECOMP_TODS for metric in ("RMSE", "deb", "coll")]
+    rows_by_window = {window: {} for window in windows}
+
+    for key in REGION_DISPLAY:
+        eval_name = REGION_EVAL_NAME.get(key, key)
+        try:
+            obs_full, predictions = load_entities(
+                args.experiment, args.version, eval_name, args.variable, [], args.temporal
+            )
+        except FileNotFoundError as error:
+            print(f"  [skip] {key} ({eval_name}): {error}")
+            continue
+        model_full = predictions["model"]
+        for window in windows:
+            obs_window = _select_window(obs_full, window)
+            model_window = _select_window(model_full, window)
+            rows_by_window[window][key] = _decomp_cells(model_window, obs_window)
+        print(f"  {REGION_DISPLAY[key]:<14} done")
+
+    for window in windows:
+        stem = f"{args.experiment}_{args.version}_{window}"
+        caption = (
+            f"Per-pixel bias decomposition ({window}) for {args.experiment}: raw RMSE [K], "
+            f"per-pixel-debiased RMSE [K], and \\% of MSE removed by debiasing, per time of day."
+        )
+        tex = latex_table(rows_by_window[window], columns, caption, f"tab:decomp_{stem}", REGION_DISPLAY)
+        (out_dir / f"decomp_{stem}.tex").write_text(tex + "\n")
+        pd.DataFrame.from_dict(rows_by_window[window], orient="index").to_csv(out_dir / f"decomp_{stem}.csv")
+        print(f"[written] {out_dir / f'decomp_{stem}.tex'}")
     print("\nDone.")
 
 
@@ -514,6 +851,16 @@ def main():
         action="store_true",
         help="Monthly pooled-RMSE heatmaps + tables (regions + classes) instead of the score tables.",
     )
+    parser.add_argument(
+        "--fingerprint",
+        action="store_true",
+        help="Per-region month x hour-of-day RMSE fingerprints (one panel per window) instead of the score tables.",
+    )
+    parser.add_argument(
+        "--decomposition",
+        action="store_true",
+        help="Compact per-region bias-decomposition tables (raw | debiased RMSE | %% collapsed) instead of the score tables.",
+    )
     parser.add_argument("--by-class", default="modis_lc_classes", help="Class coord pooled in --monthly class heatmap.")
     parser.add_argument(
         "--class-eval-name", default="train_mtg", help="Site whose pixels are pooled in --monthly class mode."
@@ -524,8 +871,16 @@ def main():
         run_monthly(args)
         return
 
+    if args.fingerprint:
+        run_fingerprint(args)
+        return
+
+    if args.decomposition:
+        run_decomposition(args)
+        return
+
     if args.regions is None or args.baselines is None:
-        parser.error("--regions and --baselines are required unless --monthly is set")
+        parser.error("--regions and --baselines are required unless --monthly/--fingerprint/--decomposition is set")
 
     out_dir = PATHS.tables_dir(args.experiment, args.version, "scores")
 

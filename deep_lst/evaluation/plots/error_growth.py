@@ -198,7 +198,7 @@ def _day_bucket_masks(pred):
     return day_labels, day_lead_masks
 
 
-def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region):
+def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim=None):
     """RMSE skill vs forecast day, one curve per baseline, split into daytime / nighttime panels.
 
     Shows only the average tendency: per forecast-day bucket (24 lead-hours) and valid-hour
@@ -208,6 +208,10 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region):
 
     Day/night follow the established valid-hour windows (daytime 10–15 h, nighttime 22–03 h);
     valid hour = init hour + lead hour (mod 24).
+
+    If ``clim`` (the climatological reference on the same grid as ``pred``) is given, the anomaly
+    correlation (ACC) of the model vs that climatology is added on a right-hand y-axis as a dashed
+    dark-grey line, so skill and ACC share the panel.
     """
     plt.rcParams.update(RC)
     pred = pred.isel(lead_time=slice(1, None))  # drop lead-0 placeholder
@@ -219,6 +223,10 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region):
     err2_baselines = {
         label: ((field.isel(lead_time=slice(1, None)) - obs) ** 2).load() for label, field in baselines.items()
     }
+    if clim is not None:
+        clim = clim.isel(lead_time=slice(1, None))
+        anom_pred = (pred - clim).load()
+        anom_obs = (obs - clim).load()
 
     day_labels, day_lead_masks = _day_bucket_masks(pred)
     x = np.arange(len(day_labels))
@@ -229,6 +237,7 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region):
     )
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharey=True)
+    acc_axes = []
     for ax, (panel_title, tod_mask) in zip(axes, panels):
         for label, err2_bl in err2_baselines.items():
             skill = []
@@ -249,10 +258,38 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region):
         ax.set_xlabel("Forecast day")
         ax.set_title(panel_title)
         ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        if clim is None:
+            ax.spines["right"].set_visible(False)
+        else:
+            acc_ax = ax.twinx()
+            acc_axes.append(acc_ax)
+            acc = []
+            for lead_mask in day_lead_masks:
+                bucket_mask = tod_mask & lead_mask
+                acc.append(
+                    float(
+                        _acc(
+                            anom_pred.where(bucket_mask),
+                            anom_obs.where(bucket_mask),
+                            dim=["init_time", "lead_time", *space],
+                        )
+                    )
+                )
+            acc_ax.plot(x, acc, color="0.3", linestyle="--", linewidth=2, marker="s", markersize=4, label="ACC")
+            acc_ax.set_ylim(0, 1)
+            acc_ax.spines["top"].set_visible(False)
 
     axes[0].set_ylabel("Skill score (RMSE)")
-    axes[0].legend(title="Reference", loc="upper right", framealpha=0.9)
+    if clim is not None:
+        acc_axes[0].set_yticklabels([])  # only the right-most panel shows the ACC axis
+        acc_axes[1].set_ylabel("ACC")
+        handles, labels_ = axes[1].get_legend_handles_labels()
+        acc_handles, acc_labels = acc_axes[1].get_legend_handles_labels()
+        acc_axes[1].legend(
+            handles + acc_handles, labels_ + acc_labels, title="Reference", loc="upper right", framealpha=0.9
+        )
+    else:
+        axes[0].legend(title="Reference", loc="upper right", framealpha=0.9)
     plt.tight_layout()
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, bbox_inches="tight")

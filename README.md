@@ -1,84 +1,99 @@
-# Deep-LST: Multimodal land surface temperature forecasting
+# deep_lst
 
-Data-driven forecasting of land surface temperature (LST), combining satellite observations and reanalysis data. LST is estimated diagnostically and prognostically from medium-range, large-scale synoptic weather conditions and small- to medium scale surface properties.
-To use and work in this repository, clone and install [wedata][https://github.com/EarthyScience/wedata] into the same directory.
+Data-driven forecasting of land surface temperature (LST) from satellite observations and
+reanalysis. LST is estimated diagnostically and prognostically from medium-range, large-scale
+synoptic weather conditions (ERA5) and small- to medium-scale surface state (SEVIRI).
 
-Currently supports tools for manually creating samples of geospatial scenes, training of MLP (diagnostically, prognostically), a tiny ResNet (diagnostically), and running and analysing forecasts from the models. Uses WandB for logging.
+Built on PyTorch Lightning, configured with Hydra, logged with Weights & Biases.
 
-## Config structure
+> **Status:** v0.2 — research code, single-maintainer. Interfaces and configs may change.
 
-Configs are organised by model family under `configs/`. Each family has a base config and optional override files for variants:
+## Installation
+
+deep_lst depends on [`eodata_slim`](https://github.com/EarthyScience/eodata_slim), the data-provision
+framework (extraction, zarr creation, and the data reader). It is installed as an **editable local
+dependency from a sibling directory**, so clone both repos side by side:
+
 ```
-configs/
-  mlp_rollout/
-    config.yml           # base config for the rollout model
-    overrides/
-      madagaskar.yml     # region-specific overrides
-      blocked.yml        # blocked-time-split variant
-  mlp_diag/
-    config.yml
-    overrides/
-      ...
-```
-
-Override files only contain the keys that differ from the base config. They are merged on top of the base at launch time using OmegaConf. The `experiment:` field in an override identifies the variant (e.g. `experiment: madagaskar`) and is used for WandB grouping.
-
-## Sample scenes
-
-Create a *scenes.yml* file in `configs` and store the created sampling indices under `assets/{modality}/spatial/` per split.
-```
-uv run scripts/tools/sample_scenes.py --src_grid seviri --split train
+git clone git@github.com:MWesselkamp/deep_lst.git
+git clone git@github.com:EarthyScience/eodata_slim.git
+cd deep_lst
+uv sync
 ```
 
-## Training
+This resolves `eodata` from `../eodata_slim` (see `[tool.uv.sources]` in `pyproject.toml`). Python 3.12
+is pinned via `.python-version`. Training expects a CUDA GPU; the cluster entry points assume SLURM.
 
-Run a base config:
+deep_lst consumes the **sampled zarr stores** that `eodata_slim` produces. The default location is
+`/Net/Groups/BGI/tscratch/mwessel/wegen-stores/sampled_stores/` (see `ExperimentPaths.stores_root` in
+`deep_lst/utils/io.py`).
+
+## Concepts
+
+- **Multimodal input.** Two modalities are composed per sample: `era5` (coarse synoptic drivers) and
+  `seviri` (high-resolution surface state). See `modality_ids` in `conf/train.yaml`.
+- **Diagnostic vs. prognostic.** `mlp_diag` estimates LST from concurrent conditions; `mlp_rollout`
+  forecasts forward autoregressively over a lead-time horizon.
+- **Rollout forecasting.** The prognostic model rolls its own prediction back in as state over the
+  forecast horizon (`horizon/h4 … h72`, in hours).
+- **Evaluation against baselines.** Forecasts are scored against climatology and persistence using
+  `climpred` / `xskillscore` (skill, RMSE, ACC).
+
+## Structure
+
 ```
-uv run deep_lst/mlp/train.py --config mlp_rollout
+deep_lst/
+  dataset/       MultimodalDataset, LitDataModule, collator, climatology
+  mlp/           MLP models + train / finetune entry points
+  vit/  nas/     ViT and neural-architecture-search variants (experimental)
+  baselines/     climatology / persistence / external baselines
+  losses/        MSE, SmoothL1, increment, CRPS
+  evaluation/    inference (Forecast), metrics, tables, plots
+  utils/         config parsing, path resolution (ExperimentPaths), io
+conf/            Hydra config groups (model, loss, horizon, size, stratification, eval)
+scripts/         SLURM launchers for statistics, training, inference, evaluation
+tests/           pytest suite
+experiments/     per-run outputs (checkpoints, merged config, metadata)
 ```
 
-Run with one or more overrides applied on top:
+### Configuration (Hydra)
+
+`conf/train.yaml` composes config groups; override any group or key on the command line:
+
 ```
-uv run deep_lst/mlp/train.py --config mlp_rollout --override madagaskar
-uv run deep_lst/mlp/train.py --config mlp_rollout --override madagaskar blocked
-```
-
-The experiment folder name is derived automatically from the CLI arguments — no `name:` field is needed in the config files:
-
-| Command | Experiment folder |
-|---|---|
-| `--config mlp_rollout` | `experiments/mlp_rollout/version_N/` |
-| `--config mlp_rollout --override madagaskar` | `experiments/mlp_rollout_madagaskar/version_N/` |
-| `--config mlp_rollout --override madagaskar blocked` | `experiments/mlp_rollout_madagaskar_blocked/version_N/` |
-
-Append `--tag <label>` to add a short suffix for within-family sweeps (e.g. `--tag lr5e5`).
-
-Each run saves a `config.yml` (the fully merged config) and a `metadata.json` (git hash, overrides, SLURM job ID, timestamp) into the version folder.
-
-### Smoke test
-
-Use `--smoke` to run a fast sanity check (1 epoch, 3 batches, CSV logger only, no WandB):
-```
-uv run deep_lst/mlp/train.py --config mlp_rollout --smoke
-uv run deep_lst/mlp/train.py --config mlp_rollout --override madagaskar --smoke
+python deep_lst/mlp/train.py model=mlp_rollout loss=smoothl1 horizon=h24 size=L stratification=mtg
 ```
 
-A SLURM smoke test script covering all configs is available at `scripts/training/smoke_test.sh`.
+The experiment name is derived from the composed config (`_experiment`), so no `name:` field is needed.
+Each run writes the fully merged config, a `metadata.json` (git hash, SLURM job ID, timestamp), and
+checkpoints into `experiments/<experiment>/version_N/`.
 
-## Pipeline walkthrough
+## Reproducing results
 
-What happens when you call `python deep_lst/mlp/train.py --config mlp_rollout --override madagaskar`:
+The full pipeline runs data → statistics → training → inference → evaluation. On the cluster each stage
+has a SLURM launcher under `scripts/`; the underlying commands are shown below.
 
-1. `train.py` derives the run name from CLI args (`mlp_rollout_madagaskar`), loads and merges the base config with the override using OmegaConf, then applies `--tag`/`--smoke` suffixes if present.
-2. CSVLogger and WandBLogger are instantiated with the derived name. The merged config and metadata are snapshotted into the version folder.
-3. `LitDataModule(**config)` is instantiated and `setup()` is called, which builds `MultimodalDataset` three times (train/val/test) by unpacking the respective sub-config.
-4. `MultimodalDataset.from_modalities()` calls `_load_samples()` per modality. Depending on the config, samples are filtered either via precomputed temporal indices (`temporal_split:`) or a date range (`start_time:`/`end_time:`).
-5. `get_keys_from_config()` parses the dataset config to build input/output key tuples for the model.
-6. `MultiModalMLP` is instantiated with those keys, wrapped in `LitModelModule`, and the loss function is dynamically imported via `importlib`.
+1. **Data.** Produce the sampled zarr stores with `eodata_slim` (see its README).
+2. **Statistics.** Compute normalization statistics (submits one SLURM job per modality × spatial
+   database; edit the `SPATIALS` list inside the script first):
+   ```
+   bash scripts/statistics/launch_statistics.sh
+   ```
+3. **Train.**
+   ```
+   sbatch scripts/training/train_mlp.sh model=mlp_rollout loss=smoothl1 horizon=h24
+   ```
+   Add `smoke=true` for a fast 1-epoch sanity run (CSV logger only, no WandB).
+4. **Infer.** Roll out a forecast for a trained run over an eval region:
+   ```
+   uv run scripts/inference/run_inference.py \
+       experiment=<experiment> version=version_0 eval=gobabeb inference_horizon=72
+   ```
+5. **Evaluate.** Score forecasts against baselines and build tables/plots (argparse CLI):
+   ```
+   uv run scripts/evaluation/run_evaluation.py \
+       --experiment <experiment> --version version_0 --eval gobabeb \
+       --baselines era5 clim_smooth persistence
+   ```
 
-## Analysis
-
-Run a forecast for a completed training run with:
-```
-uv run scripts/analysis/run_forecast.py --config experiment_name --version version_x
-```
+Run the test suite with `uv run pytest`.
