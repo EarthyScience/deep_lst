@@ -45,6 +45,7 @@ model:
   detach_rollout: false
   incremental_loss: true
   predict_anomaly: false
+  probabilistic: false
   scheduler_T0: 80000
   weight_decay: 0.0001
   warmup_steps: 20000

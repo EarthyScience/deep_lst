@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -53,6 +55,10 @@ pred_w = wgl["lst"].load()
 obs_w = align(obs_src, "time_idx", pred_w, gidx)
 clim_w = align(load_baseline(CLIM), "valid_time", pred_w, gidx)
 pers_w = align(load_baseline(PERS), "valid_time", pred_w, gidx)
+
+# per-pixel LST annual amplitude (Tmax - Tmin over all 2024 SEVIRI obs), in gidx pixel order
+_obs_2024 = obs_src.sel(pixel=gidx).values[:, pd.DatetimeIndex(sev["time_idx"].values).year == 2024]
+pixel_amplitude = np.nanmax(_obs_2024, axis=1) - np.nanmin(_obs_2024, axis=1)  # (n_pixel,)
 
 MODELS = {WGL_NAME: (pred_w, WGL_COLOR), CLIM_NAME: (clim_w, CLIM_COLOR), PERS_NAME: (pers_w, PERS_COLOR)}
 METRICS = [("RMSE", "rmse"), ("MAE", "mae"), ("R2", "nse")]  # ACC shown separately (WeatherGen Land only)
@@ -341,22 +347,33 @@ def month_hour_heatmaps(save_path, sigma_floor=0.5):
         raw_mse = np.divide(S2.sum(axis=1), total, out=np.full(288, np.nan), where=total > 0)
         per_pixel_ss = np.maximum(S2 - np.divide(S1**2, n, out=np.zeros_like(S1), where=n > 0), 0.0)
         debiased_mse = np.divide(per_pixel_ss.sum(axis=1), total, out=np.full(288, np.nan), where=total > 0)
-        per_pixel_oss = np.maximum(O2 - np.divide(O1**2, n, out=np.zeros_like(O1), where=n > 0), 0.0)
-    # single GLOBAL obs anomaly std (per-pixel-centered, pooled over ALL cells+pixels): one denominator
-    # for every cell, so the panel is comparable across months (shows which months score better/worse).
-    sigma_global = float(np.sqrt(per_pixel_oss.sum() / total.sum()))
     raw = np.sqrt(np.clip(raw_mse, 0, None))
     debiased = np.sqrt(np.clip(debiased_mse, 0, None))
     bias = np.sqrt(np.clip(raw_mse - debiased_mse, 0, None))
-    srmse = raw / sigma_global
-    # srmse_debiased = debiased / sigma_global
+    # nRMSE: divide each pixel's squared error by that pixel's OWN annual amplitude^2 BEFORE pooling,
+    # so pixels across the wide latitudinal range are comparable (error as a fraction of the local range).
+    amp2_safe = np.where(np.isfinite(pixel_amplitude) & (pixel_amplitude > 0), pixel_amplitude, np.nan) ** 2
+    valid_amp = np.isfinite(amp2_safe)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        norm_cnt = np.where(valid_amp[None, :], n, 0.0).sum(axis=1)
+        srmse = np.sqrt(
+            np.divide(
+                np.where(valid_amp[None, :], S2 / amp2_safe[None, :], 0.0).sum(axis=1),
+                norm_cnt,
+                out=np.full(288, np.nan),
+                where=norm_cnt > 0,
+            )
+        )
 
     # --- verification ---
     cells = np.isfinite(raw) & np.isfinite(debiased)
     max_violation = float(np.nanmax((debiased - raw)[cells])) if cells.any() else 0.0
     recon = float(np.nanmax(np.abs(raw**2 - (debiased**2 + bias**2))[cells])) if cells.any() else 0.0
     print(f"  check: max(debiased-raw)={max_violation:.2e} (should be <=~0); max|raw^2-(deb^2+bias^2)|={recon:.2e}")
-    print(f"  global obs anomaly sigma = {sigma_global:.2f} K (single denominator for all cells)")
+    print(
+        f"  pixel LST annual amplitude {np.nanmin(pixel_amplitude):.1f}..{np.nanmax(pixel_amplitude):.1f} K "
+        f"(nRMSE = RMSE / per-pixel amplitude)"
+    )
     if max_violation > 1e-6:
         print(f"  WARNING: {int((debiased - raw > 1e-6).sum())} cells with debiased > raw")
 
@@ -418,20 +435,17 @@ def month_hour_heatmaps(save_path, sigma_floor=0.5):
             )
             fig.colorbar(im, ax=ax, shrink=0.85, label=title, ticks=boundaries)
         elif "nRMSE" in title:
-            # diverging discrete, white bin centred on 1 (= NSE 0): blue < 1 beats local mean, red > 1 worse
-            step = 0.1
-            span = np.ceil(max(1 - np.nanmin(grid), np.nanmax(grid) - 1) / step) * step
-            boundaries = np.round(np.arange(1 - step / 2 - span, 1 + step / 2 + span + 1e-9, step), 2)
-            cmap = plt.get_cmap("RdBu_r", len(boundaries) - 1)  # odd #bins -> white centre bin
+            # nRMSE = RMSE / per-pixel annual amplitude -> sequential (low = small error vs local LST range)
             im = ax.imshow(
                 grid,
                 aspect="auto",
-                cmap=cmap,
+                cmap="viridis",
                 origin="lower",
                 extent=[-0.5, 23.5, 0.5, 12.5],
-                norm=BoundaryNorm(boundaries, cmap.N),
+                vmin=0,
+                vmax=float(np.nanmax(grid)),
             )
-            fig.colorbar(im, ax=ax, shrink=0.85, label=title, ticks=boundaries[::2])
+            fig.colorbar(im, ax=ax, shrink=0.85, label=title)
         else:
             im = ax.imshow(
                 grid, aspect="auto", cmap="winter", origin="lower", extent=[-0.5, 23.5, 0.5, 12.5], vmin=0, vmax=vmax
@@ -606,6 +620,39 @@ mean_lst_plot(PLOTDIR / "mean_lst.png")
 error_growth_daily(PLOTDIR / "error_growth_daily.png")
 hourly_rmse_plot(PLOTDIR / "hourly_rmse.png")
 month_hour_heatmaps(PLOTDIR / "month_hour_rmse.png")
+
+
+def amplitude_map(save_path):
+    """Scatter the eval pixels on a map of Africa, coloured by their 2024 LST annual amplitude (Tmax - Tmin)."""
+    plt.rcParams.update(RC)
+    fig, ax = plt.subplots(figsize=(7, 7), subplot_kw={"projection": ccrs.PlateCarree()})
+    ax.set_extent([-20, 52, -36, 40], crs=ccrs.PlateCarree())
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.4)
+    gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.4, linestyle="--")
+    gl.top_labels = False
+    gl.right_labels = False
+    sc = ax.scatter(
+        pred_w["lon"].values,
+        pred_w["lat"].values,
+        c=pixel_amplitude,
+        s=90,
+        cmap="magma",
+        edgecolor="black",
+        linewidth=0.3,
+        transform=ccrs.PlateCarree(),
+        zorder=3,
+    )
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.04)
+    cbar.set_label("LST annual amplitude  Tmax − Tmin (K)")
+    ax.set_title(f"Eval pixels (n={len(pixel_amplitude)}) — LST annual amplitude")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {save_path}")
+
+
+amplitude_map(PLOTDIR / "amplitude_map.png")
 
 TABLEDIR.mkdir(parents=True, exist_ok=True)
 for window, tod in WINDOWS.items():

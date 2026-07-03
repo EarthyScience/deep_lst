@@ -1,0 +1,51 @@
+# @package _global_
+
+# Helper keys for loss-group forward references
+_model_name: mlp
+_sigma_prognostics: []
+_sigma_diagnostics: []
+
+train_dataset:
+  era5:
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+val_dataset:
+  era5:
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+test_dataset:
+  era5:
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+model:
+  name: mlp
+  hidden_sizes: [1024,512,256,256,128]
+  learning_rate: 3.7e-4
+  dropout: 0.005
+  activation: relu
+  use_residual: true
+  step_loss: RolloutLoss
+  loss_fn: smooth_l1
+  checkpoint_monitor: val_loss_step_epoch
+  detach_rollout: false
+  incremental_loss: true
+  predict_anomaly: false
+  probabilistic: true
+  scheduler_T0: 80000
+  weight_decay: 0.0001
+  warmup_steps: 20000

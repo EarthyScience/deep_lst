@@ -32,5 +32,6 @@ model:
   dropout: 0.2
   activation: relu
   use_residual: true
+  probabilistic: false
   step_loss: ${_step_loss_mse}
   checkpoint_monitor: val_loss_step_epoch
