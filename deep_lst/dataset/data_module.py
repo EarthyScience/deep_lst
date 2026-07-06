@@ -17,6 +17,9 @@ class LitDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         if hasattr(self, "train_dataset"):
             return
+
+        # pre-cache stores here.
+
         self.train_dataset = MultimodalDataset.from_modalities(
             modality_ids=self.kwargs["modality_ids"],
             **self.kwargs["train_dataset"],
