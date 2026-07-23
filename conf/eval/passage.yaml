@@ -1,7 +1,7 @@
 # @package _global_
 eval_name: passage
-spatial_indices: eval_passage
 
 test_dataset:
   spatial: eval_passage
   temporal: test
+  anchor: seviri

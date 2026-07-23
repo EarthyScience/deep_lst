@@ -1,7 +1,7 @@
 # @package _global_
 eval_name: johannesburg
-spatial_indices: eval_johannesburg
 
 test_dataset:
   spatial: eval_johannesburg
   temporal: test
+  anchor: seviri

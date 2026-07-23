@@ -8,7 +8,6 @@ version: version_0
 
 # --- populated by the eval group (eval/*.yaml) ---
 eval_name: ???
-spatial_indices: ???
 
 # --- optional inference flags ---
 best: false               # load best.ckpt instead of last.ckpt
@@ -17,10 +16,6 @@ inference_horizon: 72   # rollout horizon in hours. Use the trained value to rep
 
 test_dataset:
   init_hours: [0, 6, 12, 18]   # thin init times to these UTC hours (6-hourly); set null for every hour
-  era5:
-    preload: true
-  seviri:
-    preload: true
 
 analysis:
   batch_size: 24768
