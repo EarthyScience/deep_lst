@@ -1,206 +1,108 @@
-import os
+"""Recompute statistics for one modality over the MTG training pixels + statistics timesteps.
+
+Base statistics (raw mean/std/min/max per store leaf) mirror eodata's cli/stats.py — WelfordMetric
+per continuous leaf -> ModalityStatistics.to_zarr — but sourced from deep_lst's raw streaming
+UnimodalDataset (no normalization). Prognostic increment statistics (a deep_lst modelling concept)
+are stored as normalised increment variances in an `increments` group inside the same zarr.
+
+One modality per run (submit per-modality jobs in parallel):
+    uv run scripts/statistics/compute_statistics.py modality=seviri
+"""
 
 import hydra
 import numpy as np
 import torch
 import zarr
-from eodata.eo_zarr import EOZarrStore
-from eodata.schemes.torch.base import VariableType
-from eodata.statistics import StandardStatisticsMetric
+from eodata.statistics import ArrayStatistics, ModalityStatistics, WelfordMetric
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DistributedSampler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from deep_lst.dataset.dataset import UnimodalDataset, load_samples
-from deep_lst.utils.io import ExperimentPaths, save_statistics_npz
+from deep_lst.dataset.dataset import UnimodalDataset
+from deep_lst.utils.io import ExperimentPaths
+
+PATHS = ExperimentPaths()
 
 
-def calculate_all_statistics(
-    store: EOZarrStore,
-    reader_cls,
-    indices: np.ndarray,
-    increment_variables: list[str] | None = None,
-    device: str | torch.device = "cpu",
-    batch_size: int = 32,
-    num_workers: int = 0,
-    **reader_kwargs,
-) -> dict:
-    """Compute per-variable mean, std, min, max, and optionally increment statistics.
+def _welford(device: torch.device) -> WelfordMetric:
+    return WelfordMetric(dim=(0,)).to(device=device).to(dtype=torch.float64)
 
-    When increment_variables is non-empty, uses horizon=1 so each sample
-    contains two consecutive timesteps, enabling both regular and increment stats
-    (Y_{t+1} - Y_t) in a single pass with one preload. The last temporal index
-    is excluded so horizon=1 never reads past the store end. Increment variables
-    are moved from inputs to diagnostics to preserve NaN masking (avoiding
-    nan_to_num bias on cloud-masked pixels). Increment stats are keyed as
-    "{var}_increment".
 
-    When increment_variables is empty or None, behaves as a plain statistics
-    pass with horizon=0 over the full index set (the ERA5 path).
-    """
-    device = torch.device(device)
-    increment_variables = increment_variables or []
+def _flatten_channels(values: torch.Tensor) -> torch.Tensor:
+    """(B, days, C, 24) or (B, days, C) -> (N, C) with the channel axis last."""
+    if values.ndim == 4:  # temporal leaf: move the channel axis to the end
+        values = values.movedim(2, -1)  # (B, days, 24, C)
+    return values.reshape(-1, values.shape[-1])
 
-    if increment_variables:
-        # Exclude last timestep — horizon=1 needs t+1 to be valid.
-        max_time = indices[:, 1].max()
-        safe_indices = indices[indices[:, 1] < max_time]
 
-        # horizon=1; move increment variables from inputs → diagnostics (NaN preservation).
-        unified_kwargs = dict(reader_kwargs)
-        unified_kwargs["horizon"] = 1
-        unified_kwargs["inputs"] = [v for v in reader_kwargs.get("inputs", []) if v not in increment_variables]
-        existing_diag = list(reader_kwargs.get("diagnostics", []))
-        unified_kwargs["diagnostics"] = existing_diag + [v for v in increment_variables if v not in existing_diag]
-    else:
-        safe_indices = indices
-        unified_kwargs = reader_kwargs
+@torch.no_grad()
+def compute_statistics(dataset, prognostic_channels, device, num_workers):
+    """Base per-leaf statistics + optional prognostic increment statistics (NaN ignored)."""
+    loader = DataLoader(dataset, batch_size=8, num_workers=num_workers, drop_last=False)
+    base: dict[str, WelfordMetric] = {}
+    increment = _welford(device) if prognostic_channels else None
 
-    reader = reader_cls(store=store, **unified_kwargs)
-    if unified_kwargs.get("preload", False):
-        reader.preload()
+    for batch in tqdm(loader):
+        for leaf, values in batch.items():
+            values = values.to(device)
+            base.setdefault(leaf, _welford(device)).update(_flatten_channels(values).to(torch.float64))
+        if increment is not None:
+            data = batch["data"].to(device)  # (B, days, C, 24)
+            diff = (data[..., 1:] - data[..., :-1])[:, :, prognostic_channels, :]  # within-day 1-hour increments
+            increment.update(diff.movedim(2, -1).reshape(-1, len(prognostic_channels)).to(torch.float64))
 
-    # Init process group AFTER preload so the NCCL watchdog doesn't expire
-    # while ranks are busy loading large stores (e.g. ERA5's 15 GB) from NFS.
-    if "RANK" in os.environ and "LOCAL_RANK" in os.environ and not torch.distributed.is_initialized():
-        torch.distributed.init_process_group(device_id=torch.device("cuda", int(os.environ["LOCAL_RANK"])))
-        device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
-
-    dataset = UnimodalDataset(reader=reader, indices=safe_indices)
-
-    if torch.distributed.is_initialized():
-        sampler = DistributedSampler(dataset, shuffle=False, drop_last=False, seed=0)
-    else:
-        sampler = DistributedSampler(dataset, shuffle=False, drop_last=False, seed=0, rank=0, num_replicas=1)
-
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        num_workers=num_workers,
-        drop_last=False,
-        collate_fn=torch.stack,
-        pin_memory=True,
-    )
-
-    schema = reader.get_torch_schema()
-    metrics: dict[str, StandardStatisticsMetric] = {}
-    for name, var in schema.variables.items():
-        if var.var_type == VariableType.CONTINUOUS:
-            dim = (0,) + tuple(idx + 1 for idx in var.reduced_dimensions_indices)
-            metrics[name] = StandardStatisticsMetric(dim=dim).to(device=device)
-
-    inc_metrics: dict[str, StandardStatisticsMetric] = {
-        var: StandardStatisticsMetric(dim=(0, 1, 2, 3)).to(device=device) for var in increment_variables
-    }
-
-    use_tqdm = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
-    for batch in tqdm(dataloader, disable=not use_tqdm, smoothing=0.005):
-        batch = batch.to(device=device, non_blocking=True)
-        for key in metrics:
-            if key in batch:
-                data = batch[key]
-                # With horizon=1, time-varying variables have shape (B, 2, H, W, C).
-                # Take t=0 slice to recover (B, H, W, C) for the metric dim indices.
-                if data.ndim == 5:
-                    data = data[:, 0, ...]
-                metrics[key].update(data)
-        for var in increment_variables:
-            if var in batch:
-                # batch[var]: (B, 2, H, W, C) — index 0 = t, index 1 = t+1
-                inc_metrics[var].update(batch[var][:, 1, ...] - batch[var][:, 0, ...])
-
-    all_stats: dict = {}
-    for var_name, metric in metrics.items():
-        stats = metric.compute()
-        all_stats[var_name] = {k: v.cpu().numpy() for k, v in stats.items()}
-    for var, metric in inc_metrics.items():
-        stats = metric.compute()
-        all_stats[f"{var}_increment"] = {k: v.cpu().numpy() for k, v in stats.items()}
-
-    return all_stats
+    base_stats = {leaf: metric.compute() for leaf, metric in base.items()}
+    increment_stats = increment.compute() if increment is not None else None
+    return base_stats, increment_stats
 
 
 @hydra.main(config_path="../../conf", config_name="statistics", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     config = OmegaConf.to_container(cfg, resolve=True)
     modality = config["modality"]
-    modality_cfg = config[modality]
+    prognostics = config[modality].get("prognostics", [])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    label = config["spatial"]  # e.g. 'KGLC_L'
-
-    if torch.cuda.is_available() and "LOCAL_RANK" in os.environ:
-        device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-
-    if modality == "era5":
-        from eodata.data_reader.era5 import Era5Reader as ReaderCls
-    else:
-        from eodata.data_reader.seviri import SeviriReader as ReaderCls
-
-    paths = ExperimentPaths()
-    reader_kwargs = {
-        "inputs": modality_cfg["inputs"],
-        "diagnostics": modality_cfg["diagnostics"],
-        "prognostics": modality_cfg["prognostics"],
-        "row_extent": modality_cfg["row_extent"],
-        "col_extent": modality_cfg["col_extent"],
-        "lookback": 0,
-        "horizon": 0,
-        "preload": config["preload"],
-    }
-
-    store = EOZarrStore(config["store_path"], mode="r+")
-    spatial_idx = zarr.open_group(config["store_path"], mode="r")["spatial_idx"][:]
-    indices = load_samples(
-        spatial_idx=spatial_idx,
-        temporal_indices_path=paths.temporal_indices_path(config["temporal"]),
+    dataset = UnimodalDataset.from_config(
+        modality=modality,
+        store=config[modality]["store"],
+        spatial=config["spatial"],
+        anchor=config["anchor"],
+        temporal=config["temporal"],
     )
+    data_fields = list(dataset.reader.data_arr.dtype.fields)
+    prognostic_channels = [data_fields.index(var) for var in prognostics]
+    print(f"modality={modality}  pixels={len(dataset.rows)}  days={len(dataset.stat_days)}  prognostics={prognostics}")
 
-    rank = int(os.environ.get("RANK", 0))
-    if rank == 0:
-        print(f"Modality     : {modality}")
-        print(f"Store        : {config['store_path']}")
-        print(f"Spatial      : {config['spatial']}  ({len(np.unique(indices[:, 0]))} unique pixels)")
-        print(f"Temporal     : {config['temporal']}  ({len(np.unique(indices[:, 1]))} unique timesteps)")
-        print(f"Total samples: {len(indices):,}")
-        print(f"Label        : {label}")
+    base_stats, increment_stats = compute_statistics(dataset, prognostic_channels, device, config["num_workers"])
 
-    increment_variables = modality_cfg.get("increment_variables", [])
-    if rank == 0 and increment_variables:
-        print(f"Computing regular + increment statistics for: {increment_variables}")
-    all_stats = calculate_all_statistics(
-        store,
-        reader_cls=ReaderCls,
-        indices=indices,
-        increment_variables=increment_variables,
-        device=device,
-        batch_size=config["batch_size"],
-        num_workers=config["num_workers"],
-        **reader_kwargs,
-    )
+    # Base statistics per leaf, plus (if any) the prognostic increments — all stored as the same
+    # ArrayStatistics (mean/std/min/max). load_inc_variances derives (std_increment/std_var)^2 later.
+    def _array_stats(stats):
+        # atleast_1d: single-variable leaves (e.g. seviri data_static=DEM) squeeze to 0-D in the
+        # metric; store them as (1,) so the zarr matches the normalizer's per-channel layout.
+        arrays = {k: np.atleast_1d(v.cpu().numpy()) for k, v in stats.items()}
+        return ArrayStatistics.from_dict(arrays, dimension_names=["channel"])
 
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    modality_stats = {leaf: _array_stats(stats) for leaf, stats in base_stats.items()}
+    if prognostics:
+        modality_stats["increments"] = _array_stats(increment_stats)
 
-    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-        for var_name, var_stats in all_stats.items():
-            print(f"  {var_name}: mean={var_stats['mean']:.4f}  std={var_stats['std']:.4f}")
+    out_path = PATHS.stats_zarr_path(modality)
+    ModalityStatistics(modality_stats).to_zarr(str(out_path))
 
-        out_path = paths.statistics_path(modality, label)
-        save_statistics_npz(all_stats, out_path)
-        print(f"\nSaved statistics npz → {out_path}")
+    if prognostics:  # record which data variables the increment channels correspond to
+        group = zarr.open_group(str(out_path), mode="a")["increments"]
+        group.attrs["variables"] = list(prognostics)
+        group.attrs["channels"] = [int(channel) for channel in prognostic_channels]
 
-        for var_name, var_stats in all_stats.items():
-            store.set_statistics(modality, var_name, var_stats, label=label, overwrite=True)
-        print(f"Embedded statistics in zarr store (label='{label}')")
-
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
-        torch.distributed.destroy_process_group()
+    for leaf, stats in base_stats.items():
+        print(
+            f"  {leaf}: mean={np.round(stats['mean'].cpu().numpy(), 3)}  std={np.round(stats['std'].cpu().numpy(), 3)}"
+        )
+    if prognostics:
+        print(f"  increments std={np.round(increment_stats['std'].cpu().numpy(), 3)} for {prognostics}")
+    print(f"saved statistics -> {out_path}")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,47 @@
+import hashlib
+import inspect
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import eodata
 import numpy as np
 import torch
-import zarr
-from eodata.eo_zarr import EOZarrStore
-from eodata.grids import T1H, build_era5_grid, build_seviri_grid
-from eodata.grids.majortom import MajorTomLandGrid
-from eodata.grids.spatial import IndexedSubsetGrid
-from eodata.util.misc import assemble_statistics_from_npz
+from eodata.grids import T1H
+from eodata.normalization import ModalityNormalizer
+from eodata.registry import get_data_reader_class
+from eodata.sample import Mask, mask_name
 from tensordict import TensorDict
 from torch.utils.data import Dataset
 
+from deep_lst.utils import features
 from deep_lst.utils.io import ExperimentPaths
+from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
+
+# Modality carrying the global time features (doy/hod); the finest / target grid.
+_ANCHOR_MODALITY = "seviri"
+# non-"data" leaves -> the reader flag that enables reading them (data is always returned)
+_LEAF_ENABLE_FLAGS = {
+    "metadata": "get_metadata",
+    "data_daily": "get_data_daily",
+    "data_static": "get_data_static",
+    "data_static_categorical": "get_data_static_categorical",
+}
+# leaf -> the reader's underlying zarr array attribute (its dtype fields give the full var order)
+_LEAF_ARRAY = {
+    "data": "data_arr",
+    "metadata": "metadata_arr",
+    "data_daily": "data_daily_arr",
+    "data_static": "data_static_arr",
+    "data_static_categorical": "data_static_categorical_arr",
+}
 
 PATHS = ExperimentPaths()
+
+# time_indices_*.npz are hours since the data start (2016-01-01); the new full stores are indexed
+# on the 1970 epoch, so a time index must be shifted by this offset to address the store.
+# FLAGGED for later: cleaner to regenerate the indices as absolute T1H (see migration notes).
+STORE_EPOCH_OFFSET = T1H.date_to_index("2016-01-01")  # 403224 hours = 16801 days
 
 
 def _spatial_idx_from_npz(path) -> np.ndarray:
@@ -20,19 +49,6 @@ def _spatial_idx_from_npz(path) -> np.ndarray:
     data = np.load(path)
     order = np.argsort(data["src_indices"], kind="stable")
     return data["mapping"][order]
-
-
-def _parent_grid_for(index_space: str, modality: str):
-    if index_space.startswith("major_tom_global"):
-        # Placeholder: model never addresses spatial_idx for MTG stores, parent grid is cosmetic.
-        return MajorTomLandGrid(5)
-    if index_space.startswith("equiangular"):
-        if modality == "seviri":
-            return build_seviri_grid()
-        if modality == "era5":
-            return build_era5_grid()
-        raise ValueError(f"No equiangular grid builder for modality {modality!r}")
-    raise ValueError(f"Unknown index_space: {index_space!r}")
 
 
 def load_samples(
@@ -45,7 +61,7 @@ def load_samples(
     init_hours: list[int] | None = None,
 ) -> np.ndarray:
     if temporal_indices_path is not None:
-        time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64)
+        time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64) + STORE_EPOCH_OFFSET
 
         if horizon > 0:
             time_idx = time_idx[time_idx <= time_idx.max() - horizon]
@@ -65,117 +81,238 @@ def load_samples(
     return indices
 
 
+def _load_anchor_ids(spatial_name):
+    """Anchor cell ids for a split: global MTG ids for training, seviri equiangular pixels for
+    an eval holdout region. Stored identically across modalities, so read the seviri npz."""
+    return np.load(PATHS.spatial_indices_path("seviri", spatial_name))["src_indices"].astype(np.int64)
+
+
+def _flatten_hours(values, valid):
+    """(days, 24, C) -> (days * 24, C); re-inject NaN where invalid (float leaves only)."""
+    n_vars = values.shape[-1]
+    column = values.reshape(-1, n_vars).clone()
+    if valid is not None and column.is_floating_point():
+        column[~valid.reshape(-1, n_vars)] = float("nan")
+    return column
+
+
+def _hourly_column(leaf, mask):
+    """data / metadata: (days, C, 24, 1, 1) -> (days * 24, C)."""
+    values = leaf.squeeze(-1).squeeze(-1).permute(0, 2, 1)  # (days, 24, C)
+    valid = None if mask is None else mask.squeeze(-1).squeeze(-1).permute(0, 2, 1)
+    return _flatten_hours(values, valid)
+
+
+def _daily_column(leaf, mask):
+    """data_daily: (days, C, 1, 1) -> (days * 24, C), each day repeated across its 24 hours."""
+    values = leaf.squeeze(-1).squeeze(-1).unsqueeze(1).expand(-1, 24, -1)  # (days, 24, C)
+    valid = None if mask is None else mask.squeeze(-1).squeeze(-1).unsqueeze(1).expand(-1, 24, -1)
+    return _flatten_hours(values, valid)
+
+
+def _static_column(leaf, mask):
+    """data_static(_categorical): (days, C, 1, 1) constant over days -> (C,)."""
+    column = leaf[0].squeeze(-1).squeeze(-1).clone()
+    if mask is not None and column.is_floating_point():
+        column[~mask[0].squeeze(-1).squeeze(-1)] = float("nan")
+    return column
+
+
+def _preload_pixel(reader, normalizer, pixel, n_days, select=None):
+    """Read one pixel's full day-axis and return every configured leaf as a RAM array.
+
+    The full leaf is read and normalized (so the positional full-set statistics align), then
+    the config's variables are selected by channel — dropping a variable is a config change,
+    never a statistics recompute. Hourly (data, metadata) and daily (data_daily) leaves flatten
+    to a continuous hour axis (position = day * 24 + hour, the T1H index); static leaves collapse
+    to one per-pixel vector. Missing values are re-injected as NaN via each leaf's data mask; int
+    categoricals keep their fill. Returns {key: hourly/daily -> (n_days * 24, C); static -> (C,)}.
+    """
+    hourly_keys = ("data", "metadata")
+    daily_keys = ("data_daily",)
+    static_keys = ("data_static", "data_static_categorical")
+
+    sample = reader.get_data_multi([(int(pixel), day) for day in range(n_days)])
+    if normalizer is not None:  # None => raw values (e.g. statistics computation)
+        sample = normalizer.normalize(sample)
+    if select is None:  # no selection: keep every loaded leaf, all channels
+        select = {key: slice(None) for key in sample.variables()}
+    columns = {}
+    for key, channels in select.items():
+        leaf = sample[key][:, channels]  # select the config variables (channel axis) post-normalize
+        mask = sample.get(mask_name(key, Mask.DATA))
+        if mask is not None:
+            mask = mask[:, channels]
+        if key in static_keys:
+            columns[key] = _static_column(leaf, mask)
+        elif key in daily_keys:
+            columns[key] = _daily_column(leaf, mask)
+        elif key in hourly_keys:
+            columns[key] = _hourly_column(leaf, mask)
+        else:
+            raise ValueError(f"Unclassified preload leaf {key!r}")
+    return columns
+
+
+def _preload_columns(reader, normalizer, pixel_ids, n_days, select=None, num_workers=1):
+    """Preload every pixel's full day-axis into RAM, one stacked entry per configured leaf.
+
+    Returns {leaf_key: tensor}: hourly/daily leaves -> (n_pixels, n_days * 24, C); static leaves
+    -> (n_pixels, C). select maps each leaf to the channel indices of its config variables. With
+    num_workers > 1 the per-pixel reads run on a shared-reader thread pool; ThreadPoolExecutor.map
+    preserves order so rows stay aligned with pixel_ids.
+    """
+
+    def load(pixel):
+        return _preload_pixel(reader, normalizer, pixel, n_days, select)
+
+    if num_workers and num_workers > 1:
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            per_pixel = list(pool.map(load, pixel_ids))
+    else:
+        per_pixel = [load(pixel) for pixel in pixel_ids]
+    return {key: torch.stack([pixel[key] for pixel in per_pixel]) for key in per_pixel[0]}
+
+
+def _window_leaves(columns, row, hour, lookback, horizon):
+    """Slice one (pixel row, anchor hour) window out of a preloaded leaf dict.
+
+    Temporal leaves (3-D cache) are sliced [hour - L : hour + H + 1]; static leaves
+    (2-D cache) are broadcast to the same length. Returns a TensorDict of (L + H + 1, C).
+    """
+    length = lookback + horizon + 1
+    lo, hi = hour - lookback, hour + horizon + 1
+    window = TensorDict({}, batch_size=[])
+    for key, column in columns.items():
+        if column.ndim == 2:  # static: (n_pixels, C) -> broadcast over the window
+            window[key] = column[row].unsqueeze(0).expand(length, -1)
+        else:  # temporal: (n_pixels, n_hours, C) -> contiguous window slice
+            window[key] = column[row, lo:hi]
+    return window
+
+
+def _to_named_channels(leaves, var_names):
+    """Explode preloaded leaf windows into per-variable (L+H+1, 1) named channels (option A).
+
+    var_names maps each loaded leaf to its ordered variable names (the config `load`), matching
+    the channel order the reader returned. The collator then packs by (modality, var) name.
+    """
+    channels = TensorDict({}, batch_size=[])
+    for leaf, names in var_names.items():
+        window = leaves[leaf]
+        for channel, name in enumerate(names):
+            # (L+H+1, 1, 1, 1): keep the singleton H, W spatial dims the packed model expects
+            channels[name] = window[:, channel : channel + 1].unsqueeze(1).unsqueeze(1)
+    return channels
+
+
 class UnimodalDataset(Dataset):
-    def __init__(self, reader, indices):
-        """
-        zarr_array: xarray.DataArray or zarr.Array
-        indices: 3d pandas dataframe or array
-        source: pandas data frame, read from source parquet
-        """
-        self.indices = indices
+    """Streaming raw single-modality dataset — used only for statistics computation.
+
+    Reads a small set of statistics days for each pixel (no normalization, no full-axis preload,
+    no windowing), re-injecting NaN via each leaf's mask so eodata's WelfordMetric ignores missing
+    values. Each item is the per-day raw leaf block {leaf: (days, C, 24)} (or (days, C) for static),
+    which the statistics script flattens for base stats and diffs along the 24-hour axis (within-day)
+    for the prognostic increments.
+    """
+
+    def __init__(self, reader, rows, stat_days):
         self.reader = reader
-        print(f"Initialized Unimodal dataset with {len(self.indices)} samples.")
+        self.rows = np.asarray(rows, dtype=np.int64)
+        self.stat_days = [int(day) for day in stat_days]
+        print(f"Initialized statistics dataset: {len(self.rows)} pixels × {len(self.stat_days)} days.")
 
     def __len__(self):
-        return len(self.indices)
+        return len(self.rows)
 
-    def __getitem__(self, idx):
-        p_index, t_index = self.indices[idx]
-        sample = self.reader.get_data_single(spatial_idx=p_index, time_idx=t_index)
-        sample["spatial_idx"] = torch.tensor(p_index, dtype=torch.long)
-        sample["time_idx"] = torch.tensor(t_index, dtype=torch.long)
-        return sample
-
-    @property
-    def time_idx(self) -> np.ndarray:
-        return np.unique(self.indices[:, 1])
-
-    @property
-    def spatial_idx(self) -> np.ndarray:
-        return np.unique(self.indices[:, 0])
+    def __getitem__(self, index):
+        sample = self.reader.get_data_multi([(int(self.rows[index]), day) for day in self.stat_days])
+        leaves = {}
+        for leaf in sample.variables():
+            values = sample[leaf]  # (days, C, 24, 1, 1) hourly/daily, or (days, C, 1, 1) static
+            mask = sample.get(mask_name(leaf, Mask.DATA))
+            if mask is not None and values.is_floating_point():
+                values = values.clone()
+                values[~mask] = float("nan")  # re-inject NaN; the metric ignores it
+            leaves[leaf] = values.squeeze(-1).squeeze(-1)  # (days, C, 24) or (days, C)
+        return leaves
 
     @classmethod
-    def from_modality(
-        cls,
-        modality_id: str,
-        **kwargs: dict,
-    ):
-        temporal_split = kwargs["temporal"]
-        if isinstance(temporal_split, list):
-            temporal_paths = [PATHS.temporal_indices_path(p) for p in temporal_split]
-        elif temporal_split is not None:
-            temporal_paths = PATHS.temporal_indices_path(temporal_split)
-        else:
-            temporal_paths = None
+    def from_config(cls, modality, store, spatial, anchor, temporal, workers=1):
+        """Stream the MTG pixel selection (spatial) over the statistics timestep subset (temporal)."""
+        anchor_ids = _load_anchor_ids(spatial)
+        rows = np.unique(map_to_store_rows(anchor_grid(anchor), anchor_ids, store_grid(modality)))
+        stat_hours = np.load(PATHS.temporal_indices_path(temporal))["time_indices"].astype(np.int64)
+        stat_days = np.unique((stat_hours + STORE_EPOCH_OFFSET) // 24)  # store days; each read in full (24 h)
 
-        preload = kwargs[modality_id].get("preload", False)
-        if preload:
-            store_path = PATHS.sampled_store_path(modality_id, kwargs["spatial"])
-            root = zarr.open_group(store_path, mode="r")
-            spatial_idx = root["spatial_idx"][:]
-            sampled_grid = IndexedSubsetGrid(
-                _parent_grid_for(root.attrs["index_space"], modality_id),
-                spatial_idx,
-                name=root.attrs["spatial_grid"],
-            )
-            store = EOZarrStore(store_path, spatial_grid=sampled_grid, time_grid=T1H, mode="r+")
-        else:
-            spatial_idx = _spatial_idx_from_npz(PATHS.spatial_indices_path(modality_id, kwargs["spatial"]))
-            store = EOZarrStore(PATHS.store_path(modality_id), mode="r+")
-
-        indices = load_samples(
-            spatial_idx,
-            start_time=kwargs.get("start_time"),
-            end_time=kwargs.get("end_time"),
-            temporal_indices_path=temporal_paths,
-            horizon=kwargs[modality_id].get("horizon", 0),
-            lookback=kwargs[modality_id].get("lookback", 0),
-            init_hours=kwargs.get("init_hours"),
-        )
-        statistics = assemble_statistics_from_npz(PATHS.statistics_path(modality_id, kwargs[modality_id]["statistics"]))
-
-        # Instantiate reader
-        reader = eodata.get_data_reader(modality_id, store=store, **kwargs[modality_id])
-        reader.set_normalizer(statistics=statistics)
-
-        if preload:
-            reader.preload()
-
-        return cls(reader=reader, indices=indices)
+        # Enable the full continuous leaves (data + data_daily + data_static), raw. Categoricals and
+        # metadata are left out — they get no statistics. Seviri-only flags are signature-filtered.
+        reader_kwargs = {
+            "average_hourly": False,
+            "get_data_static": True,
+            "get_data_daily": True,
+            "get_metadata": False,
+            "get_data_static_categorical": False,
+        }
+        accepted = inspect.signature(get_data_reader_class(modality)).parameters
+        reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
+        reader = eodata.get_data_reader(modality, store=str(PATHS.eozarr_store_path(store)), **reader_kwargs)
+        return cls(reader, rows, stat_days)
 
 
 class MultimodalDataset(Dataset):
-    def __init__(
-        self,
-        reader: dict,
-        indices: np.ndarray,
-        spatial_lookups: dict[str, np.ndarray],
-        n_spatial: int,
-    ):
-        self.readers = reader
-        self.indices = indices  # (N, 2): (seviri_pixel, time), time-major
-        self.spatial_lookups = spatial_lookups  # modality → array of length n_seviri
+    def __init__(self, columns, inverse, var_names, cell_lonlat, indices, n_spatial, lookback, horizon):
+        """
+        columns: {modality: {leaf_key: (n_unique, n_hours, C) | (n_unique, C)}} preloaded in RAM,
+            NaN where missing; deduped to the unique native cells (shared across splits).
+        inverse: {modality: (n_spatial,)} anchor position -> row into that modality's cache
+            (coarse modalities map many anchors to one native cell).
+        var_names: {modality: {leaf_key: [var names]}} — the config `load`, for named channels.
+        cell_lonlat: {modality: (n_unique, 2)} lon/lat per cached cell (for solar_zenith).
+        indices: (N, 2) array of (anchor_id, anchor_hour), time-major.
+        lookback / horizon: {modality: int} window extents per modality.
+        """
+        self.columns = columns
+        self.inverse = inverse
+        self.var_names = var_names
+        self.cell_lonlat = cell_lonlat
+        self.indices = indices
         self.n_spatial = n_spatial
+        self.lookback = lookback
+        self.horizon = horizon
         self.samples = len(self.indices)
         print(
             f"Initialized MultimodalDataset with {self.samples} samples "
-            f"({n_spatial} pixels × {self.samples // n_spatial} times, time-major)."
+            f"({n_spatial} anchors × {self.samples // n_spatial} times, time-major)."
         )
 
     def __len__(self):
         return self.samples
 
+    def _add_computed(self, channels, modality, lonlat, hour, lookback, horizon):
+        """Attach computed features: solar_zenith per grid; doy/hod only on the anchor modality."""
+        hours = np.arange(hour - lookback, hour + horizon + 1)
+        zenith = features.solar_zenith(float(lonlat[1]), float(lonlat[0]), hours)  # lonlat = (lon, lat)
+        channels["solar_zenith"] = torch.as_tensor(zenith, dtype=torch.float32).reshape(-1, 1, 1, 1)
+        if modality == _ANCHOR_MODALITY:
+            for name, values in features.time_features(hours).items():
+                channels[name] = torch.as_tensor(values, dtype=torch.float32).reshape(-1, 1, 1, 1)
+
     def __getitem__(self, idx):
-        seviri_pos = idx % self.n_spatial
-        seviri_id, t_idx = self.indices[idx]
+        pos = idx % self.n_spatial
+        anchor_id, hour = self.indices[idx]
 
         data = TensorDict({}, batch_size=[])
-        for modality, reader in self.readers.items():
-            mod_spatial_id = int(self.spatial_lookups[modality][seviri_pos])
-            data[modality] = reader.get_data_single(spatial_idx=mod_spatial_id, time_idx=int(t_idx))
+        for modality, columns in self.columns.items():
+            row = int(self.inverse[modality][pos])
+            lookback, horizon = self.lookback[modality], self.horizon[modality]
+            leaves = _window_leaves(columns, row, hour, lookback, horizon)
+            channels = _to_named_channels(leaves, self.var_names[modality])
+            self._add_computed(channels, modality, self.cell_lonlat[modality][row], hour, lookback, horizon)
+            data[modality] = channels
 
-        data["spatial_idx"] = torch.tensor(seviri_id, dtype=torch.long)
-        data["time_idx"] = torch.tensor(t_idx, dtype=torch.long)
+        data["spatial_idx"] = torch.tensor(anchor_id, dtype=torch.long)
+        data["time_idx"] = torch.tensor(hour, dtype=torch.long)
         return data
 
     @property
@@ -187,11 +324,93 @@ class MultimodalDataset(Dataset):
         return np.unique(self.indices[:, 0])
 
     @classmethod
-    def from_modalities(cls, modality_ids: list[str], **kwargs: dict):
-        # SEVIRI is hardcoded as the anchor (fine-grid source of truth). Formalise this
-        # "anchor modality" concept when other multimodal combinations show up.
-        if "seviri" not in modality_ids:
-            raise ValueError("MultimodalDataset.from_modalities requires 'seviri' as the anchor modality.")
+    def preload_shared(cls, modality_ids, **kwargs):
+        """Preload each modality's native columns once, shared across train/val/test splits.
+
+        Every anchor cell (MTG for training, seviri pixels for eval) is nearest-neighbour mapped
+        to each modality's native store row; coarse modalities are deduped so only unique cells
+        are read. Columns depend only on (anchors, store), not the temporal split, so this runs
+        once — a full-axis cache per split would not fit in RAM.
+        """
+        spatial_name = kwargs["spatial"]
+        anchor_ids = _load_anchor_ids(spatial_name)
+        src_grid = anchor_grid(kwargs.get("anchor", "mtg"))
+        num_workers = kwargs.get("preload_workers", 8)
+
+        # Disk cache: the preload is deterministic given the anchors, stores, load specs and
+        # statistics, so later runs (restarts, HP/architecture sweeps) skip the store reads.
+        # Model-role changes reuse the cache; editing a `load:` section or regenerating a stats
+        # zarr changes the fingerprint and triggers a rebuild.
+        fingerprint_spec = {
+            "anchors": hashlib.sha256(np.ascontiguousarray(anchor_ids).tobytes()).hexdigest(),
+            "modalities": {
+                modality: {
+                    "store": kwargs[modality]["store"],
+                    "load": kwargs[modality]["load"],
+                    "stats_mtime": os.path.getmtime(PATHS.stats_zarr_path(modality) / "zarr.json"),
+                }
+                for modality in modality_ids
+            },
+        }
+        fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True).encode()).hexdigest()[:16]
+        cache_path = PATHS.preload_cache_path(fingerprint)
+        if cache_path.exists():
+            print(f"Loading preload cache {cache_path}")
+            return torch.load(cache_path, map_location="cpu", weights_only=False)
+
+        columns, inverse, var_names, cell_lonlat = {}, {}, {}, {}
+        for modality in modality_ids:
+            native_grid = store_grid(modality)
+            rows = map_to_store_rows(src_grid, anchor_ids, native_grid)  # (n_anchor,), may repeat
+            unique_rows, inv = np.unique(rows, return_inverse=True)  # dedup coarse modalities
+
+            # Enable exactly the leaves the config `load` names; read them FULL (no variable
+            # subset) so the positional full-set statistics align, then select the config
+            # variables after normalization (see _preload_pixel). Enable-flags for leaves this
+            # modality's reader doesn't accept (ERA5 has no metadata/data_daily) are filtered
+            # out by the reader's __init__ signature.
+            load = kwargs[modality]["load"]
+            reader_kwargs = {"average_hourly": False}
+            for leaf, flag in _LEAF_ENABLE_FLAGS.items():
+                reader_kwargs[flag] = leaf in load
+            accepted = inspect.signature(get_data_reader_class(modality)).parameters
+            reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
+            reader = eodata.get_data_reader(
+                modality, store=str(PATHS.eozarr_store_path(kwargs[modality]["store"])), **reader_kwargs
+            )
+
+            normalizer = ModalityNormalizer.from_spec(f"zscore:{PATHS.stats_zarr_path(modality)}", reader.schema)
+            # Channel indices of the config variables within each leaf's full store variable order.
+            select = {
+                leaf: [list(getattr(reader, _LEAF_ARRAY[leaf]).dtype.fields).index(var) for var in names]
+                for leaf, names in load.items()
+            }
+            n_days = reader.data_arr.shape[1]
+            columns[modality] = _preload_columns(
+                reader, normalizer, unique_rows, n_days, select, num_workers=num_workers
+            )
+            inverse[modality] = inv
+            var_names[modality] = {leaf: list(names) for leaf, names in load.items()}
+            cell_lonlat[modality] = np.asarray(native_grid.centers[unique_rows], dtype=np.float64)
+        shared = {
+            "columns": columns,
+            "inverse": inverse,
+            "var_names": var_names,
+            "cell_lonlat": cell_lonlat,
+            "anchor_ids": anchor_ids,
+            "spatial": spatial_name,
+        }
+        print(f"Saving preload cache {cache_path}")
+        temporary_path = cache_path.with_suffix(".tmp")
+        torch.save(shared, temporary_path)
+        temporary_path.rename(cache_path)  # atomic-ish: never leaves a half-written cache behind
+        return shared
+
+    @classmethod
+    def from_modalities(cls, modality_ids, shared, **kwargs):
+        """Build one split's dataset from the shared preloaded columns + this split's anchors."""
+        if kwargs["spatial"] != shared["spatial"]:
+            raise ValueError(f"Shared cache built for spatial={shared['spatial']!r}, got {kwargs['spatial']!r}")
 
         temporal_split = kwargs["temporal"]
         if isinstance(temporal_split, list):
@@ -201,58 +420,26 @@ class MultimodalDataset(Dataset):
         else:
             temporal_paths = None
 
-        # Anchor on SEVIRI: every (seviri_pixel, time) sample maps to the per-modality
-        # spatial id via that modality's npz (src_indices → mapping).
-        seviri_kwargs = kwargs["seviri"]
-        if seviri_kwargs.get("preload", False):
-            seviri_root = zarr.open_group(PATHS.sampled_store_path("seviri", kwargs["spatial"]), mode="r")
-            seviri_spatial_idx = seviri_root["spatial_idx"][:]
-        else:
-            seviri_spatial_idx = _spatial_idx_from_npz(PATHS.spatial_indices_path("seviri", kwargs["spatial"]))
-
-        # Clip by the strictest horizon/lookback across modalities so every reader can serve its window.
-        shared_horizon = max(kwargs[m].get("horizon", 0) for m in modality_ids)
-        shared_lookback = max(kwargs[m].get("lookback", 0) for m in modality_ids)
+        lookback = {m: kwargs[m].get("lookback", 0) for m in modality_ids}
+        horizon = {m: kwargs[m].get("horizon", 0) for m in modality_ids}
+        # Clip anchors by the strictest extent so every modality can serve its window.
         indices = load_samples(
-            seviri_spatial_idx,
+            shared["anchor_ids"],
             start_time=kwargs.get("start_time"),
             end_time=kwargs.get("end_time"),
             temporal_indices_path=temporal_paths,
-            horizon=shared_horizon,
-            lookback=shared_lookback,
+            horizon=max(horizon.values()),
+            lookback=max(lookback.values()),
             init_hours=kwargs.get("init_hours"),
         )
-        n_spatial = len(seviri_spatial_idx)
-
-        spatial_lookups: dict[str, np.ndarray] = {}
-        readers: dict[str, object] = {}
-        for mod in modality_ids:
-            # Per-modality SEVIRI-position → modality-id lookup, from the npz mapping.
-            # MTG: src_indices == mapping → identity. Eval region: fine SEVIRI → coarse ERA5.
-            npz = np.load(PATHS.spatial_indices_path(mod, kwargs["spatial"]))
-            s_to_m = dict(zip(npz["src_indices"].astype(np.int64), npz["mapping"].astype(np.int64)))
-            spatial_lookups[mod] = np.array([s_to_m[int(s)] for s in seviri_spatial_idx], dtype=np.int64)
-
-            preload = kwargs[mod].get("preload", False)
-            if preload:
-                store_path = PATHS.sampled_store_path(mod, kwargs["spatial"])
-                root = zarr.open_group(store_path, mode="r")
-                mod_spatial_idx = root["spatial_idx"][:]
-                sampled_grid = IndexedSubsetGrid(
-                    _parent_grid_for(root.attrs["index_space"], mod),
-                    mod_spatial_idx,
-                    name=root.attrs["spatial_grid"],
-                )
-                store = EOZarrStore(store_path, spatial_grid=sampled_grid, time_grid=T1H, mode="r+")
-            else:
-                store = EOZarrStore(PATHS.store_path(mod), mode="r+")
-
-            reader = eodata.get_data_reader(mod, store=store, **kwargs[mod])
-            reader.set_normalizer(
-                statistics=assemble_statistics_from_npz(PATHS.statistics_path(mod, kwargs[mod]["statistics"]))
-            )
-            if preload:
-                reader.preload()
-            readers[mod] = reader
-
-        return cls(reader=readers, indices=indices, spatial_lookups=spatial_lookups, n_spatial=n_spatial)
+        n_spatial = len(shared["anchor_ids"])
+        return cls(
+            shared["columns"],
+            shared["inverse"],
+            shared["var_names"],
+            shared["cell_lonlat"],
+            indices,
+            n_spatial,
+            lookback,
+            horizon,
+        )

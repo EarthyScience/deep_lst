@@ -5,17 +5,23 @@ _horizon: h8
 train_dataset:
   era5:
     horizon: 8
+  era5_land:
+    horizon: 8
   seviri:
     horizon: 8
 
 val_dataset:
   era5:
     horizon: 8
+  era5_land:
+    horizon: 8
   seviri:
     horizon: 8
 
 test_dataset:
   era5:
+    horizon: 8
+  era5_land:
     horizon: 8
   seviri:
     horizon: 8

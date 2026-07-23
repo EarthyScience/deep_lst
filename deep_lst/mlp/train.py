@@ -144,25 +144,9 @@ def main(cfg: DictConfig) -> None:
     data_module = LitDataModule(**config)
     data_module.setup()
 
-    climatology = None
-    if config["model"].get("predict_anomaly", False):
-        from eodata.converter.variables import STORE_TIME_RANGE
-
-        from deep_lst.dataset.climatology import ClimatologyLookup
-
-        spatial = config["train_dataset"]["spatial"]
-        lst_norm = data_module.train_dataset.readers["seviri"].normalizers["LST"]
-
-        climatology = ClimatologyLookup(
-            clim_path=paths.climatology_path(f"train_{spatial}", "smoothed_hourly"),
-            spatial_idx_path=paths.spatial_indices_path("seviri", spatial),
-            lookback=config["train_dataset"]["seviri"]["lookback"],
-            horizon=config["train_dataset"]["seviri"]["horizon"],
-            state_mean=float(lst_norm.mean),
-            state_std=float(lst_norm.std),
-            store_time_range=STORE_TIME_RANGE,
-            variable="LST",
-        )
+    # NOTE: the anomaly mode (predict_anomaly + ClimatologyLookup) was stripped — it did not
+    # survive the packed-RolloutLoss migration (no loss consumed the climatology). Re-implement
+    # inside losses/rollout.py if anomaly training returns.
 
     td_keys = get_keys_from_config(config["train_dataset"])
     packing = get_packing_keys(config["train_dataset"])
@@ -171,9 +155,8 @@ def main(cfg: DictConfig) -> None:
     print(f"packing: {packing}")
 
     inc_variances: dict[str, float] = {}
-    for modality, mod_cfg in config["train_dataset"].items():
-        if isinstance(mod_cfg, dict) and "statistics" in mod_cfg:
-            inc_variances.update(load_inc_variances(paths.statistics_path(modality, mod_cfg["statistics"])))
+    for modality in config["modality_ids"]:
+        inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality)))
 
     model = MultiModalMLP(
         n_prognostic=packing["n_prognostic"],
@@ -190,7 +173,6 @@ def main(cfg: DictConfig) -> None:
         inc_variances=inc_variances,
         detach_rollout=config["model"].get("detach_rollout", True),
         incremental_loss=config["model"].get("incremental_loss", False),
-        climatology=climatology,
     )
 
     ngpu = torch.cuda.device_count()

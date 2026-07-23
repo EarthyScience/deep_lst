@@ -44,7 +44,6 @@ model:
   checkpoint_monitor: val_loss_step_epoch
   detach_rollout: false
   incremental_loss: true
-  predict_anomaly: false
   probabilistic: true
   scheduler_T0: 80000
   weight_decay: 0.0001

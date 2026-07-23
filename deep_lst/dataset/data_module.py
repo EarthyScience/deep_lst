@@ -18,21 +18,14 @@ class LitDataModule(pl.LightningDataModule):
         if hasattr(self, "train_dataset"):
             return
 
-        # pre-cache stores here.
+        # Preload the pixel columns once (same pixels/stores for every split) and share
+        # the RAM cache across train/val/test; only the temporal anchors differ.
+        modality_ids = self.kwargs["modality_ids"]
+        shared = MultimodalDataset.preload_shared(modality_ids, **self.kwargs["train_dataset"])
 
-        self.train_dataset = MultimodalDataset.from_modalities(
-            modality_ids=self.kwargs["modality_ids"],
-            **self.kwargs["train_dataset"],
-        )
-        self.val_dataset = MultimodalDataset.from_modalities(
-            modality_ids=self.kwargs["modality_ids"],
-            **self.kwargs["val_dataset"],
-        )
-
-        self.test_dataset = MultimodalDataset.from_modalities(
-            modality_ids=self.kwargs["modality_ids"],
-            **self.kwargs["test_dataset"],
-        )
+        self.train_dataset = MultimodalDataset.from_modalities(modality_ids, shared, **self.kwargs["train_dataset"])
+        self.val_dataset = MultimodalDataset.from_modalities(modality_ids, shared, **self.kwargs["val_dataset"])
+        self.test_dataset = MultimodalDataset.from_modalities(modality_ids, shared, **self.kwargs["test_dataset"])
 
     def train_dataloader(self):
         return DataLoader(

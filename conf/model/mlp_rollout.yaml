@@ -5,32 +5,41 @@ _model_name: mlp
 _sigma_prognostics: []
 _sigma_diagnostics: []
 
+# Model roles reference loaded var names (see train.yaml `load:`) plus computed features
+# (solar_zenith per-grid; doy_*/hod_* on the anchor/seviri). cp and the extra ERA5-Land
+# vars are dropped; the soil/temperature context vars now come from the era5_land store.
 train_dataset:
   era5:
-    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+  era5_land:
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
-    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
-    prognostics: [LST, MLE, MH]
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
     diagnostics: []
-    context_vars: [LST, MLE, MH]
+    context_vars: [LST] #, MLE, MH]
 
 val_dataset:
   era5:
-    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+  era5_land:
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
-    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
-    prognostics: [LST, MLE, MH]
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
     diagnostics: []
-    context_vars: [LST, MLE, MH]
+    context_vars: [LST] #, MLE, MH]
 
 test_dataset:
   era5:
-    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+  era5_land:
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
-    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin]
-    prognostics: [LST, MLE, MH]
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
     diagnostics: []
-    context_vars: [LST, MLE, MH]
+    context_vars: [LST] #, MLE, MH]
 
 model:
   name: mlp
@@ -44,7 +53,6 @@ model:
   checkpoint_monitor: val_loss_step_epoch
   detach_rollout: false
   incremental_loss: true
-  predict_anomaly: false
   probabilistic: false
   scheduler_T0: 80000
   weight_decay: 0.0001

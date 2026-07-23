@@ -9,78 +9,99 @@ defaults:
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    ${_stratification}_${_size}
 _statistics: ${_stratification}_${_size}
-_experiment: ${_loss}_${_horizon}_v7
+_experiment: ${_loss}_${_horizon}_v8
 
-modality_ids: [era5, seviri]
+# eodata-main .eozarr store names (data version)
+_seviri_store:   seviri_2016_2024
+_era5_store:     era5_2014_2025
+_era5land_store: era5_land_2016_2025
+
+# schematic load specs (which vars from which store leaf) — split-invariant.
+# Names come from here (not the reader schema); they drive the reader's per-leaf
+# *_variables kwargs and the named channels the collator packs. Model roles
+# (prognostics / inputs / context_vars) live in the model group and reference these
+# names plus the computed features (solar_zenith, doy_*, hod_*).
+_seviri_load:
+  data: [LST, MLE, MH]
+  data_daily: [FVC]
+  data_static: [DEM]
+  data_static_categorical: [LWMASK, LANDCOV]
+_era5_load:
+  data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
+  data_static_categorical: [tvh, tvl, lsm]
+_era5land_load:
+  data: [stl1, stl2, swvl1, swvl2, t2m, d2m]
+
+modality_ids: [era5, era5_land, seviri]
 
 train_dataset:
   spatial: ${_spatial}
+  anchor: mtg
   temporal: train
   era5:
-    preload: true
     modality_id: era5
-    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
-    prognostics: []
-    diagnostics: []
+    store: ${_era5_store}
+    load: ${_era5_load}
     normalization: zscore
-    row_extent: 721
-    col_extent: 1440
     lookback: 24
-    statistics: ${_statistics}
+  era5_land:
+    modality_id: era5_land
+    store: ${_era5land_store}
+    load: ${_era5land_load}
+    normalization: zscore
+    lookback: 24
   seviri:
-    preload: true
     modality_id: seviri
+    store: ${_seviri_store}
+    load: ${_seviri_load}
     normalization: zscore
-    row_extent: 3201
-    col_extent: 3201
     lookback: 24
-    statistics: ${_statistics}
 
 val_dataset:
   spatial: ${_spatial}
+  anchor: mtg
   temporal: val
   era5:
-    preload: true
     modality_id: era5
-    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
-    prognostics: []
-    diagnostics: []
+    store: ${_era5_store}
+    load: ${_era5_load}
     normalization: zscore
-    row_extent: 721
-    col_extent: 1440
     lookback: 24
-    statistics: ${_statistics}
+  era5_land:
+    modality_id: era5_land
+    store: ${_era5land_store}
+    load: ${_era5land_load}
+    normalization: zscore
+    lookback: 24
   seviri:
-    preload: true
     modality_id: seviri
+    store: ${_seviri_store}
+    load: ${_seviri_load}
     normalization: zscore
-    row_extent: 3201
-    col_extent: 3201
     lookback: 24
-    statistics: ${_statistics}
 
 test_dataset:
   spatial: ${_spatial}
+  anchor: mtg
   temporal: test_period_00
   era5:
-    preload: true
     modality_id: era5
-    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, sp, u10, v10, ssrd, strd, tp, cp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
-    prognostics: []
-    diagnostics: []
+    store: ${_era5_store}
+    load: ${_era5_load}
     normalization: zscore
-    row_extent: 721
-    col_extent: 1440
     lookback: 24
-    statistics: ${_statistics}
+  era5_land:
+    modality_id: era5_land
+    store: ${_era5land_store}
+    load: ${_era5land_load}
+    normalization: zscore
+    lookback: 24
   seviri:
-    preload: true
     modality_id: seviri
+    store: ${_seviri_store}
+    load: ${_seviri_load}
     normalization: zscore
-    row_extent: 3201
-    col_extent: 3201
     lookback: 24
-    statistics: ${_statistics}
 
 training:
   max_epochs: 75
