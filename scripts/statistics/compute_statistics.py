@@ -18,10 +18,17 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from deep_lst.dataset.dataset import UnimodalDataset
+from deep_lst.dataset.dataset import _LEAF_ARRAY, UnimodalDataset
+from deep_lst.utils import features
 from deep_lst.utils.io import ExperimentPaths
+from deep_lst.utils.spatial import store_grid
 
 PATHS = ExperimentPaths()
+
+# On-the-fly features that get statistics. The doy/hod cos/sin encodings are bounded in
+# [-1, 1] by construction and stay raw — z-scoring the components of a cyclic pair
+# separately would distort the encoding.
+COMPUTED_VARIABLES = ["solar_zenith"]
 
 
 def _welford(device: torch.device) -> WelfordMetric:
@@ -56,6 +63,25 @@ def compute_statistics(dataset, prognostic_channels, device, num_workers):
     return base_stats, increment_stats
 
 
+def computed_feature_statistics(rows, stat_days, modality) -> ArrayStatistics:
+    """Statistics of the computed features over the same pixels × hours as the base stats.
+
+    Computed features are pure functions of (cell lon/lat, hour) — no store reads — so they
+    are exactly reproducible from the statistics pixel/timestep selection alone.
+    """
+    centers = store_grid(modality).centers[np.asarray(rows)]  # (n_rows, 2) lon/lat
+    hours = (np.asarray(stat_days)[:, None] * 24 + np.arange(24)).ravel()
+    zenith = np.stack([features.solar_zenith(float(lat), float(lon), hours) for lon, lat in centers])
+    values = zenith.astype(np.float64)
+    stats = {
+        "mean": np.atleast_1d(values.mean()),
+        "std": np.atleast_1d(values.std()),
+        "min": np.atleast_1d(values.min()),
+        "max": np.atleast_1d(values.max()),
+    }
+    return ArrayStatistics.from_dict(stats, dimension_names=["channel"])
+
+
 @hydra.main(config_path="../../conf", config_name="statistics", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     config = OmegaConf.to_container(cfg, resolve=True)
@@ -85,14 +111,22 @@ def main(cfg: DictConfig) -> None:
         return ArrayStatistics.from_dict(arrays, dimension_names=["channel"])
 
     modality_stats = {leaf: _array_stats(stats) for leaf, stats in base_stats.items()}
+    modality_stats["computed"] = computed_feature_statistics(dataset.rows, dataset.stat_days, modality)
     if prognostics:
         modality_stats["increments"] = _array_stats(increment_stats)
 
     out_path = PATHS.stats_zarr_path(modality)
     ModalityStatistics(modality_stats).to_zarr(str(out_path))
 
+    # Record variable names next to the positional statistics: base leaves carry the full
+    # store variable order, the computed group its feature names.
+    root = zarr.open_group(str(out_path), mode="a")
+    for leaf in base_stats:
+        root[leaf].attrs["variables"] = list(getattr(dataset.reader, _LEAF_ARRAY[leaf]).dtype.fields)
+    root["computed"].attrs["variables"] = list(COMPUTED_VARIABLES)
+
     if prognostics:  # record which data variables the increment channels correspond to
-        group = zarr.open_group(str(out_path), mode="a")["increments"]
+        group = root["increments"]
         group.attrs["variables"] = list(prognostics)
         group.attrs["channels"] = [int(channel) for channel in prognostic_channels]
 

@@ -15,7 +15,7 @@ from tensordict import TensorDict
 from torch.utils.data import Dataset
 
 from deep_lst.utils import features
-from deep_lst.utils.io import ExperimentPaths
+from deep_lst.utils.io import ExperimentPaths, load_computed_stats
 from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
 
 # Modality carrying the global time features (doy/hod); the finest / target grid.
@@ -262,7 +262,7 @@ class UnimodalDataset(Dataset):
 
 
 class MultimodalDataset(Dataset):
-    def __init__(self, columns, inverse, var_names, cell_lonlat, indices, n_spatial, lookback, horizon):
+    def __init__(self, columns, inverse, var_names, cell_lonlat, indices, n_spatial, lookback, horizon, computed_stats):
         """
         columns: {modality: {leaf_key: (n_unique, n_hours, C) | (n_unique, C)}} preloaded in RAM,
             NaN where missing; deduped to the unique native cells (shared across splits).
@@ -282,6 +282,7 @@ class MultimodalDataset(Dataset):
         self.lookback = lookback
         self.horizon = horizon
         self.samples = len(self.indices)
+        self.computed_stats = computed_stats
         print(
             f"Initialized MultimodalDataset with {self.samples} samples "
             f"({n_spatial} anchors × {self.samples // n_spatial} times, time-major)."
@@ -293,7 +294,9 @@ class MultimodalDataset(Dataset):
     def _add_computed(self, channels, modality, lonlat, hour, lookback, horizon):
         """Attach computed features: solar_zenith per grid; doy/hod only on the anchor modality."""
         hours = np.arange(hour - lookback, hour + horizon + 1)
-        zenith = features.solar_zenith(float(lonlat[1]), float(lonlat[0]), hours)  # lonlat = (lon, lat)
+        zenith = features.solar_zenith(float(lonlat[1]), float(lonlat[0]), hours)
+        mean, std = self.computed_stats[modality]["solar_zenith"]
+        zenith = (zenith - mean) / std
         channels["solar_zenith"] = torch.as_tensor(zenith, dtype=torch.float32).reshape(-1, 1, 1, 1)
         if modality == _ANCHOR_MODALITY:
             for name, values in features.time_features(hours).items():
@@ -408,6 +411,8 @@ class MultimodalDataset(Dataset):
     @classmethod
     def from_modalities(cls, modality_ids, shared, **kwargs):
         """Build one split's dataset from the shared preloaded columns + this split's anchors."""
+        computed_stats = {m: load_computed_stats(PATHS.stats_zarr_path(m)) for m in modality_ids}
+
         if kwargs["spatial"] != shared["spatial"]:
             raise ValueError(f"Shared cache built for spatial={shared['spatial']!r}, got {kwargs['spatial']!r}")
 
@@ -439,4 +444,5 @@ class MultimodalDataset(Dataset):
             n_spatial,
             lookback,
             horizon,
+            computed_stats,
         )

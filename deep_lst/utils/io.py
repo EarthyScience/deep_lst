@@ -207,6 +207,24 @@ def load_inc_variances(stats_zarr: Path) -> dict[str, float]:
     }
 
 
+def load_computed_stats(stats_zarr: Path) -> dict[str, tuple[float, float]]:
+    """Return {var: (mean, std)} from a statistics zarr's `computed` group.
+
+    Statistics of the on-the-fly features (solar_zenith), written by
+    compute_statistics.py over the statistics pixel/timestep selection.
+    Returns an empty dict if the zarr or the group is absent.
+    """
+    import zarr
+
+    try:
+        group = zarr.open_group(str(stats_zarr), mode="r")["computed"]
+    except (KeyError, FileNotFoundError):
+        return {}
+    means, stds = group["mean"][:], group["std"][:]
+    variables = group.attrs["variables"]
+    return {var: (float(means[i]), float(stds[i])) for i, var in enumerate(variables)}
+
+
 def save_statistics_npz(statistics: dict, path: Path) -> None:
     """
     statistics: {var: {stat_name: scalar}}

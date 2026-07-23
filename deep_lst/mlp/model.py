@@ -89,6 +89,7 @@ class MultiModalMLP(nn.Module):
         state_flat = self._flatten_window(state_window)  # (N, H, W, 2*L*nP)
         dyn_flat = self._flatten_window(X_dyn_window)  # (N, H, W, 2*L*nF_ctx)
         x = torch.cat([step_X_dyn, dyn_flat, state_flat], dim=-1)
+        x[torch.isnan(x)] = 0.0  # safety check for any remaining NaNs
 
         x = self.pre(x)
         if self.res_block is not None:

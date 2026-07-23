@@ -34,7 +34,9 @@ def run_inference(cfg: DictConfig) -> None:
         config, td_keys, experiment=cfg.experiment, version=cfg.version, prefer_best=cfg.best
     )
 
-    dataset = MultimodalDataset.from_modalities(modality_ids=config["modality_ids"], **config["test_dataset"])
+    modality_ids = config["modality_ids"]
+    shared = MultimodalDataset.preload_shared(modality_ids, **config["test_dataset"])
+    dataset = MultimodalDataset.from_modalities(modality_ids, shared, **config["test_dataset"])
     print(f"Experiment : {cfg.experiment} / {cfg.version}")
     print(f"Eval       : {cfg.eval_name}")
     print(f"Dataset    : {len(dataset.spatial_idx)} pixels × {len(dataset.time_idx)} init times")
