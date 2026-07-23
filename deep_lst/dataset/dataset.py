@@ -42,6 +42,8 @@ PATHS = ExperimentPaths()
 # on the 1970 epoch, so a time index must be shifted by this offset to address the store.
 # FLAGGED for later: cleaner to regenerate the indices as absolute T1H (see migration notes).
 STORE_EPOCH_OFFSET = T1H.date_to_index("2016-01-01")  # 403224 hours = 16801 days
+PRELOAD_START_DAY = STORE_EPOCH_OFFSET // 24  # 2016-01-01
+PRELOAD_END_DAY = T1H.date_to_index("2026-01-01") // 24  # exclusive
 
 
 def _spatial_idx_from_npz(path) -> np.ndarray:
@@ -62,11 +64,9 @@ def load_samples(
 ) -> np.ndarray:
     if temporal_indices_path is not None:
         time_idx = np.load(temporal_indices_path)["time_indices"].astype(np.int64) + STORE_EPOCH_OFFSET
-
-        if horizon > 0:
-            time_idx = time_idx[time_idx <= time_idx.max() - horizon]
-        if lookback > 0:
-            time_idx = time_idx[time_idx >= lookback]
+        axis_end_hour = PRELOAD_END_DAY * 24
+        time_idx = time_idx[time_idx >= STORE_EPOCH_OFFSET + lookback]
+        time_idx = time_idx[time_idx + horizon < axis_end_hour]
     else:
         time_idx = np.arange(
             start=T1H.date_to_index(start_time) + lookback,
@@ -84,7 +84,7 @@ def load_samples(
 def _load_anchor_ids(spatial_name):
     """Anchor cell ids for a split: global MTG ids for training, seviri equiangular pixels for
     an eval holdout region. Stored identically across modalities, so read the seviri npz."""
-    return np.load(PATHS.spatial_indices_path("seviri", spatial_name))["src_indices"].astype(np.int64)
+    return np.sort(np.load(PATHS.spatial_indices_path("seviri", spatial_name))["src_indices"].astype(np.int64))
 
 
 def _flatten_hours(values, valid):
@@ -118,7 +118,7 @@ def _static_column(leaf, mask):
     return column
 
 
-def _preload_pixel(reader, normalizer, pixel, n_days, select=None):
+def _preload_pixel(reader, normalizer, pixel, select=None):
     """Read one pixel's full day-axis and return every configured leaf as a RAM array.
 
     The full leaf is read and normalized (so the positional full-set statistics align), then
@@ -132,7 +132,7 @@ def _preload_pixel(reader, normalizer, pixel, n_days, select=None):
     daily_keys = ("data_daily",)
     static_keys = ("data_static", "data_static_categorical")
 
-    sample = reader.get_data_multi([(int(pixel), day) for day in range(n_days)])
+    sample = reader.get_data_multi([(int(pixel), day) for day in range(PRELOAD_START_DAY, PRELOAD_END_DAY)])
     if normalizer is not None:  # None => raw values (e.g. statistics computation)
         sample = normalizer.normalize(sample)
     if select is None:  # no selection: keep every loaded leaf, all channels
@@ -154,7 +154,7 @@ def _preload_pixel(reader, normalizer, pixel, n_days, select=None):
     return columns
 
 
-def _preload_columns(reader, normalizer, pixel_ids, n_days, select=None, num_workers=1):
+def _preload_columns(reader, normalizer, pixel_ids, select=None, num_workers=1):
     """Preload every pixel's full day-axis into RAM, one stacked entry per configured leaf.
 
     Returns {leaf_key: tensor}: hourly/daily leaves -> (n_pixels, n_days * 24, C); static leaves
@@ -164,7 +164,7 @@ def _preload_columns(reader, normalizer, pixel_ids, n_days, select=None, num_wor
     """
 
     def load(pixel):
-        return _preload_pixel(reader, normalizer, pixel, n_days, select)
+        return _preload_pixel(reader, normalizer, pixel, select)
 
     if num_workers and num_workers > 1:
         with ThreadPoolExecutor(max_workers=num_workers) as pool:
@@ -181,7 +181,8 @@ def _window_leaves(columns, row, hour, lookback, horizon):
     (2-D cache) are broadcast to the same length. Returns a TensorDict of (L + H + 1, C).
     """
     length = lookback + horizon + 1
-    lo, hi = hour - lookback, hour + horizon + 1
+    local_hour = hour - STORE_EPOCH_OFFSET
+    lo, hi = local_hour - lookback, local_hour + horizon + 1
     window = TensorDict({}, batch_size=[])
     for key, column in columns.items():
         if column.ndim == 2:  # static: (n_pixels, C) -> broadcast over the window
@@ -348,6 +349,7 @@ class MultimodalDataset(Dataset):
                     "store": kwargs[modality]["store"],
                     "load": kwargs[modality]["load"],
                     "stats_mtime": os.path.getmtime(PATHS.stats_zarr_path(modality) / "zarr.json"),
+                    "axis": [PRELOAD_START_DAY, PRELOAD_END_DAY],
                 }
                 for modality in modality_ids
             },
@@ -385,10 +387,7 @@ class MultimodalDataset(Dataset):
                 leaf: [list(getattr(reader, _LEAF_ARRAY[leaf]).dtype.fields).index(var) for var in names]
                 for leaf, names in load.items()
             }
-            n_days = reader.data_arr.shape[1]
-            columns[modality] = _preload_columns(
-                reader, normalizer, unique_rows, n_days, select, num_workers=num_workers
-            )
+            columns[modality] = _preload_columns(reader, normalizer, unique_rows, select, num_workers=num_workers)
             inverse[modality] = inv
             var_names[modality] = {leaf: list(names) for leaf, names in load.items()}
             cell_lonlat[modality] = np.asarray(native_grid.centers[unique_rows], dtype=np.float64)
@@ -413,9 +412,7 @@ class MultimodalDataset(Dataset):
             raise ValueError(f"Shared cache built for spatial={shared['spatial']!r}, got {kwargs['spatial']!r}")
 
         temporal_split = kwargs["temporal"]
-        if isinstance(temporal_split, list):
-            temporal_paths = [PATHS.temporal_indices_path(p) for p in temporal_split]
-        elif temporal_split is not None:
+        if temporal_split is not None:
             temporal_paths = PATHS.temporal_indices_path(temporal_split)
         else:
             temporal_paths = None
