@@ -22,12 +22,12 @@ from deep_lst.evaluation.plots.month_grid import (
 
 # Sequential map sampled between these fractions so the darkest cell is not pure black
 # and the lightest not pure white (which would blend into the page).
-CMAP_NAME = "copper"
-CMAP_RANGE = (0.2, 0.85)
+CMAP_NAME = "plasma"
+CMAP_RANGE = (0.0, 0.85)
 
 
 def _limit_colormap(horizon_days):
-    """Discretised copper colormap + integer-day BoundaryNorm shared by both panels/plots."""
+    """Discretised plasma colormap + integer-day BoundaryNorm shared by both panels/plots."""
     n_levels = int(round(horizon_days))
     capped_colors = plt.get_cmap(CMAP_NAME)(np.linspace(CMAP_RANGE[0], CMAP_RANGE[1], n_levels))
     cmap = ListedColormap(capped_colors)

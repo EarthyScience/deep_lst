@@ -159,6 +159,19 @@ def to_lead_hours(da: xr.DataArray) -> np.ndarray:
     return (da["lead_time"] / np.timedelta64(1, "h")).astype(int).values
 
 
+def local_valid_hour(da: xr.DataArray) -> xr.DataArray:
+    """Local-solar hour-of-day of each valid time, per longitude.
+
+    Local solar time = UTC valid time (init_time + lead_time) + lon/15 h. Returned as a float
+    DataArray broadcasting over init_time, lead_time and whatever dim carries `lon` (the 1-D `lon`
+    grid axis, or `pixel` for sparse sites). Day/night windows built on this track the diurnal
+    cycle by longitude instead of a fixed UTC clock, so they stay comparable across regions.
+    """
+    init_hour = da["init_time"].dt.hour
+    lead_hour = (da["lead_time"] / np.timedelta64(1, "h")).astype(int)
+    return (init_hour + lead_hour + da["lon"] / 15.0) % 24
+
+
 def compute_scores(
     pred: xr.DataArray,
     obs: xr.DataArray,

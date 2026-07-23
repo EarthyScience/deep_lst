@@ -5,7 +5,7 @@ The forecast limit is the first forecast-day bucket whose pooled RMSE skill
 (squared-error domain) over space and the month's init times -- no uncertainty.
 
 Months are assigned by init_time (a forecast belongs to its launch month, so all
-its leads stay in one month). Day/night is the valid-hour window (10-15 / 22-03),
+its leads stay in one month). Day/night is the local-solar-hour window (10-15 / 22-03),
 reusing the table_runner definition. Outputs a tidy CSV (load for plotting) and two
 LaTeX tables, daytime and nighttime, region x month (precompute for the paper).
 """

@@ -12,7 +12,7 @@ from deep_lst.evaluation.evaluator import (
     EvaluatorDiagnostics,
     EvaluatorVerification,
 )
-from deep_lst.evaluation.metrics import compute_class_scores, compute_scores
+from deep_lst.evaluation.metrics import compute_class_scores, compute_scores, local_valid_hour
 from deep_lst.evaluation.plots.cdf import day_night_summary, lst_cdf_plot, rmse_cdf_plot
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import (
@@ -97,7 +97,7 @@ def _bucket_tod_rmse(field, obs, lead_idx, tod):
     """Per-pixel RMSE over a lead bucket, pooled over init+lead, masked to a day/night valid-hour."""
     f = field.isel(lead_time=lead_idx).load()  # small bucket; load once (lazy per-cell reduction is slow)
     o = obs.isel(lead_time=lead_idx).load()
-    valid_hour = (f["init_time"].dt.hour + (f["lead_time"] / np.timedelta64(1, "h")).astype(int)) % 24
+    valid_hour = local_valid_hour(f)  # local solar hour per longitude
     err2 = ((f - o) ** 2).where(_TOD[tod](valid_hour))
     return np.sqrt(err2.mean(["init_time", "lead_time"], skipna=True))  # (lat, lon)
 
@@ -705,7 +705,7 @@ class PlotRunnerVerification:
         buckets = _fit_buckets(self.ev.pred.sizes["lead_time"])  # clamp to the forecast horizon
         bucket_labels = list(buckets)
         baseline_labels = list(baselines)
-        tods = (("day", "daytime 10–15 h"), ("night", "nighttime 22–03 h"))
+        tods = (("day", "daytime 10–15 h local"), ("night", "nighttime 22–03 h local"))
 
         error_by_tod, improvement_by_tod, skill_by_tod = {}, {}, {}
         for tod, _ in tods:

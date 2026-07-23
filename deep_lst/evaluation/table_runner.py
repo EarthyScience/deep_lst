@@ -31,7 +31,7 @@ import xarray as xr
 
 from deep_lst.evaluation.evaluator import EvaluatorVerification
 from deep_lst.evaluation.latex import latex_table, write_month_tables
-from deep_lst.evaluation.metrics import pool_metric, to_lead_hours
+from deep_lst.evaluation.metrics import local_valid_hour, pool_metric, to_lead_hours
 from deep_lst.evaluation.plots.month_grid import (
     MONTHS,
     _latitude_labels,
@@ -90,11 +90,12 @@ def _select_window(da: xr.DataArray, window: str) -> xr.DataArray:
 
 
 def _valid_hour(da: xr.DataArray) -> xr.DataArray:
-    """Hour-of-day of each (init_time, lead_time) valid time, as a 2D field."""
-    init_hour = pd.DatetimeIndex(da["init_time"].values).hour
-    init_hour = xr.DataArray(init_hour, dims="init_time", coords={"init_time": da["init_time"]})
-    lead_hour = xr.DataArray(to_lead_hours(da), dims="lead_time", coords={"lead_time": da["lead_time"]})
-    return (init_hour + lead_hour) % 24
+    """Local-solar hour-of-day of each valid time, as an (init_time, lead_time, lon) field.
+
+    Local solar (not UTC): see metrics.local_valid_hour. The day/night windows below therefore
+    track the diurnal cycle by longitude, so the 10-15 / 22-03 bounds mean local hours.
+    """
+    return local_valid_hour(da)
 
 
 def _mask_time_of_day(da: xr.DataArray, kind: str) -> xr.DataArray:

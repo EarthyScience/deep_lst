@@ -16,7 +16,7 @@ import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.metrics import LEAD_DAY_BUCKETS as DAY_BUCKETS
-from deep_lst.evaluation.metrics import _acc
+from deep_lst.evaluation.metrics import _acc, local_valid_hour
 from deep_lst.evaluation.plots._design import _LABEL_ALIASES, RC
 from deep_lst.evaluation.plots._design import CASE_COLORS as _CASE_COLORS
 from deep_lst.evaluation.plots._design import DEFAULT_COLOR as _DEFAULT_COLOR
@@ -206,8 +206,8 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim
     RMSE, and the skill 1 - RMSE_model / RMSE_baseline is drawn as a single line per baseline.
     Daily bucketing removes the 6-hourly aliasing of the per-lead view. No uncertainty band.
 
-    Day/night follow the established valid-hour windows (daytime 10–15 h, nighttime 22–03 h);
-    valid hour = init hour + lead hour (mod 24).
+    Day/night follow the established local-solar-hour windows (daytime 10–15 h, nighttime 22–03 h);
+    local hour = init hour + lead hour + lon/15 (mod 24), see metrics.local_valid_hour.
 
     If ``clim`` (the climatological reference on the same grid as ``pred``) is given, the anomaly
     correlation (ACC) of the model vs that climatology is added on a right-hand y-axis as a dashed
@@ -217,7 +217,7 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim
     pred = pred.isel(lead_time=slice(1, None))  # drop lead-0 placeholder
     obs = obs.isel(lead_time=slice(1, None))
     space = [d for d in ("lat", "lon", "pixel") if d in pred.dims]
-    valid_hour = (pred["init_time"].dt.hour + (pred["lead_time"] / np.timedelta64(1, "h")).astype(int)) % 24
+    valid_hour = local_valid_hour(pred)  # local solar hour per longitude
 
     err2_model = ((pred - obs) ** 2).load()
     err2_baselines = {
@@ -232,8 +232,8 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim
     x = np.arange(len(day_labels))
 
     panels = (
-        ("Daytime (10–15 h)", (valid_hour >= 10) & (valid_hour <= 15)),
-        ("Nighttime (22–03 h)", (valid_hour >= 22) | (valid_hour <= 3)),
+        ("Daytime (10–15 h local)", (valid_hour >= 10) & (valid_hour <= 15)),
+        ("Nighttime (22–03 h local)", (valid_hour >= 22) | (valid_hour <= 3)),
     )
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharey=True)
@@ -302,8 +302,8 @@ def acc_day_night_plot(pred, obs, clim, var, save_path, eval_region):
 
     Anomalies are formed against the climatological reference `clim` (pred - clim, obs - clim).
     Per forecast-day bucket (24 lead-hours) and valid-hour window the uncentred ACC is pooled over
-    init_time, the bucket's lead times AND pixels (daytime 10–15 h, nighttime 22–03 h; valid hour
-    = init hour + lead hour). Daily bucketing removes the 6-hourly aliasing of the per-lead view.
+    init_time, the bucket's lead times AND pixels (daytime 10–15 h, nighttime 22–03 h local; local
+    hour = init + lead + lon/15). Daily bucketing removes the 6-hourly aliasing of the per-lead view.
     Single panel, two curves, no uncertainty band.
     """
     plt.rcParams.update(RC)
@@ -311,7 +311,7 @@ def acc_day_night_plot(pred, obs, clim, var, save_path, eval_region):
     obs = obs.isel(lead_time=slice(1, None))
     clim = clim.isel(lead_time=slice(1, None))
     space = [d for d in ("lat", "lon", "pixel") if d in pred.dims]
-    valid_hour = (pred["init_time"].dt.hour + (pred["lead_time"] / np.timedelta64(1, "h")).astype(int)) % 24
+    valid_hour = local_valid_hour(pred)  # local solar hour per longitude
 
     anom_pred = (pred - clim).load()
     anom_obs = (obs - clim).load()
@@ -321,8 +321,8 @@ def acc_day_night_plot(pred, obs, clim, var, save_path, eval_region):
 
     cmap = plt.get_cmap("twilight_shifted")
     panels = (
-        ("Daytime (10–15 h)", (valid_hour >= 10) & (valid_hour <= 15), cmap(12 / 23.0)),
-        ("Nighttime (22–03 h)", (valid_hour >= 22) | (valid_hour <= 3), cmap(0 / 23.0)),
+        ("Daytime (10–15 h local)", (valid_hour >= 10) & (valid_hour <= 15), cmap(12 / 23.0)),
+        ("Nighttime (22–03 h local)", (valid_hour >= 22) | (valid_hour <= 3), cmap(0 / 23.0)),
     )
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
@@ -352,24 +352,25 @@ def acc_day_night_plot(pred, obs, clim, var, save_path, eval_region):
 
 
 def error_growth_day_night_plot(pred, obs, var, save_path, eval_region):
-    """RMSE vs lead for all 24 valid hours-of-day (colour gradient + colorbar), with local midday
-    (12 h) and midnight (00 h) emphasised on top.
+    """RMSE vs lead for all 24 local-solar hours-of-day (colour gradient + colorbar), with local
+    midday (12 h) and midnight (00 h) emphasised on top.
 
-    Fixing the valid hour removes the diurnal-aliasing wiggle (no within-window hour variation);
+    Fixing the local hour removes the diurnal-aliasing wiggle (no within-window hour variation);
     with 6-hourly inits each hour recurs every 6 lead-hours, so the curves are 6-hourly. Computed
-    from raw pred/obs (valid hour = init + lead). No uncertainty band.
+    from raw pred/obs (local hour = init + lead + lon/15). No uncertainty band.
     """
     plt.rcParams.update(RC)
     pred = pred.isel(lead_time=slice(1, None))  # drop lead-0 placeholder
     obs = obs.isel(lead_time=slice(1, None))
     space = [d for d in ("lat", "lon", "pixel") if d in pred.dims]
-    valid_hour = (pred["init_time"].dt.hour + (pred["lead_time"] / np.timedelta64(1, "h")).astype(int)) % 24
+    valid_hour = local_valid_hour(pred)  # local solar hour per longitude
     err2 = ((pred - obs) ** 2).load()  # in-memory once; the 24 hourly reductions then run fast
     lead_h = (pred["lead_time"] / np.timedelta64(1, "h")).values
     cmap = plt.get_cmap("twilight_shifted")
 
+    local_hour_bin = np.floor(valid_hour)  # local solar hour is continuous -> bin to integer hours
     rmse_by_hour = {
-        hour: np.sqrt(err2.where(valid_hour == hour).mean(["init_time", *space], skipna=True)).values
+        hour: np.sqrt(err2.where(local_hour_bin == hour).mean(["init_time", *space], skipna=True)).values
         for hour in range(24)
     }
 
@@ -377,7 +378,7 @@ def error_growth_day_night_plot(pred, obs, var, save_path, eval_region):
     for hour in range(24):
         keep = np.isfinite(rmse_by_hour[hour])
         ax.plot(lead_h[keep], rmse_by_hour[hour][keep], color=cmap(hour / 23.0), lw=1.0, zorder=2)
-    for hour, label in ((12, "Midday (12 h)"), (0, "Midnight (00 h)")):
+    for hour, label in ((12, "Midday (12 h local)"), (0, "Midnight (00 h local)")):
         keep = np.isfinite(rmse_by_hour[hour])
         ax.plot(
             lead_h[keep],
@@ -396,7 +397,7 @@ def error_growth_day_night_plot(pred, obs, var, save_path, eval_region):
     ax.legend(loc="upper left")
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 23))
     sm.set_array([])
-    fig.colorbar(sm, ax=ax, label="Valid hour of day", ticks=[0, 6, 12, 18, 23])
+    fig.colorbar(sm, ax=ax, label="Local solar hour of day", ticks=[0, 6, 12, 18, 23])
     ax.set_title(f"{eval_region} — {var} RMSE growth by valid hour")
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, bbox_inches="tight")
