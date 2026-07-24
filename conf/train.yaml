@@ -9,7 +9,7 @@ defaults:
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    ${_stratification}_${_size}
 _statistics: ${_stratification}_${_size}
-_experiment: ${_loss}_${_horizon}_v8
+_experiment: ${_loss}_${_horizon}_v9
 
 # eodata-main .eozarr store names (data version)
 _seviri_store:   seviri_2016_2024
@@ -36,7 +36,7 @@ _quality_mask:
   target: LST
 _era5_load:
   data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
-  data_static_categorical: [tvh, tvl, lsm]
+  data_static_categorical: [tvh, tvl, lsm, slt]
 _era5land_load:
   data: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]
 

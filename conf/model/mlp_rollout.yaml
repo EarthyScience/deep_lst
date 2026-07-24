@@ -10,8 +10,10 @@ _sigma_diagnostics: []
 # vars are dropped; the soil/temperature context vars now come from the era5_land store.
 train_dataset:
   era5:
-    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
   era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
     context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
@@ -21,8 +23,10 @@ train_dataset:
 
 val_dataset:
   era5:
-    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
   era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
     context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
@@ -32,8 +36,10 @@ val_dataset:
 
 test_dataset:
   era5:
-    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, solar_zenith]
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
   era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
     context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
