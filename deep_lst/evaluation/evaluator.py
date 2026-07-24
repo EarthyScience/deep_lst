@@ -3,7 +3,6 @@ from abc import ABC, abstractmethod
 import numpy as np
 import pandas as pd
 import xarray as xr
-import zarr
 
 from deep_lst.evaluation.metrics import (
     LEAD_DAY_BUCKETS,
@@ -18,11 +17,13 @@ from deep_lst.evaluation.metrics import (
     to_lead_hours,
     to_valid_time,
 )
-from deep_lst.evaluation.spatial import lookup_pixel_coords
+from deep_lst.evaluation.spatial import pixel_grid
 from deep_lst.utils import ExperimentPaths
+from deep_lst.utils.spatial import store_grid
 
 _BASELINE_REGISTRY: dict[str, tuple[callable, str]] = {
     "era5": (lambda p, n: p.baseline_path(n), "skt"),
+    "era5_land": (lambda p, n: p.modality_baseline_path("era5_land", n), "skt"),
     "clim_hourly": (lambda p, n: p.climatology_path(n, "hourly"), "LST"),
     "clim_smooth": (lambda p, n: p.climatology_path(n, "smoothed_hourly"), "LST"),
     "persistence": (lambda p, n: p.persistence_path(n), "LST"),
@@ -121,44 +122,36 @@ class Evaluator(ABC):
         return filtered
 
     def _attach_class_coords(self, ds: xr.Dataset) -> xr.Dataset:
+        """Attach per-pixel class coords (Köppen-Geiger etc.) from the eval npz — no sampled store.
+
+        The forecast pixels are the anchors in sorted order (Forecast writes np.unique(spatial_idx));
+        the npz class arrays are aligned to its src_indices order, so a single argsort re-orders them
+        to the forecast pixels. Dense box regions scatter into the (lat, lon) grid via pixel_grid on
+        the seviri cell centres — the same geometry the writer used.
+        """
         path = self.paths.eval_indices_path("seviri", self.eval_name)
         if not path.exists():
             raise FileNotFoundError(f"Eval indices not found for {self.eval_name}: {path}")
         indices_ds = np.load(path)
         class_keys = ["kg_class", "kg_major", "kg_classes", "biome_classes", "modis_lc_classes", "ecoregion_classes"]
-        if self.eval_name.startswith("train_"):
-            store_token = self.eval_name.removeprefix("train_")
-        else:
-            store_token = self.eval_name if self.eval_name.startswith("eval_") else f"eval_{self.eval_name}"
-        store_path = self.paths.sampled_store_path("seviri", store_token)
+        order = np.argsort(indices_ds["src_indices"], kind="stable")  # npz order -> sorted-anchor order
 
         coords = {}
         if "pixel" in ds.dims:
-            zg = zarr.open_group(store_path, mode="r")
-            zarr_spatial_idx = zg["spatial_idx"][:]
-            zarr_lats = zg["lat"][:]
-            zarr_lons = zg["lon"][:]
-            zarr_row_by_coord = {(float(la), float(lo)): i for i, (la, lo) in enumerate(zip(zarr_lats, zarr_lons))}
-            forecast_rows = np.array(
-                [zarr_row_by_coord[(float(la), float(lo))] for la, lo in zip(ds["lat"].values, ds["lon"].values)],
-                dtype=np.int64,
-            )
-            target_spatial = zarr_spatial_idx[forecast_rows]
-            npz_pos_by_spatial = {int(s): i for i, s in enumerate(indices_ds["src_indices"])}
-            npz_rows = np.array([npz_pos_by_spatial[int(s)] for s in target_spatial], dtype=np.int64)
             for key in class_keys:
                 if key in indices_ds.files:
-                    coords[key] = (("pixel",), indices_ds[key][npz_rows])
+                    coords[key] = (("pixel",), indices_ds[key][order])
         else:
-            src_indices = np.unique(indices_ds["src_indices"])
-            _, _, local_rows, local_cols, grid_shape = lookup_pixel_coords(store_path, src_indices)
+            sorted_anchors = indices_ds["src_indices"][order]
+            centers = store_grid("seviri").centers[sorted_anchors]  # (n, 2) lon/lat
+            _, _, local_rows, local_cols, grid_shape = pixel_grid(centers[:, 0], centers[:, 1])
             if grid_shape != (ds.sizes["lat"], ds.sizes["lon"]):
                 raise ValueError(
                     f"Grid shape mismatch: expected {grid_shape}, got {(ds.sizes['lat'], ds.sizes['lon'])}"
                 )
             for key in class_keys:
                 if key in indices_ds.files:
-                    class_values = indices_ds[key]
+                    class_values = indices_ds[key][order]
                     grid = np.full(grid_shape, -1, dtype=class_values.dtype)
                     grid[local_rows, local_cols] = class_values
                     coords[key] = (("lat", "lon"), grid)
