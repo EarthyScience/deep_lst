@@ -30,7 +30,7 @@ _era5_load:
   data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
   data_static_categorical: [tvh, tvl, lsm]
 _era5land_load:
-  data: [stl1, stl2, swvl1, swvl2, t2m, d2m]
+  data: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]
 
 modality_ids: [era5, era5_land, seviri]
 

@@ -12,7 +12,7 @@ eval_name: ???
 # --- optional inference flags ---
 best: false               # load best.ckpt instead of last.ckpt
 land_water_mask: true   # keep LANDCOV land classes 1-16; drop ocean (17) + water bodies (18)
-inference_horizon: 72   # rollout horizon in hours. Use the trained value to reproduce training-length forecasts.
+inference_horizon: 240   # rollout horizon in hours. Use the trained value to reproduce training-length forecasts.
 
 test_dataset:
   init_hours: [0, 6, 12, 18]   # thin init times to these UTC hours (6-hourly); set null for every hour

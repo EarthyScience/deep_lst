@@ -369,7 +369,7 @@ class MultimodalDataset(Dataset):
             },
         }
         fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True).encode()).hexdigest()[:16]
-        cache_path = PATHS.preload_cache_path(fingerprint)
+        cache_path = PATHS.preload_cache_path(fingerprint, spatial_name)
         if cache_path.exists():
             print(f"Loading preload cache {cache_path}")
             return torch.load(cache_path, map_location="cpu", weights_only=False)

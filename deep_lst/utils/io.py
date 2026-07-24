@@ -85,10 +85,15 @@ class ExperimentPaths:
         """Zscore statistics zarr for *modality* (eodata ModalityNormalizer format)."""
         return self.assets_root / "statistics" / f"{modality}_stats.zarr"
 
-    def preload_cache_path(self, fingerprint: str) -> Path:
-        """On-disk cache of the preloaded shared columns, keyed by a data-config fingerprint."""
+    def preload_cache_path(self, fingerprint: str, spatial: str | None = None) -> Path:
+        """On-disk cache of the preloaded shared columns, keyed by a data-config fingerprint.
+
+        The optional spatial name is a human-readable prefix (e.g. eval_passage, mtg); the
+        fingerprint alone still guarantees correctness, the prefix is only for legibility.
+        """
         self.preload_cache_root.mkdir(parents=True, exist_ok=True)
-        return self.preload_cache_root / f"preload_{fingerprint}.pt"
+        name = f"preload_{spatial}_{fingerprint}.pt" if spatial else f"preload_{fingerprint}.pt"
+        return self.preload_cache_root / name
 
     def spatial_indices_path(self, modality: str, name: str) -> Path:
         return self.assets_root / modality / "spatial" / f"indices_{name}.npz"
@@ -124,6 +129,10 @@ class ExperimentPaths:
 
     def baseline_path(self, eval_name: str) -> Path:
         return self.assets_root / "baselines" / "era5" / f"{self._eval_fname(eval_name)}.nc"
+
+    def modality_baseline_path(self, modality: str, eval_name: str) -> Path:
+        """Cross-modality reference baseline (e.g. era5_land skt) under its own modality folder."""
+        return self.assets_root / "baselines" / modality / f"{self._eval_fname(eval_name)}.nc"
 
     def climatology_path(self, eval_name: str, variant: str) -> Path:
         """variant : "hourly" | "smoothed_hourly" """
