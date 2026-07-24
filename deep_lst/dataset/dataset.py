@@ -327,6 +327,17 @@ class MultimodalDataset(Dataset):
     def spatial_idx(self) -> np.ndarray:
         return np.unique(self.indices[:, 0])
 
+    def pixel_lonlat(self) -> np.ndarray:
+        """(n_spatial, 2) lon/lat per anchor pixel, from the target modality's cached cells."""
+        return self.cell_lonlat[_ANCHOR_MODALITY][self.inverse[_ANCHOR_MODALITY]]
+
+    def non_land_mask(self, classes=(17, 18)) -> np.ndarray:
+        """(n_spatial,) bool; True where the anchor pixel's LANDCOV is ocean (17) or water (18)."""
+        categorical = self.var_names[_ANCHOR_MODALITY]["data_static_categorical"]
+        channel = categorical.index("LANDCOV")
+        landcov = self.columns[_ANCHOR_MODALITY]["data_static_categorical"][:, channel].numpy()
+        return np.isin(landcov[self.inverse[_ANCHOR_MODALITY]], classes)
+
     @classmethod
     def preload_shared(cls, modality_ids, **kwargs):
         """Preload each modality's native columns once, shared across train/val/test splits.

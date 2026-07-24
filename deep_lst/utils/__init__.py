@@ -1,4 +1,4 @@
 from .io import ExperimentPaths
-from .normalisation import ZScoringNormalizer
+from .normalisation import StatsZarrNormalizer, ZScoringNormalizer
 
-__all__ = ["ExperimentPaths", "ZScoringNormalizer"]
+__all__ = ["ExperimentPaths", "StatsZarrNormalizer", "ZScoringNormalizer"]

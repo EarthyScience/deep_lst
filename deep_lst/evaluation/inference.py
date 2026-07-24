@@ -6,17 +6,14 @@ import pandas as pd
 import torch
 import xarray as xr
 import zarr
+from eodata.grids import T1H
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from deep_lst.evaluation.spatial import lookup_pixel_coords
-from deep_lst.utils import ExperimentPaths, ZScoringNormalizer
+from deep_lst.evaluation.spatial import pixel_grid
+from deep_lst.utils import ExperimentPaths, StatsZarrNormalizer
 
 PATHS = ExperimentPaths()
-
-# Origin of the integer time indices used by TemporalFilter / EOZarr.
-# Index 0 = 2016-01-01 00:00 UTC. Must match the start_date passed to TemporalFilter.
-TIME_INDEX_ORIGIN = pd.Timestamp("2016-01-01")
 
 # Pixels below this fill fraction of the bounding-box grid use sparse output.
 # Avoids allocating a mostly-NaN (H x W) grid for scattered training-site pixels.
@@ -34,6 +31,8 @@ class Forecast:
         td_keys: dict,
         config: dict,
         spatial_indices: np.ndarray,
+        pixel_lonlat: np.ndarray,
+        non_land: np.ndarray,
         prediction_mode: str = "diagnostic",
         apply_lw_mask: bool = True,
     ):
@@ -45,19 +44,20 @@ class Forecast:
         self.prediction_mode = prediction_mode
         self.apply_lw_mask = apply_lw_mask
 
-        self.normaliser = ZScoringNormalizer(PATHS.statistics_path("seviri", config["seviri"]["statistics"]))
+        self.normaliser = StatsZarrNormalizer(PATHS.stats_zarr_path("seviri"))
 
         self.prognostic_vars = [key[1] for key in td_keys.get("prognostic_keys", [])]
         self.diagnostic_vars = [key[1] for key in td_keys.get("diagnostic_keys", [])]
 
+        # Per-pixel coords come from the preloaded cell_lonlat (no sampled store); the dense-grid
+        # geometry is reconstructed by pure math from those coords.
         self.unique_spatial_idx = np.unique(spatial_indices)
-        seviri_store_path = PATHS.sampled_store_path("seviri", self.config["spatial"])
-        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = lookup_pixel_coords(
-            seviri_store_path, self.unique_spatial_idx
-        )
+        pixel_lons = pixel_lonlat[:, 0]
+        pixel_lats = pixel_lonlat[:, 1]
+        self.lats, self.lons, self.local_rows, self.local_cols, self.grid_shape = pixel_grid(pixel_lons, pixel_lats)
 
         if self.apply_lw_mask:
-            self.non_land = self._load_non_land_mask(seviri_store_path, self.unique_spatial_idx)
+            self.non_land = non_land
 
         fill = len(self.unique_spatial_idx) / (self.grid_shape[0] * self.grid_shape[1])
         self.sparse = fill < _SPARSE_FILL_THRESHOLD
@@ -104,7 +104,9 @@ class Forecast:
         n_spatial = len(self.unique_spatial_idx)
         unique_time_idx = np.unique(time_idx)
         n_time = len(unique_time_idx)
-        init_times = TIME_INDEX_ORIGIN + pd.to_timedelta(unique_time_idx.astype(np.int64), unit="h")
+        # index_to_startdate returns tz-aware UTC; drop the tz so the coords are naive datetime64
+        # (xarray's zarr encoder rejects tz-aware, and the evaluator compares against naive dates).
+        init_times = pd.to_datetime([T1H.index_to_startdate(int(t)) for t in unique_time_idx]).tz_localize(None)
         lead_times = pd.timedelta_range(start="0h", periods=t_out, freq="h")
         pixel_lats, pixel_lons = self._pixel_coords()
 
@@ -422,18 +424,3 @@ class Forecast:
                     preds_b[var] = p
                     obs_b[var] = o
                 yield preds_b, obs_b
-
-    @staticmethod
-    def _load_non_land_mask(store_path, unique_spatial_idx):
-        """Boolean (N,) aligned to unique_spatial_idx; True = non-land pixel to be dropped.
-
-        Uses LANDCOV (LSA SAF USGS-IGBP land cover): classes 1-16 are land, 17 is ocean,
-        18 is inland water bodies. Keep land only — drop 17 and 18. LANDCOV is preferred
-        over LWMASK because it is correctly populated in every store, whereas LWMASK is
-        all-zero (broken) in the mtg training store.
-        """
-        store = zarr.open_group(str(store_path), mode="r")
-        store_spatial_idx = store["spatial_idx"][:]
-        landcov = store["LANDCOV"][:]
-        positions = np.searchsorted(store_spatial_idx, unique_spatial_idx)
-        return np.isin(landcov[positions], (17, 18))

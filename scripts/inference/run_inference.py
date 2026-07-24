@@ -74,6 +74,8 @@ def run_inference(cfg: DictConfig) -> None:
         td_keys=td_keys,
         config=config["test_dataset"],
         spatial_indices=dataset.spatial_idx,
+        pixel_lonlat=dataset.pixel_lonlat(),
+        non_land=dataset.non_land_mask(),
         prediction_mode=config["model"]["step_loss"],
         apply_lw_mask=cfg.land_water_mask,
     )
