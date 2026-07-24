@@ -34,6 +34,7 @@ PATHS = ExperimentPaths()
 
 BASELINE_LABELS = {
     "era5": "ERA5",
+    "era5_land": "ERA5-Land",
     "clim_hourly": "hourly clim",
     "clim_smooth": "smoothed clim",
     "persistence": "persistence",

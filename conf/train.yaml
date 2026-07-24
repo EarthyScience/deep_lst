@@ -26,6 +26,14 @@ _seviri_load:
   data_daily: [FVC]
   data_static: [DEM]
   data_static_categorical: [LWMASK, LANDCOV]
+  metadata: [quality_flag, standard_error]   # cached raw; standard_error drives the quality mask
+
+# Quality mask: NaN the target where the retrieval error exceeds se_max (absolute Kelvin, stable
+# across the 2021 flag-encoding change). Referenced by train/val seviri; test stays unmasked.
+_quality_mask:
+  field: standard_error
+  se_max: 1.8
+  target: LST
 _era5_load:
   data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
   data_static_categorical: [tvh, tvl, lsm]
@@ -56,6 +64,7 @@ train_dataset:
     load: ${_seviri_load}
     normalization: zscore
     lookback: 24
+    quality_mask: ${_quality_mask}
 
 val_dataset:
   spatial: ${_spatial}
@@ -79,6 +88,7 @@ val_dataset:
     load: ${_seviri_load}
     normalization: zscore
     lookback: 24
+    quality_mask: ${_quality_mask}
 
 test_dataset:
   spatial: ${_spatial}

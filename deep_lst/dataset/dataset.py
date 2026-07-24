@@ -262,7 +262,19 @@ class UnimodalDataset(Dataset):
 
 
 class MultimodalDataset(Dataset):
-    def __init__(self, columns, inverse, var_names, cell_lonlat, indices, n_spatial, lookback, horizon, computed_stats):
+    def __init__(
+        self,
+        columns,
+        inverse,
+        var_names,
+        cell_lonlat,
+        indices,
+        n_spatial,
+        lookback,
+        horizon,
+        computed_stats,
+        quality_mask,
+    ):
         """
         columns: {modality: {leaf_key: (n_unique, n_hours, C) | (n_unique, C)}} preloaded in RAM,
             NaN where missing; deduped to the unique native cells (shared across splits).
@@ -272,6 +284,7 @@ class MultimodalDataset(Dataset):
         cell_lonlat: {modality: (n_unique, 2)} lon/lat per cached cell (for solar_zenith).
         indices: (N, 2) array of (anchor_id, anchor_hour), time-major.
         lookback / horizon: {modality: int} window extents per modality.
+        quality_mask: {modality: {field, se_max, target} | None} — NaN target where field > se_max.
         """
         self.columns = columns
         self.inverse = inverse
@@ -283,6 +296,7 @@ class MultimodalDataset(Dataset):
         self.horizon = horizon
         self.samples = len(self.indices)
         self.computed_stats = computed_stats
+        self.quality_mask = quality_mask
         print(
             f"Initialized MultimodalDataset with {self.samples} samples "
             f"({n_spatial} anchors × {self.samples // n_spatial} times, time-major)."
@@ -302,6 +316,19 @@ class MultimodalDataset(Dataset):
             for name, values in features.time_features(hours).items():
                 channels[name] = torch.as_tensor(values, dtype=torch.float32).reshape(-1, 1, 1, 1)
 
+    def _apply_quality_mask(self, channels, modality):
+        """NaN the target var where its quality field exceeds se_max (retrieval-error threshold).
+
+        Cloned before writing — the channel tensors are views into the shared preload cache.
+        """
+        spec = self.quality_mask.get(modality)
+        if not spec:
+            return
+        field = channels[spec["field"]]  # NaN where the retrieval is invalid → comparison is False
+        target = channels[spec["target"]].clone()
+        target[field > spec["se_max"]] = float("nan")
+        channels[spec["target"]] = target
+
     def __getitem__(self, idx):
         pos = idx % self.n_spatial
         anchor_id, hour = self.indices[idx]
@@ -313,6 +340,7 @@ class MultimodalDataset(Dataset):
             leaves = _window_leaves(columns, row, hour, lookback, horizon)
             channels = _to_named_channels(leaves, self.var_names[modality])
             self._add_computed(channels, modality, self.cell_lonlat[modality][row], hour, lookback, horizon)
+            self._apply_quality_mask(channels, modality)
             data[modality] = channels
 
         data["spatial_idx"] = torch.tensor(anchor_id, dtype=torch.long)
@@ -435,6 +463,7 @@ class MultimodalDataset(Dataset):
 
         lookback = {m: kwargs[m].get("lookback", 0) for m in modality_ids}
         horizon = {m: kwargs[m].get("horizon", 0) for m in modality_ids}
+        quality_mask = {m: kwargs[m].get("quality_mask") for m in modality_ids}
         # Clip anchors by the strictest extent so every modality can serve its window.
         indices = load_samples(
             shared["anchor_ids"],
@@ -456,4 +485,5 @@ class MultimodalDataset(Dataset):
             lookback,
             horizon,
             computed_stats,
+            quality_mask,
         )
