@@ -402,7 +402,7 @@ def compute_rmse_sufficient_stats(
     return xr.Dataset({"se_sum": stats["se_sum"], "count": stats["n"]})
 
 
-_EXTRA_STATS = ("ae_sum", "o_sum", "o2_sum")
+_EXTRA_STATS = ("ae_sum", "o_sum", "o2_sum", "p_sum", "p2_sum", "po_sum")
 
 
 def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim, extra: tuple = ()) -> xr.Dataset:
@@ -435,6 +435,15 @@ def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim, extra: tuple = 
             stats["o_sum"] = obs_valid.sum(dim=dim, skipna=True)
         if "o2_sum" in extra:
             stats["o2_sum"] = (obs_valid**2).sum(dim=dim, skipna=True)
+    if "p_sum" in extra or "p2_sum" in extra or "po_sum" in extra:
+        pred_valid = pred.where(valid).astype("float64")
+        if "p_sum" in extra:
+            stats["p_sum"] = pred_valid.sum(dim=dim, skipna=True)
+        if "p2_sum" in extra:
+            stats["p2_sum"] = (pred_valid**2).sum(dim=dim, skipna=True)
+        if "po_sum" in extra:
+            obs_valid = obs.where(valid).astype("float64")
+            stats["po_sum"] = (pred_valid * obs_valid).sum(dim=dim, skipna=True)
     return xr.Dataset(stats)
 
 
@@ -480,11 +489,28 @@ MEASURES: dict[str, callable] = {
     "nse": _measure_nse,
 }
 
+
+def _measure_acc(stats: xr.Dataset) -> xr.DataArray:
+    return stats["po_sum"] / np.sqrt(stats["p2_sum"] * stats["o2_sum"])
+
+
+def _measure_activity(stats: xr.Dataset) -> xr.DataArray:
+    return np.sqrt(stats["p2_sum"] / stats["n"] - (stats["p_sum"] / stats["n"]) ** 2)
+
+
+# Anomaly-input measures: same finish machinery, but the stats must have been built
+# from anomaly fields (pred - clim, obs - clim). Kept separate from MEASURES so the
+# legacy pooled entry points keep routing acc/activity through METRIC_REGISTRY
+# bit-identically; the products engine consults both dicts.
+ANOMALY_MEASURES: dict[str, callable] = {"acc": _measure_acc, "activity": _measure_activity}
+
 MEASURE_REQUIRES = {
     "rmse": ("se_sum", "n"),
     "bias": ("e_sum", "n"),
     "mae": ("ae_sum", "n"),
     "nse": ("se_sum", "o_sum", "o2_sum", "n"),
+    "acc": ("po_sum", "p2_sum", "o2_sum", "n"),
+    "activity": ("p_sum", "p2_sum", "n"),
 }
 
 
@@ -499,9 +525,16 @@ def measures_from_stats(stats: xr.Dataset, measures: tuple) -> xr.Dataset:
     """Evaluate verification measures from pooled sufficient statistics.
 
     Pure algebra on sums -- no reductions happen here. An all-masked subset yields
-    ``n = 0`` and therefore NaN, which is the intended "no data" signal.
+    ``n = 0`` and therefore NaN, which is the intended "no data" signal. Anomaly
+    measures (acc, activity) resolve too, but expect anomaly-built stats.
     """
-    return xr.Dataset({name: MEASURES[name](stats) for name in measures})
+    finished = {}
+    for name in measures:
+        finisher = MEASURES.get(name) or ANOMALY_MEASURES.get(name)
+        if finisher is None:
+            raise KeyError(f"No finisher for measure {name!r}")
+        finished[name] = finisher(stats)
+    return xr.Dataset(finished)
 
 
 def compute_grouped_scores(

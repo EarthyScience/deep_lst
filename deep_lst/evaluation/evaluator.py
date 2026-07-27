@@ -18,6 +18,7 @@ from deep_lst.evaluation.metrics import (
     to_lead_hours,
     to_valid_time,
 )
+from deep_lst.evaluation.products import align_baseline, compute_products
 from deep_lst.evaluation.spatial import pixel_grid
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.spatial import store_grid
@@ -66,6 +67,59 @@ class Evaluator(ABC):
         self.compute_anomaly = compute_anomaly
         self.consistent_mask = consistent_mask
         self.paths = ExperimentPaths()
+
+    # --- the product contract (additive; run()/_compute stay untouched until sub-step B) ---
+
+    def load(self) -> None:
+        """Load the forecast, apply the temporal filter, attach class coords. No computation."""
+        self.forecast_ds = self._attach_class_coords(self._filter(self._load_forecast()))
+        self.pred = self.forecast_ds[f"{self.var}_pred"]
+        self.obs = self.forecast_ds[f"{self.var}_obs"]
+
+    def load_baseline(self, name: str) -> xr.DataArray:
+        """Aligned (init_time, lead_time, space) cube for a registry baseline, cached per name."""
+        if not hasattr(self, "_baseline_cubes"):
+            self._baseline_cubes = {}
+        if name in self._baseline_cubes:
+            return self._baseline_cubes[name]
+        if name not in _BASELINE_REGISTRY:
+            raise ValueError(f"Unknown baseline: {name!r}. Available: {list(_BASELINE_REGISTRY)}")
+        path_fn, var_name = _BASELINE_REGISTRY[name]
+        path = path_fn(self.paths, self.eval_name)
+        if not path.exists():
+            raise FileNotFoundError(f"Baseline '{name}' not found: {path}")
+        baseline = xr.open_dataset(path, chunks={})[var_name]
+        baseline = self._subset_pixels(baseline, self.pred.isel(lead_time=0))
+        cube = align_baseline(baseline, self.pred)
+        self._baseline_cubes[name] = cube
+        return cube
+
+    def compute(
+        self,
+        products: list,
+        baselines: tuple = (),
+        clim_baseline: str | None = None,
+        drop_lead0: bool = True,
+    ) -> dict:
+        """Evaluate the named PRODUCTS on shared stats tables; stores and returns them.
+
+        `baselines` feed the with_skill variants; `clim_baseline` feeds the anomaly
+        tables. Rollout stores carry a NaN lead-0 placeholder, dropped by default.
+        """
+        pred, obs = self.pred, self.obs
+        if drop_lead0:
+            pred = pred.isel(lead_time=slice(1, None))
+            obs = obs.isel(lead_time=slice(1, None))
+        baseline_cubes = {name: self.load_baseline(name).isel(lead_time=slice(1, None)) for name in baselines}
+        clim = None
+        if clim_baseline is not None:
+            clim = self.load_baseline(clim_baseline).isel(lead_time=slice(1, None))
+        self.products = compute_products(pred, obs, products, baselines=baseline_cubes, clim=clim)
+        return self.products
+
+    def materialise(self) -> None:
+        """Eager-ify the finished products (small); pred/obs stay lazy."""
+        self.products = {name: ds.compute() for name, ds in self.products.items()}
 
     def run(self, forecast_ds=None):
         if forecast_ds is not None:
