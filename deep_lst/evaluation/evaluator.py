@@ -1,21 +1,11 @@
-from abc import ABC, abstractmethod
-
 import numpy as np
 import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.metrics import (
-    LEAD_DAY_BUCKETS,
     compute_daily_pooled,
     compute_grouped_scores,
-    compute_pooled_by_day,
-    compute_pooled_scores,
-    compute_rmse_sufficient_stats,
     compute_scores,
-    daily_rmse_by_valid_day,
-    skill_score,
-    to_init_time,
-    to_lead_hours,
     to_valid_time,
 )
 from deep_lst.evaluation.products import align_baseline, compute_products
@@ -40,8 +30,13 @@ ANOMALY_METRICS = ("acc", "activity")
 CLIMATE_BASELINES = ("clim_smooth", "clim_hourly")
 
 
-class Evaluator(ABC):
-    """Shared: load, filter, baseline loading, saving."""
+class Evaluator:
+    """Shared loading and the product contract: load() / load_baseline() / compute() / materialise().
+
+    Finished products land in self.products (see evaluation/products.py for the catalogue).
+    `EvaluatorDiagnostics` adds the legacy single-lead run()/_compute path on top, pending
+    its fold into products.
+    """
 
     def __init__(
         self,
@@ -54,8 +49,6 @@ class Evaluator(ABC):
         aggregation,
         consistent_mask,
         overwrite,
-        metrics: tuple = RAW_METRICS,
-        compute_anomaly: bool = True,
     ):
         self.experiment = experiment
         self.version = version
@@ -65,12 +58,8 @@ class Evaluator(ABC):
         self.overwrite = overwrite
         self.temporal = temporal
         self.aggregation = aggregation
-        self.metrics = metrics
-        self.compute_anomaly = compute_anomaly
         self.consistent_mask = consistent_mask
         self.paths = ExperimentPaths()
-
-    # --- the product contract (additive; run()/_compute stay untouched until sub-step B) ---
 
     def load(self) -> None:
         """Load the forecast, apply the temporal filter, attach class coords. No computation."""
@@ -92,7 +81,7 @@ class Evaluator(ABC):
             raise FileNotFoundError(f"Baseline '{name}' not found: {path}")
         baseline = xr.open_dataset(path, chunks={})[var_name]
         baseline = self._subset_pixels(baseline, self.pred.isel(lead_time=0))
-        baseline = self._match_grid(baseline)
+        self._check_baseline_coords(baseline, name)
         cube = align_baseline(baseline, self.pred)
         if not bool(cube.isel(init_time=0).notnull().any()):
             print(f"  [warn] baseline '{name}' aligned to no data at the first init — check grid/time coverage")
@@ -125,30 +114,6 @@ class Evaluator(ABC):
     def materialise(self) -> None:
         """Eager-ify the finished products (small); pred/obs stay lazy."""
         self.products = {name: ds.compute() for name, ds in self.products.items()}
-
-    def run(self, forecast_ds=None):
-        if forecast_ds is not None:
-            self.forecast_ds = forecast_ds
-        else:
-            self.forecast_ds = self._load_forecast()
-            self.forecast_ds = self._filter(self.forecast_ds)
-
-        self.forecast_ds = self._attach_class_coords(self.forecast_ds)
-
-        self.pred = self.forecast_ds[f"{self.var}_pred"]
-        self.obs = self.forecast_ds[f"{self.var}_obs"]
-
-        self.baseline_ds = self._load_baseline()  # raw, unaligned
-
-        if self.baseline_ds is not None:
-            self.baseline_ds = self._subset_pixels(self.baseline_ds, self.pred.isel(lead_time=0))
-            self.baseline_ds = self._match_grid(self.baseline_ds)
-
-        self._compute()
-
-    @abstractmethod
-    def _compute(self):
-        pass
 
     # Shared helpers
     def _load_forecast(self) -> xr.Dataset:
@@ -232,27 +197,20 @@ class Evaluator(ABC):
         # streams instead of materialising the full aligned cube in numpy.
         return xr.open_dataset(path, chunks={})[var_name]
 
-    def _match_grid(self, baseline: xr.DataArray) -> xr.DataArray:
-        """TRANSITIONAL: adopt the forecast's lat/lon coords when the grids match within tolerance.
+    def _check_baseline_coords(self, baseline: xr.DataArray, name: str) -> None:
+        """Baseline coords are float64 BY CONTRACT (see BaselineExtractor._make_dataset).
 
-        Baseline files extracted before 2026-07 carry float32 coords while the forecast
-        zarr has float64; exact-value alignment then silently yields an empty intersection
-        (dense grids) or drops the conflicting coords (pixel stores). The durable fix is
-        float64-by-contract in BaselineExtractor._make_dataset — remove this once every
-        baseline file is re-extracted.
+        float32 coords mean a stale pre-2026-07 extraction: exact-value alignment against
+        the float64 forecast grid silently yields an empty intersection (dense grids) or
+        drops the conflicting coords (pixel stores).
         """
-        reference = self.pred
         for coord in ("lat", "lon"):
-            if coord not in baseline.coords or coord not in reference.coords:
-                return baseline
-            if baseline[coord].shape != reference[coord].shape:
-                return baseline
-        lat_close = np.allclose(baseline["lat"].values, reference["lat"].values, atol=1e-3)
-        lon_close = np.allclose(baseline["lon"].values, reference["lon"].values, atol=1e-3)
-        if not (lat_close and lon_close):
-            return baseline
-        matched_coords = {c: (baseline[c].dims, reference[c].values) for c in ("lat", "lon")}
-        return baseline.assign_coords(matched_coords)
+            if coord in baseline.coords and baseline[coord].dtype != np.float64:
+                raise ValueError(
+                    f"Baseline {name!r} has {baseline[coord].dtype} {coord} coords — stale "
+                    "pre-2026-07 extraction. Re-extract with scripts/baselines/run_baselines.py "
+                    "(era5 itself is not extractable: the era5 store carries no skt)"
+                )
 
     def _align_baseline(self, valid_times: np.ndarray) -> xr.DataArray:
         return self.baseline_ds.reindex(valid_time=valid_times)
@@ -388,6 +346,27 @@ class EvaluatorDiagnostics(Evaluator):
         self.lead_time = lead_time
         self.groupby = groupby
 
+    def run(self, forecast_ds=None):
+        """Legacy single-lead entry: load, align the configured baseline, fill the score attributes."""
+        if forecast_ds is not None:
+            self.forecast_ds = forecast_ds
+        else:
+            self.forecast_ds = self._load_forecast()
+            self.forecast_ds = self._filter(self.forecast_ds)
+
+        self.forecast_ds = self._attach_class_coords(self.forecast_ds)
+
+        self.pred = self.forecast_ds[f"{self.var}_pred"]
+        self.obs = self.forecast_ds[f"{self.var}_obs"]
+
+        self.baseline_ds = self._load_baseline()  # raw, unaligned
+
+        if self.baseline_ds is not None:
+            self.baseline_ds = self._subset_pixels(self.baseline_ds, self.pred.isel(lead_time=0))
+            self._check_baseline_coords(self.baseline_ds, self.baseline)
+
+        self._compute()
+
     def _compute(self):
         self.pred = to_valid_time(self.pred.sel(lead_time=self.lead_time), self.lead_time)
         self.obs = to_valid_time(self.obs.sel(lead_time=self.lead_time), self.lead_time)
@@ -431,76 +410,11 @@ class EvaluatorDiagnostics(Evaluator):
 
 
 class EvaluatorVerification(Evaluator):
-    """Full (init_time, lead_time) space. Error growth, skill scores, climate metrics.
+    """Full (init_time, lead_time) verification on evaluation products.
 
-    Stores raw-field and anomaly scores as fully separate datasets, mirroring
-    EvaluatorDiagnostics (see its docstring).
+    Use load() / load_baseline() / compute(products) / materialise(); the finished
+    datasets land in self.products (see evaluation/products.py for the catalogue).
     """
-
-    def _compute(self):
-        self.scores = compute_scores(self.pred, self.obs, self.metrics, self.aggregation)
-        self.rmse_stats = compute_rmse_sufficient_stats(self.pred, self.obs)
-
-        # Pooled (climpred-style) average-tendency scores: init + space pooled together in the
-        # squared-error domain, per lead and per forecast-day bucket. lead 0 is the placeholder,
-        # dropped. These feed the by-lead/by-day plots and stay consistent with table_runner.
-        pred_no0 = self.pred.isel(lead_time=slice(1, None))
-        obs_no0 = self.obs.isel(lead_time=slice(1, None))
-        self.pooled_scores = compute_pooled_scores(pred_no0, obs_no0, self.metrics)
-        self.pooled_scores_day = compute_pooled_by_day(pred_no0, obs_no0, self.metrics)
-
-        # Per-(valid calendar day) pooled RMSE within forecast-day buckets 1 and 10, from the
-        # sufficient stats above — feeds the monthly bucket violins (near vs far horizon).
-        self.daily_pooled_bucket = {}
-        lead_hours = to_lead_hours(self.pred)
-        for day_number in (1, 10):
-            low, high = LEAD_DAY_BUCKETS[day_number - 1]
-            lead_idx = np.where((lead_hours >= low) & (lead_hours <= high))[0]
-            if lead_idx.size == 0:
-                continue
-            self.daily_pooled_bucket[f"Day {day_number}"] = daily_rmse_by_valid_day(self.rmse_stats, lead_idx)
-
-        self.baseline_scores = None
-        self.baseline_full = None
-        self.climate_scores = None
-        self.skill_scores = None
-        self.pooled_skill_day = None
-        self.pooled_climate_day = None
-
-        if self.baseline_ds is not None:
-            baseline_full = self._baseline_full()
-            self.baseline_full = baseline_full
-            self.baseline_scores = compute_scores(baseline_full, self.obs, self.metrics, self.aggregation)
-            pooled_baseline_day = compute_pooled_by_day(
-                baseline_full.isel(lead_time=slice(1, None)), obs_no0, self.metrics
-            )
-            self.pooled_skill_day = skill_score(self.pooled_scores_day, pooled_baseline_day)
-
-            if self.baseline in CLIMATE_BASELINES and self.compute_anomaly:
-                pred_anom = self.pred - baseline_full
-                obs_anom = self.obs - baseline_full
-                self.climate_scores = compute_scores(pred_anom, obs_anom, ANOMALY_METRICS, self.aggregation)
-                self.pooled_climate_day = compute_pooled_by_day(
-                    pred_anom.isel(lead_time=slice(1, None)),
-                    obs_anom.isel(lead_time=slice(1, None)),
-                    ANOMALY_METRICS,
-                )
-
-            self.skill_scores = skill_score(self.scores, self.baseline_scores)
-
-    def _baseline_full(self) -> xr.DataArray:
-        """Align the loaded baseline to each lead and concat into the (init_time, lead_time, space) cube."""
-        lead_times = self.pred["lead_time"].values
-        slices = [self._process_baseline(self.pred.sel(lead_time=lead_time), lead_time) for lead_time in lead_times]
-        return xr.concat(slices, dim=pd.Index(lead_times, name="lead_time"))
-
-    def _process_baseline(self, pred_lt, lead_time) -> xr.DataArray:
-        lead_time_hour = int(pd.Timedelta(lead_time).total_seconds() // 3600)
-        lt_str = f"{lead_time_hour}h"
-        valid_times = pred_lt["init_time"].values + np.timedelta64(lead_time_hour, "h")
-        aligned = self._align_baseline(valid_times)
-        aligned = to_init_time(aligned, lt_str)
-        return aligned.where(np.isfinite(pred_lt))
 
 
 def run_evaluators_across_sites(

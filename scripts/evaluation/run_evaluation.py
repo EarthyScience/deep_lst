@@ -61,7 +61,6 @@ def _run_evaluator(cls_name, kwargs):
         "baseline_scores",
         "baseline_grouped",
         "baseline_aligned",
-        "skill_scores",
         "climate_scores",
         "climate_grouped",
         "pred_anom",

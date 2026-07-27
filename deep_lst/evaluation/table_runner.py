@@ -230,8 +230,6 @@ def load_entities(experiment, version, eval_name, var, baselines, temporal, atta
         aggregation="region_time",
         consistent_mask=False,
         overwrite=False,
-        metrics=("rmse",),
-        compute_anomaly=False,
     )
     evaluator.load()  # class coords are always attached now; attach_classes kept for API compatibility
     evaluator.pred = evaluator.pred.load()

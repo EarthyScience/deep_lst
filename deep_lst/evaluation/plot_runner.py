@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from deep_lst.evaluation.conditioning import time_of_day_mask
 from deep_lst.evaluation.evaluator import (
     ANOMALY_METRICS,
     CLIMATE_BASELINES,
@@ -56,16 +55,6 @@ _MONTH_LABELS = {
     12: "Dec",
 }
 
-# Cumulative lead horizons (all steps up to day N) for the lead-stratified skill/improvement maps.
-_LEAD_BUCKETS = {"≤ Day 1": range(1, 25), "≤ Day 5": range(1, 121), "≤ Day 10": range(1, 241)}
-
-
-def _fit_buckets(n_lead):
-    """Cumulative lead buckets whose full horizon fits the forecast (keeps labels accurate and avoids
-    out-of-range isel on short-horizon evals). Falls back to all available leads if shorter than Day 1."""
-    fitted = {label: list(leads) for label, leads in _LEAD_BUCKETS.items() if (leads.stop - 1) <= (n_lead - 1)}
-    return fitted or {"All leads": list(range(1, n_lead))}
-
 
 def _grid_vmax(tod_values, labels, percentile, use_abs):
     """Shared colour-scale max pooled across several tod dicts {bucket: {label: DataArray}}, so the
@@ -84,14 +73,6 @@ def _grid_vmax(tod_values, labels, percentile, use_abs):
         return None
     pooled = np.concatenate(pool)
     return float(np.nanpercentile(pooled, percentile)) if pooled.size else None
-
-
-def _bucket_tod_rmse(field, obs, lead_idx, tod):
-    """Per-pixel RMSE over a lead bucket, pooled over init+lead, masked to a day/night valid-hour."""
-    f = field.isel(lead_time=lead_idx).load()  # small bucket; load once (lazy per-cell reduction is slow)
-    o = obs.isel(lead_time=lead_idx).load()
-    err2 = ((f - o) ** 2).where(time_of_day_mask(f, tod))
-    return np.sqrt(err2.mean(["init_time", "lead_time"], skipna=True))  # (lat, lon)
 
 
 class PlotRunnerDiagnostics:

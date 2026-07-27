@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from deep_lst.evaluation.evaluator import Evaluator, EvaluatorVerification
+from deep_lst.evaluation.evaluator import Evaluator
+from deep_lst.evaluation.products import align_baseline
 
 
 class _DummyEvaluator(Evaluator):
@@ -38,13 +39,11 @@ def _make_baseline_full_inputs():
     return pred, baseline_ds
 
 
-def test_baseline_full_aligns_and_masks():
+def test_align_baseline_aligns_and_masks():
+    # Ported from the deleted EvaluatorVerification._baseline_full; align_baseline is its successor.
     pred, baseline_ds = _make_baseline_full_inputs()
-    ev = object.__new__(EvaluatorVerification)  # skip __init__/paths; _baseline_full needs only pred + baseline_ds
-    ev.pred = pred
-    ev.baseline_ds = baseline_ds
 
-    baseline_full = ev._baseline_full()
+    baseline_full = align_baseline(baseline_ds, pred)
 
     lead1, lead2 = pred["lead_time"].values
     init0, _init1, init2 = pred["init_time"].values
