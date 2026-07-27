@@ -51,7 +51,6 @@ class Evaluator(ABC):
         aggregation,
         consistent_mask,
         overwrite,
-        reduction_order: tuple = ("space", "time"),
         metrics: tuple = RAW_METRICS,
         compute_anomaly: bool = True,
     ):
@@ -63,7 +62,6 @@ class Evaluator(ABC):
         self.overwrite = overwrite
         self.temporal = temporal
         self.aggregation = aggregation
-        self.reduction_order = reduction_order
         self.metrics = metrics
         self.compute_anomaly = compute_anomaly
         self.consistent_mask = consistent_mask
@@ -287,7 +285,6 @@ class EvaluatorDiagnostics(Evaluator):
         consistent_mask,
         overwrite,
         lead_time,
-        reduction_order: tuple = ("space", "time"),
     ):
         super().__init__(
             experiment,
@@ -299,7 +296,6 @@ class EvaluatorDiagnostics(Evaluator):
             aggregation,
             consistent_mask,
             overwrite,
-            reduction_order=reduction_order,
         )
         self.lead_time = lead_time
         self.groupby = groupby
@@ -308,10 +304,8 @@ class EvaluatorDiagnostics(Evaluator):
         self.pred = to_valid_time(self.pred.sel(lead_time=self.lead_time), self.lead_time)
         self.obs = to_valid_time(self.obs.sel(lead_time=self.lead_time), self.lead_time)
 
-        self.scores = compute_scores(self.pred, self.obs, RAW_METRICS, self.aggregation, self.reduction_order)
-        self.grouped = compute_grouped_scores(
-            self.pred, self.obs, RAW_METRICS, self.aggregation, self.groupby, self.reduction_order
-        )
+        self.scores = compute_scores(self.pred, self.obs, RAW_METRICS, self.aggregation)
+        self.grouped = compute_grouped_scores(self.pred, self.obs, RAW_METRICS, self.aggregation, self.groupby)
         # Per-metric (daily_scores, total) for the monthly violins -- daily pooled over space + the
         # calendar day's timesteps, total pooled over everything. Computed here so plot_runner stays thin.
         self.daily_pooled = {m: compute_daily_pooled(self.pred, self.obs, m) for m in RAW_METRICS}
@@ -327,21 +321,17 @@ class EvaluatorDiagnostics(Evaluator):
             aligned_masked = aligned.where(np.isfinite(self.pred))
             self.baseline_aligned = aligned_masked
 
-            self.baseline_scores = compute_scores(
-                aligned_masked, self.obs, RAW_METRICS, self.aggregation, self.reduction_order
-            )
+            self.baseline_scores = compute_scores(aligned_masked, self.obs, RAW_METRICS, self.aggregation)
             self.baseline_grouped = compute_grouped_scores(
-                aligned_masked, self.obs, RAW_METRICS, self.aggregation, self.groupby, self.reduction_order
+                aligned_masked, self.obs, RAW_METRICS, self.aggregation, self.groupby
             )
 
             if self.baseline in CLIMATE_BASELINES:
                 self.pred_anom = self.pred - self.baseline_aligned
                 self.obs_anom = self.obs - self.baseline_aligned
-                self.climate_scores = compute_scores(
-                    self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation, self.reduction_order
-                )
+                self.climate_scores = compute_scores(self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation)
                 self.climate_grouped = compute_grouped_scores(
-                    self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation, self.groupby, self.reduction_order
+                    self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation, self.groupby
                 )
                 self.daily_pooled_anom = {
                     m: compute_daily_pooled(self.pred_anom, self.obs_anom, m) for m in ANOMALY_METRICS

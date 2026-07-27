@@ -18,7 +18,6 @@ uv run scripts/evaluation/run_across_sites.py \
     --lead_time 6h
 
 Available --baseline:        era5  clim_hourly  clim_smooth  persistence
-Available --reduction_order: space_then_time  time_then_space
 """
 
 import argparse
@@ -66,11 +65,6 @@ _REGION_DISPLAY = {
     "yangambi": "Yangambi",
 }
 
-_REDUCTION_ORDER_MAP = {
-    "space_then_time": ("space", "time"),
-    "time_then_space": ("time", "space"),
-}
-
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -86,26 +80,17 @@ def parse_args():
     p.add_argument("--metric", default="rmse")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--violin", action="store_true")
-    p.add_argument(
-        "--reduction_order",
-        choices=list(_REDUCTION_ORDER_MAP),
-        default="space_then_time",
-        help="Reduction order used when aggregation='total' (stored on the evaluator).",
-    )
     return p.parse_args()
 
 
 def run_across_sites():
     args = parse_args()
-    reduction_order = _REDUCTION_ORDER_MAP[args.reduction_order]
-
     period = "_".join(args.temporal) if args.temporal else "all"
     out_dir = PATHS.results_plots_dir(args.experiment, args.version, "across_sites") / period
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Experiment      : {args.experiment} / {args.version}")
     print(f"Baselines       : {args.baseline}   Lead time: {args.lead_time}")
-    print(f"Reduction order : {args.reduction_order}")
 
     # aggregation="region_time" → scores have shape (valid_time,), one value per timestep.
     # All metrics come from ev.scores / ev.baseline_scores / ev.climate_scores; no compute_scores in this script.
@@ -119,7 +104,6 @@ def run_across_sites():
         consistent_mask=False,
         overwrite=False,
         lead_time=args.lead_time,
-        reduction_order=reduction_order,
     )
 
     model_evs = run_evaluators_across_sites(ev_kwargs, args.evals, baseline=None)

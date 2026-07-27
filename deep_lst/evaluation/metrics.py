@@ -24,7 +24,6 @@ _AGGREGATION_DIMS = {
     "total": ["valid_time", "init_time", "lat", "lon", "pixel"],
     "region_time": ["lat", "lon", "pixel"],
     "region_space": ["valid_time", "init_time"],
-    "none": [],
 }
 
 _REDUCTION_DIMS = {
@@ -201,27 +200,17 @@ def compute_scores(
     obs: xr.DataArray,
     metrics: list[str] | None = None,
     aggregation: str = "total",
-    reduction_order: tuple = ("space", "time"),
 ) -> xr.Dataset:
-    """Compute metrics between pred and obs, reducing over the specified dims."""
+    """Compute metrics between pred and obs, reducing over the dims of `aggregation`.
+
+    "total" pools over every dim -- the former nested metric-of-metric estimator
+    (reduction_order) is gone, so "total" has exactly one semantics: pooled.
+    """
     available_dims = set(pred.dims)
-
-    if aggregation == "total":
-        first_key, second_key = reduction_order
-        first_dims = [d for d in _REDUCTION_DIMS[first_key] if d in available_dims] or None
-        second_dims = [d for d in _REDUCTION_DIMS[second_key] if d in available_dims]
-
-        data_vars = {}
-        for name in metrics:
-            intermediate = METRIC_REGISTRY[name](pred, obs, dim=first_dims)
-            remaining = [d for d in second_dims if d in intermediate.dims]
-            data_vars[name] = intermediate.mean(dim=remaining or None, skipna=True)
-    else:
-        dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in available_dims] or None
-        data_vars = {}
-        for name in metrics:
-            data_vars[name] = METRIC_REGISTRY[name](pred, obs, dim=dim)
-
+    dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in available_dims] or None
+    data_vars = {}
+    for name in metrics:
+        data_vars[name] = METRIC_REGISTRY[name](pred, obs, dim=dim)
     return xr.Dataset(data_vars)
 
 
@@ -521,7 +510,6 @@ def compute_grouped_scores(
     metrics: list[str] | None = None,
     aggregation: str = "total",
     groupby: str = "diurnal",
-    reduction_order: tuple = ("space", "time"),
 ) -> xr.Dataset:
     # detect time dimension (valid_time or init_time) for grouping
     time_dim = next(dim for dim in ("valid_time", "init_time") if dim in pred.dims)
@@ -534,9 +522,7 @@ def compute_grouped_scores(
         pred_group_bin = pred.isel({time_dim: idx})
         obs_group_bin = obs.isel({time_dim: idx})
 
-        group_bin_scores = compute_scores(
-            pred_group_bin, obs_group_bin, metrics, aggregation=aggregation, reduction_order=reduction_order
-        )
+        group_bin_scores = compute_scores(pred_group_bin, obs_group_bin, metrics, aggregation=aggregation)
         dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in set(pred_group_bin.dims)] or None
         # Joint mask: pred_mean and obs_mean average the SAME samples, so the diurnal-mean
         # comparison is not land-only pred against land+water obs.
@@ -561,7 +547,6 @@ def compute_class_scores(
     metrics: list[str] | None = None,
     groupby: str | None = None,
     aggregation: str = "total",
-    reduction_order: tuple = ("space", "time"),
 ) -> xr.Dataset:
     if class_coord not in pred.coords:
         raise ValueError(f"Class coordinate '{class_coord}' not found in data coords.")
@@ -583,12 +568,9 @@ def compute_class_scores(
                 metrics,
                 aggregation=aggregation,
                 groupby=groupby,
-                reduction_order=reduction_order,
             )
         else:
-            scores = compute_scores(
-                pred_class, obs_class, metrics, aggregation=aggregation, reduction_order=reduction_order
-            )
+            scores = compute_scores(pred_class, obs_class, metrics, aggregation=aggregation)
             dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in set(pred_class.dims)] or None
             valid = pred_class.notnull() & obs_class.notnull()  # same joint-mask rule as the groups
             scores = scores.assign(
