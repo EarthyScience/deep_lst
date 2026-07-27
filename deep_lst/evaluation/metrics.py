@@ -225,6 +225,26 @@ def pool_metric(pred: xr.DataArray, obs: xr.DataArray, metric: str, dim) -> xr.D
     return METRIC_REGISTRY[metric](pred, obs, dim=dim)
 
 
+def _pooled_measures(pred: xr.DataArray, obs: xr.DataArray, metrics: list[str], dim) -> dict:
+    """One pooled value per metric over *dim*, in the requested order.
+
+    Chain measures (`MEASURES`) share a single sufficient-statistics pass; every other
+    registered metric reduces directly via `pool_metric`.
+    """
+    chain_measures = tuple(name for name in metrics if name in MEASURES)
+    stats = None
+    if chain_measures:
+        stats = sufficient_stats(pred, obs, dim=dim, extra=required_extras(chain_measures))
+
+    pooled = {}
+    for name in metrics:
+        if name in MEASURES:
+            pooled[name] = MEASURES[name](stats)
+        else:
+            pooled[name] = pool_metric(pred, obs, name, dim)
+    return pooled
+
+
 def compute_pooled_scores(
     pred: xr.DataArray,
     obs: xr.DataArray,
@@ -236,7 +256,7 @@ def compute_pooled_scores(
     the squared-error domain, never space-RMSE-then-init-mean.
     """
     pooled_dims = [d for d in pred.dims if d != "lead_time"]
-    return xr.Dataset({name: pool_metric(pred, obs, name, pooled_dims) for name in metrics})
+    return xr.Dataset(_pooled_measures(pred, obs, metrics, pooled_dims))
 
 
 def compute_pooled_by_day(
@@ -248,26 +268,48 @@ def compute_pooled_by_day(
 
     Pooling over the whole bucket (not an average of per-lead scores) keeps these consistent with
     the table_runner columns. Returns a dataset on a 'day' dim with a 'day_label' coord; empty
-    buckets (beyond the horizon) are dropped.
+    buckets (beyond the horizon) are dropped. Chain measures pool via one sufficient-statistics
+    pass grouped by forecast-day labels; other registered metrics reduce per bucket.
     """
-    lead_hours = to_lead_hours(pred)
-    day_indices, day_labels, slices = [], [], []
-    for day_idx, (low, high) in enumerate(LEAD_DAY_BUCKETS, start=1):
-        lead_idx = np.where((lead_hours >= low) & (lead_hours <= high))[0]
-        if lead_idx.size == 0:
-            continue
-        pred_bucket = pred.isel(lead_time=lead_idx)
-        obs_bucket = obs.isel(lead_time=lead_idx)
-        reduce_dims = list(pred_bucket.dims)
-        bucket_scores = {name: pool_metric(pred_bucket, obs_bucket, name, reduce_dims) for name in metrics}
-        slices.append(xr.Dataset(bucket_scores))
-        day_indices.append(day_idx)
-        day_labels.append(f"Day {day_idx}")
+    from deep_lst.evaluation.conditioning import forecast_day_labels
 
-    if not slices:
+    chain_measures = tuple(name for name in metrics if name in MEASURES)
+    registry_metrics = [name for name in metrics if name not in MEASURES]
+
+    chain_ds = None
+    if chain_measures:
+        pooled_dims = [d for d in pred.dims if d != "lead_time"]
+        stats = sufficient_stats(pred, obs, dim=pooled_dims, extra=required_extras(chain_measures))
+        pooled = pool_stats(stats, by=forecast_day_labels(pred))
+        pooled = pooled.sel(day=pooled["day"] != 0)  # leads outside every bucket
+        chain_ds = measures_from_stats(pooled, chain_measures)
+
+    registry_ds = None
+    if registry_metrics:
+        lead_hours = to_lead_hours(pred)
+        day_indices, slices = [], []
+        for day_idx, (low, high) in enumerate(LEAD_DAY_BUCKETS, start=1):
+            lead_idx = np.where((lead_hours >= low) & (lead_hours <= high))[0]
+            if lead_idx.size == 0:
+                continue
+            pred_bucket = pred.isel(lead_time=lead_idx)
+            obs_bucket = obs.isel(lead_time=lead_idx)
+            reduce_dims = list(pred_bucket.dims)
+            bucket_scores = {name: pool_metric(pred_bucket, obs_bucket, name, reduce_dims) for name in registry_metrics}
+            slices.append(xr.Dataset(bucket_scores))
+            day_indices.append(day_idx)
+        if slices:
+            registry_ds = xr.concat(slices, dim=pd.Index(day_indices, name="day"))
+
+    parts = {}
+    for name in metrics:
+        source = chain_ds if name in MEASURES else registry_ds
+        if source is not None and name in source:
+            parts[name] = source[name]
+    if not parts:
         return xr.Dataset()
-    ds = xr.concat(slices, dim=pd.Index(day_indices, name="day"))
-    return ds.assign_coords(day_label=("day", day_labels))
+    ds = xr.Dataset(parts)
+    return ds.assign_coords(day_label=("day", [f"Day {d}" for d in ds["day"].values]))
 
 
 def compute_daily_pooled(
