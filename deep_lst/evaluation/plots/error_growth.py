@@ -6,7 +6,6 @@ All three functions consume a pre-computed metrics_by_lead_time dataset
 error_growth_plot              RMSE vs lead time — hourly resolution line plot
 error_growth_daily_plot        Mean RMSE bucketed into forecast days (day 1/2/3 …)
 skill_plot                     Skill score SS = 1 - model_RMSE / reference_RMSE, daily buckets
-error_growth_single_valid_time RMSE vs lead time for a fixed valid time, with clim. baseline
 """
 
 import matplotlib.patheffects as pe
@@ -84,51 +83,6 @@ def error_growth_daily_plot(
     ax.set_xticks(x)
     ax.set_xticklabels(day_labels, rotation=45)
     ax.set_ylabel(f"{metric.upper()} (K)")
-    ax.grid(axis="y", alpha=0.3)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    plt.tight_layout()
-    if save_path is not None:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches="tight", transparent=True)
-        print(f"  Saved: {save_path}")
-    plt.close(fig)
-
-
-def error_growth_single_valid_time(
-    ds_by_lead: xr.Dataset,
-    case_label: str,
-    metric: str,
-    save_path,
-    valid_time: pd.Timestamp,
-    climatological_rmse: float,
-) -> None:
-    """RMSE vs lead time for a single fixed valid_time.
-
-    The valid time was reached from different init times, so each point on the
-    x-axis corresponds to a different initial condition / lead time.
-    A horizontal line marks the climatological RMSE at that valid time.
-    """
-    plt.rcParams.update(RC)
-    lead_td = pd.TimedeltaIndex(ds_by_lead["lead_time"].values)
-    lead_hours = [int(lt.total_seconds() / 3600) for lt in lead_td]
-    vals = ds_by_lead[metric].values
-
-    fig, ax = plt.subplots(figsize=(9, 4.5))
-    model_color = _CASE_COLORS.get(case_label, _DEFAULT_COLOR)
-    ax.plot(lead_hours, vals, color=model_color, linewidth=2, marker="o", markersize=5, label="Deep LST")
-
-    for bl_label, bl_val in climatological_rmse.items():
-        if bl_val is not None and np.isfinite(bl_val):
-            c = _CASE_COLORS.get(bl_label, _DEFAULT_COLOR)
-            ax.axhline(bl_val, color=c, linewidth=1.5, linestyle="--", label=f"{bl_label}  ({bl_val:.2f} K)")
-
-    ax.set_xlabel("Lead time (h)")
-    ax.set_ylabel(f"{metric.upper()} (K)")
-    step = max(1, len(lead_hours) // 12)
-    ax.set_xticks(lead_hours[::step])
-    ax.set_title(f"Valid time: {valid_time.strftime('%Y-%m-%d %H:%M')}")
-    ax.legend(loc="upper right")
     ax.grid(axis="y", alpha=0.3)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

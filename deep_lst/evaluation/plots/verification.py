@@ -114,55 +114,6 @@ def srmse_by_latitude(
     print(f"  Saved: {save_path}")
 
 
-def regression_parity(
-    ds: xr.Dataset,
-    variable: str,
-    save_dir: Path,
-    init_time: int = 0,
-    n_lead_times: int = None,
-) -> None:
-    """Parity scatter plot coloured by lead time.
-
-    Args:
-        ds: ForecastResult Dataset with dims (init_time, lead_time, lat, lon).
-        variable: Variable name, e.g. "LST".
-        save_dir: Directory in which to save the PNG.
-        init_time: Integer index into init_time dimension.
-        n_lead_times: Number of lead times to include (None = all).
-    """
-    plt.rcParams.update(RC)
-    save_dir = Path(save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    lead_times = ds.lead_time if n_lead_times is None else ds.lead_time[:n_lead_times]
-    colors = plt.cm.viridis(np.linspace(0, 1, len(lead_times)))
-
-    fig, ax = plt.subplots(figsize=(8, 8))
-    for i, lt in enumerate(lead_times):
-        ax.scatter(
-            ds[f"{variable}_obs"].isel(init_time=init_time, lead_time=i).values.ravel(),
-            ds[f"{variable}_pred"].isel(init_time=init_time, lead_time=i).values.ravel(),
-            c=[colors[i]],
-            label=f"LT {i}",
-            alpha=0.4,
-            s=10,
-        )
-
-    lim_min = min(ax.get_xlim()[0], ax.get_ylim()[0])
-    lim_max = max(ax.get_xlim()[1], ax.get_ylim()[1])
-    ax.plot([lim_min, lim_max], [lim_min, lim_max], "k--", alpha=0.5, linewidth=1.5)
-
-    ax.set_xlabel("SEVIRI")
-    ax.set_ylabel("Forecast")
-    ax.set_aspect("equal", adjustable="box")
-    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", markerscale=2)
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(save_dir / f"{variable}_regression_parity.png", dpi=150, bbox_inches="tight")
-    plt.close()
-
-
 def activity_plot(
     references: dict[str, xr.Dataset],
     save_path,

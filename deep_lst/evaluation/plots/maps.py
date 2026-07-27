@@ -1,15 +1,6 @@
-"""Spatial maps of forecast evaluation metrics.
-
-Two functions:
-
-bias_maps(bias_by_case, ...)
-    Three side-by-side maps of mean bias (obs − pred) for cases A, B, C.
-    Input: region_space aggregation → (lat, lon) per case.
-
-improvement_map(rmse_model, rmse_baseline, ...)
-    Single map of RMSE(C) − RMSE(B): positive = model better than ERA5.
-    Input: region_space aggregation → (lat, lon) for model and baseline.
-"""
+"""Spatial maps of forecast evaluation metrics: score maps (acc_map), multi-baseline
+improvement maps (improvement_map_multi) and the lead-bucket map grids consumed by the
+verification runner (lead_bucket_rmse_grid, lead_bucket_map_grid)."""
 
 from pathlib import Path
 
@@ -32,81 +23,6 @@ def _add_map_features(ax):
     gl.right_labels = False
     gl.xlabel_style = {"size": 10}
     gl.ylabel_style = {"size": 10}
-
-
-def bias_maps(
-    bias_by_case: dict[str, xr.DataArray],
-    save_path: Path,
-    eval_region: str = "",
-    vmax: float = None,
-    title: str = None,
-) -> plt.Figure:
-    """Three side-by-side maps of mean bias for cases A, B, C.
-
-    Parameters
-    ----------
-    bias_by_case : dict[str, xr.DataArray]
-        ``{case_label: bias_da}`` with dims (lat, lon).
-        Expected keys in display order, e.g.:
-        ``{"MLP-Diag": da_A, "MLP-Rollout": da_B, "ERA5": da_C}``
-    save_path : Path
-        Output file path.
-    eval_region : str
-        Used in figure title.
-    vmax : float, optional
-        Symmetric colorbar limit. If None, derived from data.
-    title : str, optional
-        Override figure suptitle.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    plt.rcParams.update(RC_MAP)
-    cases = list(bias_by_case.keys())
-    n = len(cases)
-
-    fig, axes = plt.subplots(
-        1,
-        n,
-        figsize=(5 * n, 5),
-        subplot_kw={"projection": _PROJ},
-    )
-    if n == 1:
-        axes = [axes]
-
-    # Shared symmetric colorbar limits
-    if vmax is None:
-        all_vals = np.concatenate([da.values[np.isfinite(da.values)].ravel() for da in bias_by_case.values()])
-        vmax = float(np.nanpercentile(np.abs(all_vals), 95)) if len(all_vals) else 5.0
-    vmin = -vmax
-
-    ims = []
-    for ax, case in zip(axes, cases):
-        da = bias_by_case[case]
-        im = da.plot(
-            ax=ax,
-            cmap="RdBu_r",
-            vmin=vmin,
-            vmax=vmax,
-            add_colorbar=False,
-            transform=_PROJ,
-        )
-        ims.append(im)
-        ax.set_title(case)
-        _add_map_features(ax)
-
-    fig.subplots_adjust(wspace=0.35, right=0.88)
-    cbar_ax = fig.add_axes([0.91, 0.15, 0.018, 0.7])
-    cbar = fig.colorbar(ims[-1], cax=cbar_ax)
-    cbar.set_label("Bias  (pred − obs)  (K)", rotation=270, labelpad=18)
-
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {save_path}")
-    return fig
 
 
 def acc_map(
@@ -325,79 +241,6 @@ def lead_bucket_rmse_grid(values, bucket_labels, col_labels, save_path, tod_labe
     cbar_ax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
     cbar = fig.colorbar(im, cax=cbar_ax)
     cbar.set_label("RMSE [K]", rotation=270, labelpad=18)
-
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {save_path}")
-    return fig
-
-
-def improvement_map(
-    rmse_model: xr.DataArray,
-    rmse_baseline: xr.DataArray,
-    save_path: Path,
-    model_label: str = "MLP-Rollout",
-    baseline_label: str = "ERA5",
-    eval_region: str = "",
-    vmax: float = None,
-    title: str = None,
-) -> plt.Figure:
-    """Single map of RMSE(baseline) − RMSE(model): positive = model better.
-
-    Parameters
-    ----------
-    rmse_model : xr.DataArray
-        Per-pixel RMSE of the model forecast, dims (lat, lon).
-    rmse_baseline : xr.DataArray
-        Per-pixel RMSE of the baseline (ERA5), dims (lat, lon).
-    save_path : Path
-        Output file path.
-    model_label, baseline_label : str
-        Used in title and colorbar.
-    eval_region : str
-        Used in figure title.
-    vmax : float, optional
-        Symmetric colorbar limit. If None, derived from data.
-    title : str, optional
-        Override figure suptitle.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    plt.rcParams.update(RC_MAP)
-
-    improvement = rmse_baseline - rmse_model  # positive = model better
-
-    if vmax is None:
-        vals = improvement.values[np.isfinite(improvement.values)]
-        vmax = float(np.nanpercentile(np.abs(vals), 95)) if len(vals) else 2.0
-    vmin = -vmax
-
-    fig, ax = plt.subplots(figsize=(7, 6), subplot_kw={"projection": _PROJ})
-    im = improvement.plot(
-        ax=ax,
-        cmap="RdBu",
-        vmin=vmin,
-        vmax=vmax,
-        add_colorbar=False,
-        transform=_PROJ,
-    )
-    _add_map_features(ax)
-
-    cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.04)
-    cbar.set_label(
-        f"RMSE({baseline_label}) − RMSE({model_label})  (K)\nPositive = {model_label} better",
-        rotation=270,
-        labelpad=22,
-    )
-
-    suptitle = title or (
-        f"Improvement: {model_label} vs {baseline_label}" + (f" — {eval_region}" if eval_region else "")
-    )
-    ax.set_title(suptitle)
 
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)

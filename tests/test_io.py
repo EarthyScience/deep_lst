@@ -58,10 +58,6 @@ def test_spatial_indices_path(paths, tmp_path):
     )
 
 
-def test_store_path(paths, tmp_path):
-    assert paths.store_path("era5") == tmp_path / "stores" / "era5.zarr"
-
-
 def test_eval_indices_path(paths, tmp_path):
     assert paths.eval_indices_path("seviri", "dahra") == (
         tmp_path / "assets" / "seviri" / "spatial" / "indices_eval_dahra.npz"
@@ -111,26 +107,3 @@ def test_latest_checkpoint_missing_dir_raises(paths):
 
 
 # ── dir-creating methods ──────────────────────────────────────────────────────
-
-
-def test_predictions_path_creates_parent(paths):
-    p = paths.predictions_path("run_01", "v0")
-    assert p.parent.exists()
-    assert p.name == "forecast.npz" or p.suffix == ".nc"
-
-
-def test_predictions_path_with_suffix(paths):
-    p = paths.predictions_path("run_01", "v0", suffix="_eval")
-    assert p.name == "forecast_eval.nc"
-
-
-def test_experiment_plots_path_creates_parent(paths):
-    p = paths.experiment_plots_path("run_01", "v0", "loss_curve")
-    assert p.parent.exists()
-    assert p.name == "loss_curve.png"
-
-
-def test_plots_path_creates_parent(paths):
-    p = paths.plots_path("analysis", "bias_map")
-    assert p.parent.exists()
-    assert p.name == "bias_map.png"

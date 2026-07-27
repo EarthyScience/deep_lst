@@ -28,16 +28,6 @@ fingerprint_plot(
     save_path=Path("fingerprint_error.png"),
 )
 
-# Improvement fingerprint — colormap auto-selected based on data:
-#   one-sided negative → Blues_r (blue = large improvement, white = near 0)
-#   one-sided positive → Reds   (white = near 0, red = large regression)
-#   two-sided          → RdBu   (blue = model better, red = baseline better)
-from deep_lst.evaluation.plots.fingerprint import improvement_da
-fingerprint_plot(
-    {"vs ERA5": improvement_da(pred, obs, era5_da)},
-    vcenter=0.0, cbar_label="ΔMAE (K)  [blue = model better, red = baseline better]",
-    save_path=Path("fingerprint_improvement.png"),
-)
 """
 
 from pathlib import Path
@@ -58,33 +48,6 @@ _MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 # ---------------------------------------------------------------------------
 # Helper DataArray constructors for error / improvement inputs
 # ---------------------------------------------------------------------------
-
-
-def abs_error_da(pred: xr.DataArray, obs: xr.DataArray) -> xr.DataArray:
-    """Mean absolute error per timestep: |pred − obs| spatially averaged.
-
-    Returns a 1-D DataArray with dim ``valid_time`` so it can be passed
-    directly into ``fingerprint_plot``.
-    """
-    err = np.abs(pred - obs)
-    # Spatial mean over lat/lon (or any dims that aren't valid_time)
-    spatial_dims = [d for d in err.dims if d != "valid_time"]
-    return err.mean(dim=spatial_dims, skipna=True)
-
-
-def improvement_da(
-    pred: xr.DataArray,
-    obs: xr.DataArray,
-    baseline: xr.DataArray,
-) -> xr.DataArray:
-    """Per-timestep MAE improvement of pred over baseline vs obs.
-
-    Returns MAE(pred, obs) − MAE(baseline, obs) per timestep.
-    Negative values mean the model is better than the baseline.
-    """
-    mae_pred = abs_error_da(pred, obs)
-    mae_base = abs_error_da(baseline, obs)
-    return mae_pred - mae_base
 
 
 # ---------------------------------------------------------------------------
