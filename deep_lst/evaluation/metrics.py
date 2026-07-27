@@ -325,6 +325,21 @@ def compute_daily_pooled(
     DataArray on a 'day' dim with a 'month' coord.
     """
     time_dim = next(d for d in ("valid_time", "init_time") if d in pred.dims)
+
+    if metric in MEASURES:
+        # Chain path: one stats pass + a day-label groupby-sum, instead of one eager
+        # metric evaluation per calendar day (the measured hotspot of the Diag workers).
+        space_dims = [d for d in pred.dims if d != time_dim]
+        stats = sufficient_stats(pred, obs, dim=space_dims, extra=required_extras((metric,)))
+        day_labels = xr.DataArray(pred[time_dim].dt.floor("D").values, dims=time_dim, name="day")
+        pooled = pool_stats(stats, by=day_labels)
+        daily_scores = measures_from_stats(pooled, (metric,))[metric]
+        months = pd.DatetimeIndex(daily_scores["day"].values).month
+        daily_scores = daily_scores.assign_coords(month=("day", months))
+        total_stats = pool_stats(stats, dim=time_dim)
+        total = float(measures_from_stats(total_stats, (metric,))[metric])
+        return daily_scores, total
+
     day_key = pred[time_dim].dt.floor("D").values
     unique_days = np.unique(day_key)
 
@@ -388,14 +403,9 @@ def compute_rmse_sufficient_stats(
     what the block bootstrap resamples over. Keeping the sums (not per-init RMSE) is what lets the
     bootstrap re-pool correctly over resampled init_times.
     """
-    se = (obs - pred) ** 2
-    space_dims = [d for d in _REDUCTION_DIMS["space"] if d in se.dims]
-    return xr.Dataset(
-        {
-            "se_sum": se.sum(dim=space_dims, skipna=True),
-            "count": se.notnull().sum(dim=space_dims),
-        }
-    )
+    space_dims = [d for d in _REDUCTION_DIMS["space"] if d in pred.dims]
+    stats = sufficient_stats(pred, obs, dim=space_dims)
+    return xr.Dataset({"se_sum": stats["se_sum"], "count": stats["n"]})
 
 
 _EXTRA_STATS = ("ae_sum",)
