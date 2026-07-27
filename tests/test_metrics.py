@@ -152,3 +152,16 @@ def test_compute_grouped_scores():
     assert ds["rmse"].shape == (24, preds.lat.size, preds.lon.size)
     assert ds["rmse"].dims == ("hour", "lat", "lon")
     assert "pred_mean" in ds and "obs_mean" in ds
+
+
+def test_skill_score():
+    from deep_lst.evaluation.metrics import skill_score
+
+    assert skill_score(1.0, 2.0) == 0.5  # model halves the baseline error
+    assert skill_score(2.0, 2.0) == 0.0  # no improvement
+    assert skill_score(3.0, 2.0) == -0.5  # model worse than baseline
+
+    model = xr.DataArray([1.0, 2.0], dims="lead_time")
+    baseline = xr.DataArray([2.0, 2.0], dims="lead_time")
+    result = skill_score(model, baseline)
+    np.testing.assert_allclose(result.values, [0.5, 0.0])

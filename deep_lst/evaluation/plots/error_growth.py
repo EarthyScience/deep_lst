@@ -5,7 +5,7 @@ All three functions consume a pre-computed metrics_by_lead_time dataset
 
 error_growth_plot              RMSE vs lead time — hourly resolution line plot
 error_growth_daily_plot        Mean RMSE bucketed into forecast days (day 1/2/3 …)
-skill_plot                     Skill score SS = model_RMSE / reference_RMSE, daily buckets
+skill_plot                     Skill score SS = 1 - model_RMSE / reference_RMSE, daily buckets
 error_growth_single_valid_time RMSE vs lead time for a fixed valid time, with clim. baseline
 """
 
@@ -16,7 +16,7 @@ import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.metrics import LEAD_DAY_BUCKETS as DAY_BUCKETS
-from deep_lst.evaluation.metrics import _acc, local_valid_hour
+from deep_lst.evaluation.metrics import _acc, local_valid_hour, skill_score
 from deep_lst.evaluation.plots._design import _LABEL_ALIASES, RC
 from deep_lst.evaluation.plots._design import CASE_COLORS as _CASE_COLORS
 from deep_lst.evaluation.plots._design import DEFAULT_COLOR as _DEFAULT_COLOR
@@ -247,7 +247,7 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim
                     err2_model.where(bucket_mask).mean(["init_time", "lead_time", *space], skipna=True)
                 )
                 rmse_bl = np.sqrt(err2_bl.where(bucket_mask).mean(["init_time", "lead_time", *space], skipna=True))
-                skill.append(float(1 - rmse_model / rmse_bl))
+                skill.append(float(skill_score(rmse_model, rmse_bl)))
             display_label = _LABEL_ALIASES.get(label, label)
             color = _CASE_COLORS.get(label, _DEFAULT_COLOR)
             ax.plot(x, skill, color=color, linewidth=2, marker="o", markersize=6, label=display_label)

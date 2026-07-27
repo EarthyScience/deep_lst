@@ -172,6 +172,11 @@ def local_valid_hour(da: xr.DataArray) -> xr.DataArray:
     return (init_hour + lead_hour + da["lon"] / 15.0) % 24
 
 
+def skill_score(model_score, baseline_score):
+    """RMSE-type skill, ``1 - model/baseline``. Positive means the model beats the baseline."""
+    return 1.0 - model_score / baseline_score
+
+
 def compute_scores(
     pred: xr.DataArray,
     obs: xr.DataArray,

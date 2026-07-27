@@ -31,7 +31,7 @@ import xarray as xr
 
 from deep_lst.evaluation.evaluator import EvaluatorVerification
 from deep_lst.evaluation.latex import latex_table, write_month_tables
-from deep_lst.evaluation.metrics import local_valid_hour, pool_metric, to_lead_hours
+from deep_lst.evaluation.metrics import local_valid_hour, pool_metric, skill_score, to_lead_hours
 from deep_lst.evaluation.plots.month_grid import (
     MONTHS,
     _latitude_labels,
@@ -223,7 +223,7 @@ def skill_row(model_values: dict, baseline_values: dict) -> dict[str, str]:
     """Skill 1 - metric_model / metric_baseline, per pooled column value."""
     row = {"validity": f"{model_values['validity']:.1f}\\%"}
     for column in METRIC_COLUMNS:
-        row[column] = f"{1.0 - model_values[column] / baseline_values[column]:.3f}"
+        row[column] = f"{skill_score(model_values[column], baseline_values[column]):.3f}"
     return row
 
 

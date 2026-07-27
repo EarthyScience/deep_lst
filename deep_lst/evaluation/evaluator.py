@@ -13,6 +13,7 @@ from deep_lst.evaluation.metrics import (
     compute_rmse_sufficient_stats,
     compute_scores,
     daily_rmse_by_valid_day,
+    skill_score,
     to_init_time,
     to_lead_hours,
     to_valid_time,
@@ -395,7 +396,7 @@ class EvaluatorVerification(Evaluator):
             pooled_baseline_day = compute_pooled_by_day(
                 baseline_full.isel(lead_time=slice(1, None)), obs_no0, self.metrics
             )
-            self.pooled_skill_day = 1 - self.pooled_scores_day / pooled_baseline_day
+            self.pooled_skill_day = skill_score(self.pooled_scores_day, pooled_baseline_day)
 
             if self.baseline in CLIMATE_BASELINES and self.compute_anomaly:
                 pred_anom = self.pred - baseline_full
@@ -407,7 +408,7 @@ class EvaluatorVerification(Evaluator):
                     ANOMALY_METRICS,
                 )
 
-            self.skill_scores = self.scores / self.baseline_scores
+            self.skill_scores = skill_score(self.scores, self.baseline_scores)
 
     def _baseline_full(self) -> xr.DataArray:
         """Align the loaded baseline to each lead and concat into the (init_time, lead_time, space) cube."""

@@ -12,7 +12,7 @@ from deep_lst.evaluation.evaluator import (
     EvaluatorDiagnostics,
     EvaluatorVerification,
 )
-from deep_lst.evaluation.metrics import compute_class_scores, compute_scores, local_valid_hour
+from deep_lst.evaluation.metrics import compute_class_scores, compute_scores, local_valid_hour, skill_score
 from deep_lst.evaluation.plots.cdf import day_night_summary, lst_cdf_plot, rmse_cdf_plot
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import (
@@ -575,14 +575,14 @@ class PlotRunnerVerification:
         )
 
     def _skill_cubes(self) -> dict[str, xr.Dataset]:
-        """{reference_label: skill dataset} on (init_time, lead_time), where
-        skill = 1 - model_RMSE / baseline_RMSE. One entry per baseline that
-        produced skill_scores (era5 / clim / persistence)."""
+        """{reference_label: skill dataset} on (init_time, lead_time). The evaluator already
+        stores skill_scores as 1 - model/baseline; one entry per baseline that produced them
+        (era5 / clim / persistence)."""
         out = {}
         for label, bl_ev in self.baselines.items():
             skill = getattr(bl_ev, "skill_scores", None)
             if skill is not None:
-                out[label] = 1 - skill
+                out[label] = skill
         return out
 
     def plot_skill_by_init_hour(self):
@@ -719,7 +719,7 @@ class PlotRunnerVerification:
                     rmse_bl = _bucket_tod_rmse(bl_field, self.ev.obs, lead_idx, tod)
                     error[b][bl_label] = rmse_bl
                     improvement[b][bl_label] = rmse_bl - rmse_model
-                    skill[b][bl_label] = 1 - rmse_model / rmse_bl
+                    skill[b][bl_label] = skill_score(rmse_model, rmse_bl)
             error_by_tod[tod] = error
             improvement_by_tod[tod] = improvement
             skill_by_tod[tod] = skill

@@ -15,7 +15,7 @@ import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.latex import write_month_tables
-from deep_lst.evaluation.metrics import compute_pooled_by_day
+from deep_lst.evaluation.metrics import compute_pooled_by_day, skill_score
 from deep_lst.evaluation.table_runner import _mask_time_of_day, load_entities
 
 MONTHS = list(range(1, 13))
@@ -49,7 +49,7 @@ def _skill_by_forecast_day(model, baseline, obs, month, kind):
 
     rmse_model = compute_pooled_by_day(model_month, obs_month, ["rmse"])["rmse"]
     rmse_baseline = compute_pooled_by_day(baseline_month, obs_month, ["rmse"])["rmse"]
-    skill = 1.0 - rmse_model / rmse_baseline
+    skill = skill_score(rmse_model, rmse_baseline)
     return skill.where(np.isfinite(rmse_baseline) & (rmse_baseline > 0))
 
 
