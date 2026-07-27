@@ -186,7 +186,11 @@ def _pool_product(stats: xr.Dataset, product: ScoreProduct) -> xr.Dataset:
         pooled = pooled.sel(day=pooled["day"] != 0)  # leads outside every bucket
         pooled = pooled.assign_coords(day_label=("day", [f"Day {d}" for d in pooled["day"].values]))
     if product.by == ("valid_day",):
-        pooled = pooled.where(pooled["n"] > 0, drop=True)  # fully-cloudy days carry no information
+        # Fully-cloudy days carry no information. The counts must be materialised first:
+        # boolean-dask indexers are rejected by xarray, and after the day-groupby they
+        # are a tiny 1-D array anyway.
+        counts = pooled["n"].load()
+        pooled = pooled.where(counts > 0, drop=True)
         months = pd.DatetimeIndex(pooled["day"].values).month
         pooled = pooled.assign_coords(month=("day", months))
     return pooled

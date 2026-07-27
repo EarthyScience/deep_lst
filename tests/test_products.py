@@ -108,3 +108,31 @@ def test_align_baseline_persistence_hand_check():
     finite = np.isfinite(sample.values)
     assert finite.any()
     np.testing.assert_allclose(sample.values[finite], 9.0)
+
+
+def test_products_on_lazy_inputs():
+    # The full pipeline runs dask-backed; eager-only testing missed a boolean-dask
+    # indexer crash in the valid-day pooling. Exercise every pooling mode lazily.
+    pred, obs = _synthetic_cube()
+    pred_lazy = pred.chunk({"init_time": 4})
+    obs_lazy = obs.chunk({"init_time": 4})
+    baseline = _baseline_cube(obs).chunk({"init_time": 4})
+
+    out = compute_products(
+        pred_lazy,
+        obs_lazy,
+        [
+            "scores_by_lead",
+            "scores_by_forecast_day",
+            "rmse_by_valid_day_lead1_24",
+            "rmse_map_by_bucket_tod",
+        ],
+        baselines={"pers": baseline},
+    )
+    for name, product in out.items():
+        computed = product.compute()
+        assert all(bool(computed[v].notnull().any()) for v in ("rmse",)), name
+
+    eager = compute_products(pred, obs, ["rmse_by_valid_day_lead1_24"])["rmse_by_valid_day_lead1_24"]
+    lazy = out["rmse_by_valid_day_lead1_24"].compute()
+    np.testing.assert_allclose(lazy["rmse"].values, eager["rmse"].values, rtol=1e-6)
