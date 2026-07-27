@@ -343,7 +343,6 @@ class Forecast:
     def _predict_diagnostic(model, device, loader, td_keys, normaliser=None, **kwargs):
         """Single-step generator: yields per-batch (preds, obs) dicts, denormalised."""
         diag_keys = td_keys["diagnostic_keys"]
-        diag_out_keys = td_keys["diagnostic_out_keys"]
 
         with torch.no_grad():
             for batch in tqdm(loader, desc="Predicting (diagnostic)"):
@@ -353,8 +352,11 @@ class Forecast:
 
                 preds_b = {}
                 obs_b = {}
-                for diag_key, diag_out_key in zip(diag_keys, diag_out_keys):
-                    var = diag_key[1]
+                # Pair by construction, not by zip: diagnostic_out_keys may carry extra
+                # {var}_log_sigma_pred entries (sigma_diagnostics) that have no target key.
+                for diag_key in diag_keys:
+                    modality, var = diag_key
+                    diag_out_key = (modality, f"{var}_pred")
                     pred_batch = out[diag_out_key].float().cpu().numpy().squeeze((-3, -2, -1))
                     obs_batch = batch[diag_key].cpu().numpy().squeeze((-3, -2, -1))
 

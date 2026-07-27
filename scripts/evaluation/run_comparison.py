@@ -74,13 +74,12 @@ def parse_args():
     return p.parse_args()
 
 
-def _make_eval(experiment, version, eval_name, metric, lead_time) -> EvaluatorDiagnostics:
+def _make_eval(experiment, version, eval_name, lead_time) -> EvaluatorDiagnostics:
     ev = EvaluatorDiagnostics(
         experiment=experiment,
         version=version,
         eval_name=eval_name,
         var="LST",
-        metrics=[metric],
         baseline=None,
         temporal=None,
         aggregation="region_space",
@@ -115,9 +114,7 @@ def run_comparison():
     for case_type, experiments in [("MLP-Diag", args.diag), ("MLP-Rollout", args.rollout)]:
         for i, exp in enumerate(experiments):
             try:
-                ev_by[(case_type, group_labels[i])] = _make_eval(
-                    exp, args.version, args.eval, args.metric, args.lead_time
-                )
+                ev_by[(case_type, group_labels[i])] = _make_eval(exp, args.version, args.eval, args.lead_time)
                 print(f"  [ok] {case_type} [{group_labels[i]}]: {exp}")
             except FileNotFoundError as e:
                 print(f"  [skip] {exp}: {e}")

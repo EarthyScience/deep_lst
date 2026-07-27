@@ -1,6 +1,6 @@
 import numpy as np
 
-from deep_lst.evaluation.fc_limit_month import _first_below_zero
+from deep_lst.evaluation.fc_limits import _first_below_zero
 
 DAYS = np.array([1, 2, 3, 4, 5])
 HORIZON = 5

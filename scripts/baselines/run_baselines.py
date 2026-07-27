@@ -13,10 +13,12 @@ from pathlib import Path
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-from deep_lst.baselines import ClimatologyExtractor, Era5LandExtractor, PersistenceExtractor
+from deep_lst.baselines import ClimatologyExtractor, Era5Extractor, Era5LandExtractor, PersistenceExtractor
 from deep_lst.dataset.dataset import MultimodalDataset
 
 CONF_DIR = "/Net/Groups/BGI/people/mwessel/deep_lst/conf"
+
+REFERENCE_EXTRACTORS = {"era5": Era5Extractor, "era5_land": Era5LandExtractor}
 
 
 def parse_args():
@@ -25,7 +27,11 @@ def parse_args():
     p.add_argument("--test_year", type=int, required=True, help="Year the baselines forecast (train years precede it).")
     p.add_argument("--window_days", type=int, default=7, help="Circular DOY window for the smoothed climatology.")
     p.add_argument(
-        "--reference_modality", type=str, default="era5_land", help="Modality for the cross-modality reference."
+        "--reference_modality",
+        type=str,
+        default="era5_land",
+        choices=sorted(REFERENCE_EXTRACTORS),
+        help="Modality for the cross-modality reference.",
     )
     p.add_argument("--reference_var", type=str, default="skt", help="Variable for the cross-modality reference.")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing baseline files.")
@@ -60,7 +66,8 @@ def main():
     )
     smoothed.run(shared, config, store_key)
 
-    reference = Era5LandExtractor(var_name=args.reference_var, test_year=args.test_year, overwrite=args.overwrite)
+    reference_cls = REFERENCE_EXTRACTORS[args.reference_modality]
+    reference = reference_cls(var_name=args.reference_var, test_year=args.test_year, overwrite=args.overwrite)
     reference.run(shared, config, store_key)
 
 
