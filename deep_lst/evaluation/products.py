@@ -116,31 +116,41 @@ def required_stats(products: list) -> dict:
     return needed
 
 
-def _masked(pred: xr.DataArray, obs: xr.DataArray, tod: str):
+def _masked(pred: xr.DataArray, obs: xr.DataArray, tod: str, window_source: xr.DataArray):
     if tod == "all":
         return pred, obs
-    window = time_of_day_mask(pred, tod)
+    # The window is always built from the MODEL pred: aligned baseline cubes and
+    # anomaly differences can lose the lon coordinate local_valid_hour needs.
+    window = time_of_day_mask(window_source, tod)
     return pred.where(window), obs.where(window)
 
 
-def compute_tables(pred: xr.DataArray, obs: xr.DataArray, needed: dict, clim: xr.DataArray | None = None) -> dict:
+def compute_tables(
+    pred: xr.DataArray,
+    obs: xr.DataArray,
+    needed: dict,
+    clim: xr.DataArray | None = None,
+    window_source: xr.DataArray | None = None,
+) -> dict:
     """Build each required stats table exactly once.
 
     `needed` is the output of `required_stats`. Profile tables reduce space and keep
     (init_time, lead_time); map tables keep space and pool (init, lead) under
     forecast-day labels per time-of-day flavour. anomaly tables require `clim`.
     """
+    if window_source is None:
+        window_source = pred
     space_dims = [d for d in pred.dims if d in ("lat", "lon", "pixel")]
     tables = {}
     for (table, tod), extras in needed.items():
         if table == "profile":
-            pred_in, obs_in = _masked(pred, obs, tod)
+            pred_in, obs_in = _masked(pred, obs, tod, window_source)
         elif table == "anomaly_profile":
             if clim is None:
                 raise ValueError("anomaly_profile requires a climate baseline cube")
-            pred_in, obs_in = _masked(pred - clim, obs - clim, tod)
+            pred_in, obs_in = _masked(pred - clim, obs - clim, tod, window_source)
         elif table == "map":
-            pred_in, obs_in = _masked(pred, obs, tod)
+            pred_in, obs_in = _masked(pred, obs, tod, window_source)
             stats = sufficient_stats(pred_in, obs_in, dim=["init_time"], extra=extras)
             tables[(table, tod)] = pool_stats(stats, by=forecast_day_labels(pred))
             continue
@@ -208,7 +218,9 @@ def compute_products(
     baseline_tables = {}
     for baseline_name, baseline_cube in baselines.items():
         baseline_needed = {key: extras for key, extras in needed.items() if key[0] != "anomaly_profile"}
-        baseline_tables[baseline_name] = compute_tables(baseline_cube, obs, baseline_needed, clim=None)
+        baseline_tables[baseline_name] = compute_tables(
+            baseline_cube, obs, baseline_needed, clim=None, window_source=pred
+        )
 
     out = {}
     for name in products:

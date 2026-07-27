@@ -90,7 +90,10 @@ class Evaluator(ABC):
             raise FileNotFoundError(f"Baseline '{name}' not found: {path}")
         baseline = xr.open_dataset(path, chunks={})[var_name]
         baseline = self._subset_pixels(baseline, self.pred.isel(lead_time=0))
+        baseline = self._match_grid(baseline)
         cube = align_baseline(baseline, self.pred)
+        if not bool(cube.isel(init_time=0).notnull().any()):
+            print(f"  [warn] baseline '{name}' aligned to no data at the first init — check grid/time coverage")
         self._baseline_cubes[name] = cube
         return cube
 
@@ -137,6 +140,7 @@ class Evaluator(ABC):
 
         if self.baseline_ds is not None:
             self.baseline_ds = self._subset_pixels(self.baseline_ds, self.pred.isel(lead_time=0))
+            self.baseline_ds = self._match_grid(self.baseline_ds)
 
         self._compute()
 
@@ -226,6 +230,28 @@ class Evaluator(ABC):
         # streams instead of materialising the full aligned cube in numpy.
         return xr.open_dataset(path, chunks={})[var_name]
 
+    def _match_grid(self, baseline: xr.DataArray) -> xr.DataArray:
+        """TRANSITIONAL: adopt the forecast's lat/lon coords when the grids match within tolerance.
+
+        Baseline files extracted before 2026-07 carry float32 coords while the forecast
+        zarr has float64; exact-value alignment then silently yields an empty intersection
+        (dense grids) or drops the conflicting coords (pixel stores). The durable fix is
+        float64-by-contract in BaselineExtractor._make_dataset — remove this once every
+        baseline file is re-extracted.
+        """
+        reference = self.pred
+        for coord in ("lat", "lon"):
+            if coord not in baseline.coords or coord not in reference.coords:
+                return baseline
+            if baseline[coord].shape != reference[coord].shape:
+                return baseline
+        lat_close = np.allclose(baseline["lat"].values, reference["lat"].values, atol=1e-3)
+        lon_close = np.allclose(baseline["lon"].values, reference["lon"].values, atol=1e-3)
+        if not (lat_close and lon_close):
+            return baseline
+        matched_coords = {c: (baseline[c].dims, reference[c].values) for c in ("lat", "lon")}
+        return baseline.assign_coords(matched_coords)
+
     def _align_baseline(self, valid_times: np.ndarray) -> xr.DataArray:
         return self.baseline_ds.reindex(valid_time=valid_times)
 
@@ -258,13 +284,19 @@ class Evaluator(ABC):
         if not spatial_dims:
             return source
         q_labels = [f"q{int(q * 100):02d}" for q in quantiles]
-        return xr.Dataset(
-            {
-                f"{metric}_{ql}": source[metric].quantile(q, dim=spatial_dims).drop_vars("quantile")
-                for metric in source.data_vars
-                for q, ql in zip(quantiles, q_labels)
-            }
-        )
+        data_vars = {}
+        for metric in source.data_vars:
+            var = source[metric]
+            has_data = bool(var.notnull().any())
+            for q, ql in zip(quantiles, q_labels):
+                if has_data:
+                    data_vars[f"{metric}_{ql}"] = var.quantile(q, dim=spatial_dims).drop_vars("quantile")
+                else:
+                    # quantile mis-shapes on fully-NaN input (e.g. a baseline that aligned
+                    # to no data); emit the NaN result with the kept dims directly.
+                    reduce_dims = [d for d in spatial_dims if d in var.dims]
+                    data_vars[f"{metric}_{ql}"] = var.isel({d: 0 for d in reduce_dims}, drop=True) * np.nan
+        return xr.Dataset(data_vars)
 
     def bootstrap_summarise(
         self,

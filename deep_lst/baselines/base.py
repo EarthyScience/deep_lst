@@ -101,9 +101,12 @@ class BaselineExtractor(ABC):
         print(f"Spatial: {self.n_pixels} pixels, fill={fill:.4f} → {'sparse' if self.sparse else 'dense'} output")
 
     def _make_dataset(self, baseline: np.ndarray, test_timestamps: pd.DatetimeIndex, attrs: dict) -> xr.Dataset:
+        # Coords are float64 BY CONTRACT: the forecast zarr writes float64 lat/lon, and
+        # xarray aligns coordinates by exact value — a float32 baseline grid silently
+        # intersects to empty against a float64 forecast grid.
         if self.sparse:
-            pixel_lats = self.lats[self.local_rows]
-            pixel_lons = self.lons[self.local_cols]
+            pixel_lats = self.lats[self.local_rows].astype(np.float64)
+            pixel_lons = self.lons[self.local_cols].astype(np.float64)
             return xr.Dataset(
                 {self.var_name: (["valid_time", "pixel"], baseline)},
                 coords={
@@ -117,7 +120,11 @@ class BaselineExtractor(ABC):
         out[:, self.local_rows, self.local_cols] = baseline
         return xr.Dataset(
             {self.var_name: (["valid_time", "lat", "lon"], out)},
-            coords={"valid_time": test_timestamps.values, "lat": self.lats, "lon": self.lons},
+            coords={
+                "valid_time": test_timestamps.values,
+                "lat": self.lats.astype(np.float64),
+                "lon": self.lons.astype(np.float64),
+            },
             attrs=attrs,
         )
 
