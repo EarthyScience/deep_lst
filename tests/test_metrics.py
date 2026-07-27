@@ -303,3 +303,27 @@ def test_required_extras():
 
     assert required_extras(("rmse", "bias")) == ()
     assert required_extras(("rmse", "mae")) == ("ae_sum",)
+
+
+def test_nse_joint_masking_hand_table():
+    from deep_lst.evaluation.metrics import METRIC_REGISTRY, measures_from_stats, sufficient_stats
+
+    pred = xr.DataArray([1.0, 2.0, 3.0, 4.0, np.nan], dims="time")
+    obs = xr.DataArray([1.0, 1.0, np.nan, 2.0, 2.0], dims="time")
+    # joint samples 0, 1, 3: o = [1, 1, 2], o_mean = 4/3, ss_res = 5, ss_tot = 2/3 -> nse = -6.5
+    registry_nse = float(METRIC_REGISTRY["nse"](pred, obs, dim="time"))
+    assert np.isclose(registry_nse, -6.5)
+
+    stats = sufficient_stats(pred, obs, dim="time", extra=("o_sum", "o2_sum"))
+    chain_nse = float(measures_from_stats(stats, ("nse",))["nse"])
+    assert np.isclose(chain_nse, -6.5)
+
+
+def test_nse_chain_matches_registry_on_cube():
+    from deep_lst.evaluation.metrics import METRIC_REGISTRY, measures_from_stats, sufficient_stats
+
+    pred, obs = _synthetic_cube()
+    registry_nse = float(METRIC_REGISTRY["nse"](pred, obs, dim=list(pred.dims)))
+    stats = sufficient_stats(pred, obs, dim=list(pred.dims), extra=("o_sum", "o2_sum"))
+    chain_nse = float(measures_from_stats(stats, ("nse",))["nse"])
+    assert np.isclose(chain_nse, registry_nse, rtol=1e-4)  # float32 registry vs float64 chain sums

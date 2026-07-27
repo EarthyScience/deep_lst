@@ -118,12 +118,17 @@ def c_acc(anom_pred: xr.DataArray, anom_obs: xr.DataArray, dim) -> xr.DataArray:
 def nse(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
     """Nash-Sutcliffe Efficiency (NSE) = 1 - (SS_res / SS_tot), where:
     SS_res = sum((obs - pred)²) and SS_tot = sum((obs - obs_mean)²).
-    The sum is the sum over the time dimension.
     NSE ranges from -∞ to 1, where 1 indicates a perfect match between pred and obs.
-    """
-    ss_res = ((obs - pred) ** 2).sum(dim=dim, skipna=True)
-    obs_mean = obs.mean(dim=dim, skipna=True)  # total mean of obs across the time dimension
-    ss_tot = ((obs - obs_mean) ** 2).sum(dim=dim, skipna=True)
+
+    Both fields are masked to their common valid samples first, so SS_res and SS_tot pool
+    the SAME points; otherwise obs-only samples (e.g. water pixels the writer NaN-masks in
+    pred) enter the variance benchmark but never the error sum, biasing NSE."""
+    valid = pred.notnull() & obs.notnull()
+    p = pred.where(valid)
+    o = obs.where(valid)
+    ss_res = ((o - p) ** 2).sum(dim=dim, skipna=True)
+    obs_mean = o.mean(dim=dim, skipna=True)
+    ss_tot = ((o - obs_mean) ** 2).sum(dim=dim, skipna=True)
     return 1.0 - ss_res / ss_tot
 
 
@@ -408,7 +413,7 @@ def compute_rmse_sufficient_stats(
     return xr.Dataset({"se_sum": stats["se_sum"], "count": stats["n"]})
 
 
-_EXTRA_STATS = ("ae_sum",)
+_EXTRA_STATS = ("ae_sum", "o_sum", "o2_sum")
 
 
 def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim, extra: tuple = ()) -> xr.Dataset:
@@ -433,6 +438,14 @@ def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim, extra: tuple = 
     }
     if "ae_sum" in extra:
         stats["ae_sum"] = np.abs(signed_error).sum(dim=dim, skipna=True)
+    if "o_sum" in extra or "o2_sum" in extra:
+        # float64: the NSE finish cancels o2_sum against o_sum²/n, which float32 sums
+        # of ~300 K values cannot survive.
+        obs_valid = obs.where(valid).astype("float64")
+        if "o_sum" in extra:
+            stats["o_sum"] = obs_valid.sum(dim=dim, skipna=True)
+        if "o2_sum" in extra:
+            stats["o2_sum"] = (obs_valid**2).sum(dim=dim, skipna=True)
     return xr.Dataset(stats)
 
 
@@ -466,12 +479,23 @@ def _measure_mae(stats: xr.Dataset) -> xr.DataArray:
     return stats["ae_sum"] / stats["n"]
 
 
-MEASURES: dict[str, callable] = {"rmse": _measure_rmse, "bias": _measure_bias, "mae": _measure_mae}
+def _measure_nse(stats: xr.Dataset) -> xr.DataArray:
+    ss_tot = stats["o2_sum"] - stats["o_sum"] ** 2 / stats["n"]
+    return 1.0 - stats["se_sum"] / ss_tot
+
+
+MEASURES: dict[str, callable] = {
+    "rmse": _measure_rmse,
+    "bias": _measure_bias,
+    "mae": _measure_mae,
+    "nse": _measure_nse,
+}
 
 MEASURE_REQUIRES = {
     "rmse": ("se_sum", "n"),
     "bias": ("e_sum", "n"),
     "mae": ("ae_sum", "n"),
+    "nse": ("se_sum", "o_sum", "o2_sum", "n"),
 }
 
 
@@ -514,10 +538,13 @@ def compute_grouped_scores(
             pred_group_bin, obs_group_bin, metrics, aggregation=aggregation, reduction_order=reduction_order
         )
         dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in set(pred_group_bin.dims)] or None
+        # Joint mask: pred_mean and obs_mean average the SAME samples, so the diurnal-mean
+        # comparison is not land-only pred against land+water obs.
+        valid = pred_group_bin.notnull() & obs_group_bin.notnull()
         group_bin_scores = group_bin_scores.assign(
             {
-                "pred_mean": pred_group_bin.mean(dim=dim, skipna=True),
-                "obs_mean": obs_group_bin.mean(dim=dim, skipna=True),
+                "pred_mean": pred_group_bin.where(valid).mean(dim=dim, skipna=True),
+                "obs_mean": obs_group_bin.where(valid).mean(dim=dim, skipna=True),
             }
         )
         slices.append(group_bin_scores)
@@ -563,10 +590,11 @@ def compute_class_scores(
                 pred_class, obs_class, metrics, aggregation=aggregation, reduction_order=reduction_order
             )
             dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in set(pred_class.dims)] or None
+            valid = pred_class.notnull() & obs_class.notnull()  # same joint-mask rule as the groups
             scores = scores.assign(
                 {
-                    "pred_mean": pred_class.mean(dim=dim, skipna=True),
-                    "obs_mean": obs_class.mean(dim=dim, skipna=True),
+                    "pred_mean": pred_class.where(valid).mean(dim=dim, skipna=True),
+                    "obs_mean": obs_class.where(valid).mean(dim=dim, skipna=True),
                 }
             )
         slices.append(scores)
