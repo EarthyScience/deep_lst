@@ -233,23 +233,14 @@ def load_entities(experiment, version, eval_name, var, baselines, temporal, atta
         metrics=("rmse",),
         compute_anomaly=False,
     )
-    forecast_ds = evaluator._filter(evaluator._load_forecast())
-    if attach_classes:
-        forecast_ds = evaluator._attach_class_coords(forecast_ds)  # per-pixel class coords (kg, modis_lc, ...)
-    forecast_ds = forecast_ds.load()
-    evaluator.pred = forecast_ds[f"{var}_pred"]
-    evaluator.obs = forecast_ds[f"{var}_obs"]
+    evaluator.load()  # class coords are always attached now; attach_classes kept for API compatibility
+    evaluator.pred = evaluator.pred.load()
+    evaluator.obs = evaluator.obs.load()
 
-    obs = evaluator.obs
     predictions = {"model": evaluator.pred}
-
     for baseline in baselines:
-        evaluator.baseline = baseline
-        evaluator.baseline_ds = evaluator._load_baseline()
-        evaluator.baseline_ds = evaluator._subset_pixels(evaluator.baseline_ds, evaluator.pred.isel(lead_time=0))
-        baseline_full = evaluator._baseline_full()
-        predictions[baseline] = baseline_full.load()
-    return obs, predictions
+        predictions[baseline] = evaluator.load_baseline(baseline).load()
+    return evaluator.obs, predictions
 
 
 # --- table assembly ----------------------------------------------------------

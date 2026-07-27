@@ -15,9 +15,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from deep_lst.evaluation.conditioning import time_of_day_mask
 from deep_lst.evaluation.metrics import LEAD_DAY_BUCKETS as DAY_BUCKETS
-from deep_lst.evaluation.metrics import _acc, local_valid_hour, skill_score
+from deep_lst.evaluation.metrics import local_valid_hour
 from deep_lst.evaluation.plots._design import _LABEL_ALIASES, RC
 from deep_lst.evaluation.plots._design import CASE_COLORS as _CASE_COLORS
 from deep_lst.evaluation.plots._design import DEFAULT_COLOR as _DEFAULT_COLOR
@@ -199,58 +198,28 @@ def _day_bucket_masks(pred):
     return day_labels, day_lead_masks
 
 
-def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim=None):
-    """RMSE skill vs forecast day, one curve per baseline, split into daytime / nighttime panels.
+def skill_day_night_plot(day_skill, night_skill, var, save_path, eval_region):
+    """RMSE skill vs forecast day, one curve per baseline, daytime / nighttime panels.
 
-    Shows only the average tendency: per forecast-day bucket (24 lead-hours) and valid-hour
-    window the SSE is pooled over init_time, the bucket's lead times AND pixels into a pooled
-    RMSE, and the skill 1 - RMSE_model / RMSE_baseline is drawn as a single line per baseline.
-    Daily bucketing removes the 6-hourly aliasing of the per-lead view. No uncertainty band.
-
-    Day/night follow the established local-solar-hour windows (daytime 10–15 h, nighttime 22–03 h);
-    local hour = init hour + lead hour + lon/15 (mod 24), see metrics.local_valid_hour.
-
-    If ``clim`` (the climatological reference on the same grid as ``pred``) is given, the anomaly
-    correlation (ACC) of the model vs that climatology is added on a right-hand y-axis as a dashed
-    dark-grey line, so skill and ACC share the panel.
+    `day_skill` / `night_skill`: ``{label: skill DataArray on a 'day' dim with a
+    'day_label' coord}`` — the rmse_skill columns of the day/night forecast-day
+    products (pooled SSE per bucket x local-solar window; evaluation/products.py).
+    Pure rendering; no computation happens here.
     """
     plt.rcParams.update(RC)
-    pred = pred.isel(lead_time=slice(1, None))  # drop lead-0 placeholder
-    obs = obs.isel(lead_time=slice(1, None))
-    space = [d for d in ("lat", "lon", "pixel") if d in pred.dims]
-
-    err2_model = ((pred - obs) ** 2).load()
-    err2_baselines = {
-        label: ((field.isel(lead_time=slice(1, None)) - obs) ** 2).load() for label, field in baselines.items()
-    }
-    if clim is not None:
-        clim = clim.isel(lead_time=slice(1, None))
-        anom_pred = (pred - clim).load()
-        anom_obs = (obs - clim).load()
-
-    day_labels, day_lead_masks = _day_bucket_masks(pred)
+    first = next(iter(day_skill.values()))
+    if first.sizes.get("day", 0) == 0:
+        return
+    day_labels = first["day_label"].values
     x = np.arange(len(day_labels))
 
-    panels = (
-        ("Daytime (10–15 h local)", time_of_day_mask(pred, "day")),
-        ("Nighttime (22–03 h local)", time_of_day_mask(pred, "night")),
-    )
-
+    panels = (("Daytime (10–15 h local)", day_skill), ("Nighttime (22–03 h local)", night_skill))
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharey=True)
-    acc_axes = []
-    for ax, (panel_title, tod_mask) in zip(axes, panels):
-        for label, err2_bl in err2_baselines.items():
-            skill = []
-            for lead_mask in day_lead_masks:
-                bucket_mask = tod_mask & lead_mask
-                rmse_model = np.sqrt(
-                    err2_model.where(bucket_mask).mean(["init_time", "lead_time", *space], skipna=True)
-                )
-                rmse_bl = np.sqrt(err2_bl.where(bucket_mask).mean(["init_time", "lead_time", *space], skipna=True))
-                skill.append(float(skill_score(rmse_model, rmse_bl)))
+    for ax, (panel_title, references) in zip(axes, panels):
+        for label, skill in references.items():
             display_label = _LABEL_ALIASES.get(label, label)
             color = _CASE_COLORS.get(label, _DEFAULT_COLOR)
-            ax.plot(x, skill, color=color, linewidth=2, marker="o", markersize=6, label=display_label)
+            ax.plot(x, skill.values, color=color, linewidth=2, marker="o", markersize=6, label=display_label)
         ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
         ax.set_ylim(None, 1)
         ax.set_xticks(x)
@@ -258,38 +227,10 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim
         ax.set_xlabel("Forecast day")
         ax.set_title(panel_title)
         ax.spines["top"].set_visible(False)
-        if clim is None:
-            ax.spines["right"].set_visible(False)
-        else:
-            acc_ax = ax.twinx()
-            acc_axes.append(acc_ax)
-            acc = []
-            for lead_mask in day_lead_masks:
-                bucket_mask = tod_mask & lead_mask
-                acc.append(
-                    float(
-                        _acc(
-                            anom_pred.where(bucket_mask),
-                            anom_obs.where(bucket_mask),
-                            dim=["init_time", "lead_time", *space],
-                        )
-                    )
-                )
-            acc_ax.plot(x, acc, color="0.3", linestyle="--", linewidth=2, marker="s", markersize=4, label="ACC")
-            acc_ax.set_ylim(0, 1)
-            acc_ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
     axes[0].set_ylabel("Skill score (RMSE)")
-    if clim is not None:
-        acc_axes[0].set_yticklabels([])  # only the right-most panel shows the ACC axis
-        acc_axes[1].set_ylabel("ACC")
-        handles, labels_ = axes[1].get_legend_handles_labels()
-        acc_handles, acc_labels = acc_axes[1].get_legend_handles_labels()
-        acc_axes[1].legend(
-            handles + acc_handles, labels_ + acc_labels, title="Reference", loc="upper right", framealpha=0.9
-        )
-    else:
-        axes[0].legend(title="Reference", loc="upper right", framealpha=0.9)
+    axes[0].legend(title="Reference", loc="upper right", framealpha=0.9)
     plt.tight_layout()
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, bbox_inches="tight")
@@ -297,43 +238,28 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim
     print(f"  Saved: {save_path}")
 
 
-def acc_day_night_plot(pred, obs, clim, var, save_path, eval_region):
+def acc_day_night_plot(day_acc, night_acc, var, save_path, eval_region):
     """Anomaly correlation (ACC) vs forecast day, daytime and nighttime as two curves in one panel.
 
-    Anomalies are formed against the climatological reference `clim` (pred - clim, obs - clim).
-    Per forecast-day bucket (24 lead-hours) and valid-hour window the uncentred ACC is pooled over
-    init_time, the bucket's lead times AND pixels (daytime 10–15 h, nighttime 22–03 h local; local
-    hour = init + lead + lon/15). Daily bucketing removes the 6-hourly aliasing of the per-lead view.
-    Single panel, two curves, no uncertainty band.
+    `day_acc` / `night_acc`: ACC DataArrays on a 'day' dim with a 'day_label' coord —
+    the acc columns of the day/night anomaly products (evaluation/products.py).
+    Pure rendering; no computation happens here.
     """
     plt.rcParams.update(RC)
-    pred = pred.isel(lead_time=slice(1, None))  # drop lead-0 placeholder
-    obs = obs.isel(lead_time=slice(1, None))
-    clim = clim.isel(lead_time=slice(1, None))
-    space = [d for d in ("lat", "lon", "pixel") if d in pred.dims]
-
-    anom_pred = (pred - clim).load()
-    anom_obs = (obs - clim).load()
-
-    day_labels, day_lead_masks = _day_bucket_masks(pred)
+    if day_acc.sizes.get("day", 0) == 0:
+        return
+    day_labels = day_acc["day_label"].values
     x = np.arange(len(day_labels))
 
     cmap = plt.get_cmap("twilight_shifted")
-    panels = (
-        ("Daytime (10–15 h local)", time_of_day_mask(pred, "day"), cmap(12 / 23.0)),
-        ("Nighttime (22–03 h local)", time_of_day_mask(pred, "night"), cmap(0 / 23.0)),
+    curves = (
+        ("Daytime (10–15 h local)", day_acc, cmap(12 / 23.0)),
+        ("Nighttime (22–03 h local)", night_acc, cmap(0 / 23.0)),
     )
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    for panel_title, tod_mask, color in panels:
-        acc = []
-        for lead_mask in day_lead_masks:
-            bucket_mask = tod_mask & lead_mask
-            acc_value = _acc(
-                anom_pred.where(bucket_mask), anom_obs.where(bucket_mask), dim=["init_time", "lead_time", *space]
-            )
-            acc.append(float(acc_value))
-        ax.plot(x, acc, color=color, linewidth=2, marker="o", markersize=6, label=panel_title)
+    for curve_label, acc, color in curves:
+        ax.plot(x, acc.values, color=color, linewidth=2, marker="o", markersize=6, label=curve_label)
 
     ax.set_xticks(x)
     ax.set_xticklabels(day_labels, rotation=45)

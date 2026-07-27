@@ -86,6 +86,13 @@ PRODUCTS: dict[str, ScoreProduct] = {
     "anomaly_by_forecast_day": ScoreProduct(
         table="anomaly_profile", measures=("acc", "activity"), pool_dims=("init_time",), by=("forecast_day",)
     ),
+    # today: acc per day/night bucket inside acc_day_night_plot
+    "anomaly_by_forecast_day_daytime": ScoreProduct(
+        table="anomaly_profile", measures=("acc",), tod="day", pool_dims=("init_time",), by=("forecast_day",)
+    ),
+    "anomaly_by_forecast_day_nighttime": ScoreProduct(
+        table="anomaly_profile", measures=("acc",), tod="night", pool_dims=("init_time",), by=("forecast_day",)
+    ),
     # today: _bucket_tod_rmse inside plot_improvement_skill_maps (cumulative <= Day N buckets)
     "rmse_map_by_bucket_tod": ScoreProduct(table="map", measures=("rmse",), cumulative_days=True, with_skill=True),
 }
@@ -226,6 +233,7 @@ def compute_products(
                     bl_stats = xr.concat(bl_slices, dim=pd.Index(["day", "night"], name="tod"))
                     bl_finished = measures_from_stats(bl_stats, product.measures)
                     for measure in product.measures:
+                        finished[f"{measure}_{baseline_name}"] = bl_finished[measure]
                         finished[f"{measure}_skill_{baseline_name}"] = skill_score(
                             finished[measure], bl_finished[measure]
                         )
@@ -234,11 +242,20 @@ def compute_products(
 
         stats = _pool_product(tables[(product.table, product.tod)], product)
         finished = measures_from_stats(stats, product.measures)
+        if product.by == ("valid_day",):
+            # The monthly violins draw the bucket-pooled total as a reference line.
+            total_stats = tables[(product.table, product.tod)]
+            if product.lead_window is not None:
+                total_stats = _lead_subset(total_stats, product.lead_window)
+            totals = measures_from_stats(pool_stats(total_stats, dim=["init_time", "lead_time"]), product.measures)
+            for measure in product.measures:
+                finished[f"{measure}_total"] = totals[measure]
         if product.with_skill:
             for baseline_name, per_table in baseline_tables.items():
                 bl_stats = _pool_product(per_table[(product.table, product.tod)], product)
                 bl_finished = measures_from_stats(bl_stats, product.measures)
                 for measure in product.measures:
+                    finished[f"{measure}_{baseline_name}"] = bl_finished[measure]
                     finished[f"{measure}_skill_{baseline_name}"] = skill_score(finished[measure], bl_finished[measure])
         out[name] = finished
     return out
