@@ -133,10 +133,10 @@ def main(cfg: DictConfig) -> None:
     if config["early_stopping"]:
         callbacks.append(
             EarlyStopping(
-                monitor=config["model"].get("checkpoint_monitor", "val_loss_step_epoch"),
+                monitor=config["model"].get("checkpoint_monitor", "val_loss_step_epoch_log"),
                 mode="min",
                 patience=7,
-                min_delta=1e-4,
+                min_delta=1e-3,
                 verbose=True,
             )
         )

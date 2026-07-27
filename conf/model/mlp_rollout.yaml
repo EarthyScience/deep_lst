@@ -56,7 +56,7 @@ model:
   use_residual: true
   step_loss: RolloutLoss
   loss_fn: smooth_l1
-  checkpoint_monitor: val_loss_step_epoch
+  checkpoint_monitor: val_loss_step_epoch_log
   detach_rollout: false
   incremental_loss: true
   probabilistic: false

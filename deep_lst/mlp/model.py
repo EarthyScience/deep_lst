@@ -153,6 +153,11 @@ class LitModelModule(LightningModule):
         """Clear any accumulated state at epoch end"""
         torch.cuda.empty_cache()
 
+    def on_validation_epoch_end(self):
+        val_loss = self.trainer.callback_metrics.get("val_loss_step_epoch")
+        if val_loss is not None:
+            self.log("val_loss_step_epoch_log", torch.log(val_loss))
+
 
 def load_model(
     config: dict,
