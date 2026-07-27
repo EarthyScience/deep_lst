@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from deep_lst.evaluation.conditioning import time_of_day_mask
 from deep_lst.evaluation.evaluator import (
     ANOMALY_METRICS,
     CLIMATE_BASELINES,
@@ -12,7 +13,7 @@ from deep_lst.evaluation.evaluator import (
     EvaluatorDiagnostics,
     EvaluatorVerification,
 )
-from deep_lst.evaluation.metrics import compute_class_scores, compute_scores, local_valid_hour, skill_score
+from deep_lst.evaluation.metrics import compute_class_scores, compute_scores, skill_score
 from deep_lst.evaluation.plots.cdf import day_night_summary, lst_cdf_plot, rmse_cdf_plot
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import (
@@ -64,7 +65,6 @@ _MONTH_LABELS = {
 
 # Cumulative lead horizons (all steps up to day N) for the lead-stratified skill/improvement maps.
 _LEAD_BUCKETS = {"≤ Day 1": range(1, 25), "≤ Day 5": range(1, 121), "≤ Day 10": range(1, 241)}
-_TOD = {"day": lambda vh: (vh >= 10) & (vh <= 15), "night": lambda vh: (vh >= 22) | (vh <= 3)}
 
 
 def _fit_buckets(n_lead):
@@ -97,8 +97,7 @@ def _bucket_tod_rmse(field, obs, lead_idx, tod):
     """Per-pixel RMSE over a lead bucket, pooled over init+lead, masked to a day/night valid-hour."""
     f = field.isel(lead_time=lead_idx).load()  # small bucket; load once (lazy per-cell reduction is slow)
     o = obs.isel(lead_time=lead_idx).load()
-    valid_hour = local_valid_hour(f)  # local solar hour per longitude
-    err2 = ((f - o) ** 2).where(_TOD[tod](valid_hour))
+    err2 = ((f - o) ** 2).where(time_of_day_mask(f, tod))
     return np.sqrt(err2.mean(["init_time", "lead_time"], skipna=True))  # (lat, lon)
 
 

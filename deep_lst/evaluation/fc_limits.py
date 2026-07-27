@@ -6,7 +6,7 @@ The forecast limit is the first forecast-day bucket whose pooled RMSE skill
 
 Months are assigned by init_time (a forecast belongs to its launch month, so all
 its leads stay in one month). Day/night is the local-solar-hour window (10-15 / 22-03),
-reusing the table_runner definition. Outputs a tidy CSV (load for plotting) and two
+the single definition in evaluation/conditioning.py. Outputs a tidy CSV (load for plotting) and two
 LaTeX tables, daytime and nighttime, region x month (precompute for the paper).
 """
 
@@ -14,9 +14,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from deep_lst.evaluation.conditioning import mask_time_of_day
 from deep_lst.evaluation.latex import write_month_tables
 from deep_lst.evaluation.metrics import compute_pooled_by_day, skill_score
-from deep_lst.evaluation.table_runner import _mask_time_of_day, load_entities
+from deep_lst.evaluation.table_runner import load_entities
 
 MONTHS = list(range(1, 13))
 DAYNIGHT = ("day", "night")
@@ -45,7 +46,7 @@ def _skill_by_forecast_day(model, baseline, obs, month, kind):
     in_month = init_months == month
     model_month = model.isel(init_time=in_month)
     baseline_month = baseline.isel(init_time=in_month)
-    obs_month = _mask_time_of_day(obs.isel(init_time=in_month), kind)
+    obs_month = mask_time_of_day(obs.isel(init_time=in_month), kind)
 
     rmse_model = compute_pooled_by_day(model_month, obs_month, ["rmse"])["rmse"]
     rmse_baseline = compute_pooled_by_day(baseline_month, obs_month, ["rmse"])["rmse"]
@@ -67,13 +68,13 @@ def month_validity(obs, month, kind):
 
     Denominator = observable (ever-valid) land pixels inside the day/night window;
     numerator = the clear-sky observations among them. Returns None when the window
-    is empty. The window mask reuses table_runner's day/night definition by masking a
-    constant field, so the 10-15 / 22-03 bounds live in one place.
+    is empty. The window mask reuses the conditioning day/night definition by masking
+    a constant field, so the 10-15 / 22-03 bounds live in one place.
     """
     observable = obs.notnull().any(("init_time", "lead_time"))
     init_months = pd.DatetimeIndex(obs["init_time"].values).month
     obs_month = obs.isel(init_time=(init_months == month))
-    window = _mask_time_of_day(xr.ones_like(obs_month), kind).notnull() & observable
+    window = mask_time_of_day(xr.ones_like(obs_month), kind).notnull() & observable
     n_window = float(window.sum())
     if n_window == 0:
         return None

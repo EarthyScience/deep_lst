@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from deep_lst.evaluation.conditioning import time_of_day_mask
 from deep_lst.evaluation.metrics import LEAD_DAY_BUCKETS as DAY_BUCKETS
 from deep_lst.evaluation.metrics import _acc, local_valid_hour, skill_score
 from deep_lst.evaluation.plots._design import _LABEL_ALIASES, RC
@@ -217,7 +218,6 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim
     pred = pred.isel(lead_time=slice(1, None))  # drop lead-0 placeholder
     obs = obs.isel(lead_time=slice(1, None))
     space = [d for d in ("lat", "lon", "pixel") if d in pred.dims]
-    valid_hour = local_valid_hour(pred)  # local solar hour per longitude
 
     err2_model = ((pred - obs) ** 2).load()
     err2_baselines = {
@@ -232,8 +232,8 @@ def skill_day_night_plot(pred, obs, baselines, var, save_path, eval_region, clim
     x = np.arange(len(day_labels))
 
     panels = (
-        ("Daytime (10–15 h local)", (valid_hour >= 10) & (valid_hour <= 15)),
-        ("Nighttime (22–03 h local)", (valid_hour >= 22) | (valid_hour <= 3)),
+        ("Daytime (10–15 h local)", time_of_day_mask(pred, "day")),
+        ("Nighttime (22–03 h local)", time_of_day_mask(pred, "night")),
     )
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharey=True)
@@ -311,7 +311,6 @@ def acc_day_night_plot(pred, obs, clim, var, save_path, eval_region):
     obs = obs.isel(lead_time=slice(1, None))
     clim = clim.isel(lead_time=slice(1, None))
     space = [d for d in ("lat", "lon", "pixel") if d in pred.dims]
-    valid_hour = local_valid_hour(pred)  # local solar hour per longitude
 
     anom_pred = (pred - clim).load()
     anom_obs = (obs - clim).load()
@@ -321,8 +320,8 @@ def acc_day_night_plot(pred, obs, clim, var, save_path, eval_region):
 
     cmap = plt.get_cmap("twilight_shifted")
     panels = (
-        ("Daytime (10–15 h local)", (valid_hour >= 10) & (valid_hour <= 15), cmap(12 / 23.0)),
-        ("Nighttime (22–03 h local)", (valid_hour >= 22) | (valid_hour <= 3), cmap(0 / 23.0)),
+        ("Daytime (10–15 h local)", time_of_day_mask(pred, "day"), cmap(12 / 23.0)),
+        ("Nighttime (22–03 h local)", time_of_day_mask(pred, "night"), cmap(0 / 23.0)),
     )
 
     fig, ax = plt.subplots(figsize=(8, 4.5))

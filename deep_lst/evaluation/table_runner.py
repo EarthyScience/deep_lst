@@ -29,9 +29,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from deep_lst.evaluation.conditioning import mask_time_of_day
 from deep_lst.evaluation.evaluator import EvaluatorVerification
 from deep_lst.evaluation.latex import latex_table, write_month_tables
-from deep_lst.evaluation.metrics import local_valid_hour, pool_metric, skill_score, to_lead_hours
+from deep_lst.evaluation.metrics import pool_metric, skill_score, to_lead_hours
 from deep_lst.evaluation.plots.month_grid import (
     MONTHS,
     _latitude_labels,
@@ -87,24 +88,6 @@ def _select_window(da: xr.DataArray, window: str) -> xr.DataArray:
     else:
         keep = lead_hours >= 1
     return da.isel(lead_time=np.where(keep)[0])
-
-
-def _valid_hour(da: xr.DataArray) -> xr.DataArray:
-    """Local-solar hour-of-day of each valid time, as an (init_time, lead_time, lon) field.
-
-    Local solar (not UTC): see metrics.local_valid_hour. The day/night windows below therefore
-    track the diurnal cycle by longitude, so the 10-15 / 22-03 bounds mean local hours.
-    """
-    return local_valid_hour(da)
-
-
-def _mask_time_of_day(da: xr.DataArray, kind: str) -> xr.DataArray:
-    valid_hour = _valid_hour(da)
-    if kind == "day":
-        mask = (valid_hour >= 10) & (valid_hour <= 15)
-    else:
-        mask = (valid_hour >= 22) | (valid_hour <= 3)
-    return da.where(mask)
 
 
 def _daily_blocks(da: xr.DataArray) -> xr.DataArray:
@@ -165,9 +148,9 @@ def _column_fields(pred: xr.DataArray, obs: xr.DataArray, column: str):
     diurnally-biased cloud sampling injects a spurious daily error (daily > total).
     """
     if column == "daytime":
-        return _mask_time_of_day(pred, "day"), _mask_time_of_day(obs, "day")
+        return mask_time_of_day(pred, "day"), mask_time_of_day(obs, "day")
     if column == "nighttime":
-        return _mask_time_of_day(pred, "night"), _mask_time_of_day(obs, "night")
+        return mask_time_of_day(pred, "night"), mask_time_of_day(obs, "night")
     if column == "amplitude":
         pred = pred.where(obs.notnull())
         return _daily_amplitude(pred), _daily_amplitude(obs)
@@ -327,13 +310,13 @@ def build_tables(experiment, version, regions, var, baselines, temporal, windows
 def _month_window_rmse(model, obs, month, kind, window):
     """Pooled RMSE [K] for one (init-month, day/night, lead-window) cell, over init x leads x space.
 
-    Reuses the score-table pooling (`_select_window`, `_mask_time_of_day`, `pooled_metric`); the only
+    Reuses the score-table pooling (`_select_window`, `mask_time_of_day`, `pooled_metric`); the only
     extra axis is the init-month groupby. Returns NaN when the masked window has no valid obs.
     """
     init_months = pd.DatetimeIndex(model["init_time"].values).month
     in_month = init_months == month
     model_sel = _select_window(model.isel(init_time=in_month), window)
-    obs_sel = _select_window(_mask_time_of_day(obs.isel(init_time=in_month), kind), window)
+    obs_sel = _select_window(mask_time_of_day(obs.isel(init_time=in_month), kind), window)
     if int(obs_sel.notnull().sum()) == 0:
         return float("nan")
     return pooled_metric(model_sel, obs_sel, "rmse")
@@ -349,7 +332,7 @@ def _month_window_rmse_decomp(model, obs, month, kind, window):
     init_months = pd.DatetimeIndex(model["init_time"].values).month
     in_month = init_months == month
     model_sel = _select_window(model.isel(init_time=in_month), window)
-    obs_sel = _select_window(_mask_time_of_day(obs.isel(init_time=in_month), kind), window)
+    obs_sel = _select_window(mask_time_of_day(obs.isel(init_time=in_month), kind), window)
     raw, debiased, _ = _pooled_rmse_decomp(model_sel, obs_sel)
     return raw, debiased
 
@@ -751,7 +734,7 @@ def _print_honest_summary(display, key, decomp_full, honest):
         return
     raw, _, collapse = decomp_full
     daytime = np.full_like(raw, np.nan)
-    daytime[10:16, :] = raw[10:16, :]  # daytime hours 10-15h
+    daytime[10:16, :] = raw[10:16, :]  # hours 10-15 UTC — the fingerprint hour axis is UTC, not local solar
     if not np.isfinite(daytime).any():
         return
     hour, month = np.unravel_index(np.nanargmax(daytime), daytime.shape)
