@@ -73,7 +73,7 @@ def parse_args():
     )
     p.add_argument("--experiment", required=True)
     p.add_argument("--version", required=True)
-    p.add_argument("--baseline", nargs="+", default=["era5"])
+    p.add_argument("--baseline", nargs="+", default=["era5_land"])
     p.add_argument("--lead_time", default="3h")
     p.add_argument("--temporal", nargs="+", default=None)
     p.add_argument("--evals", nargs="+", default=_ALL_EVALS)

@@ -10,13 +10,16 @@ uv run scripts/evaluation/run_evaluation.py
     --eval sahel_niger
     --lead_time 6h
     --temporal test_period_23
-    --baselines era5 clim_smooth persistence
+    --baselines era5_land clim_smooth persistence
 
 Available --baselines:
-    era5          ERA5 skin temperature
+    era5_land     ERA5-Land skin temperature (the reference reanalysis baseline)
     clim_hourly   SEVIRI hourly climatology
     clim_smooth   SEVIRI smoothed climatology
     persistence   SEVIRI obs at init_time
+    era5          UNAVAILABLE: the era5 store carries no skt, so the files cannot be
+                  re-extracted; the existing ones are stale (float32 coords, pre-fix
+                  extraction). Do not use for paper results.
 """
 
 import argparse

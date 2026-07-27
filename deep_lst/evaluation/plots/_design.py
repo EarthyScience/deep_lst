@@ -21,6 +21,7 @@ CASE_COLORS: dict[str, str] = {
     "MLP-Rollout": "#d62728",  # red
     "MLP-Diag": "#ff7f0e",  # orange
     "ERA5": "#1f77b4",  # blue
+    "ERA5-Land": "#1f77b4",  # blue — successor to ERA5 as the reference reanalysis baseline
     "hourly clim": "#e7b800",  # muted yellow
     "smoothed clim": "#8c564b",  # dark brown
     "persistence": "#9467bd",  # purple
@@ -35,6 +36,7 @@ CASE_LINESTYLES: dict[str, str] = {
     "MLP-Rollout": "-",
     "MLP-Diag": "-",
     "ERA5": "--",
+    "ERA5-Land": "--",
     "hourly clim": "--",
     "smoothed clim": "--",
     "persistence": "--",

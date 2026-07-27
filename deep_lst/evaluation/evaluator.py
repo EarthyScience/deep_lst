@@ -24,6 +24,8 @@ from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.spatial import store_grid
 
 _BASELINE_REGISTRY: dict[str, tuple[callable, str]] = {
+    # era5: NOT re-extractable (the era5 store carries no skt); existing files are stale
+    # (float32 coords, pre-fix extraction). era5_land is the reference reanalysis baseline.
     "era5": (lambda p, n: p.baseline_path(n), "skt"),
     "era5_land": (lambda p, n: p.modality_baseline_path("era5_land", n), "skt"),
     "clim_hourly": (lambda p, n: p.climatology_path(n, "hourly"), "LST"),
