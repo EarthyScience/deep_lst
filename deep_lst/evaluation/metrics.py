@@ -1,4 +1,18 @@
-"""Metric computation for forecast evaluation."""
+"""Metric computation for forecast evaluation.
+
+Two orthogonal axes organise the measures here. Axis 1, aggregation structure:
+per-case-average scores (proper scoring rules / consistent scoring functions --
+MAE, MSE, CRPS; Gneiting & Raftery 2007, Gneiting 2011) vs composite measures
+(nonlinear functions of several averages -- RMSE, NSE, ACC, skill; Murphy &
+Winkler 1987). Axis 2, forecast object: point forecasts vs distributional ones
+(a probabilistic stats builder will mirror `sufficient_stats` when needed).
+
+The evaluation chain: conditioning (masks/labels, evaluation/conditioning.py)
+-> `sufficient_stats` (additive sums over the jointly valid samples)
+-> `pool_stats` (regroup by summing -- the only place data is combined)
+-> `measures_from_stats` (pure algebra on sums). Which tally columns a measure
+needs is declared in MEASURE_REQUIRES; its tuple length tells you its family.
+"""
 
 import numpy as np
 import pandas as pd
@@ -340,6 +354,89 @@ def compute_rmse_sufficient_stats(
             "count": se.notnull().sum(dim=space_dims),
         }
     )
+
+
+_EXTRA_STATS = ("ae_sum",)
+
+
+def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim, extra: tuple = ()) -> xr.Dataset:
+    """Additive sufficient statistics of the forecast-observation pairs, reduced over *dim*.
+
+    Always returns ``n``, ``e_sum``, ``se_sum`` (error convention ``e = pred - obs``);
+    each name in *extra* adds a variable (currently ``ae_sum``). All variables are sums
+    or counts over the jointly valid samples, so any later regrouping (`pool_stats`) is
+    exact. Choose *dim* as the dims that will never be conditioned on downstream --
+    reducing a dim is the one irreversible act in the chain.
+    """
+    unknown = set(extra) - set(_EXTRA_STATS)
+    if unknown:
+        raise ValueError(f"Unknown extra statistics: {sorted(unknown)}")
+    valid = pred.notnull() & obs.notnull()
+    signed_error = pred - obs  # joint-NaN by construction
+
+    stats = {
+        "n": valid.sum(dim=dim),
+        "e_sum": signed_error.sum(dim=dim, skipna=True),
+        "se_sum": (signed_error**2).sum(dim=dim, skipna=True),
+    }
+    if "ae_sum" in extra:
+        stats["ae_sum"] = np.abs(signed_error).sum(dim=dim, skipna=True)
+    return xr.Dataset(stats)
+
+
+def pool_stats(stats: xr.Dataset, dim=None, by: xr.DataArray | None = None) -> xr.Dataset:
+    """Sum additive statistics over *dim*; then, if *by* is given, group-by-sum over its labels.
+
+    *by* is a label DataArray on one or more of the remaining dims; the output gains one
+    dim named after ``by.name`` with one entry per unique label. Multi-dim labels (e.g.
+    valid calendar day on ``(init_time, lead_time)``) are handled by stacking the label
+    dims first, with the labels riding along as a coordinate so alignment is exact.
+    """
+    if dim is not None:
+        stats = stats.sum(dim=dim)
+    if by is None:
+        return stats
+    if by.ndim == 1:
+        return stats.groupby(by).sum(dim=by.dims[0])
+    stacked = stats.assign_coords({by.name: by}).stack(_cell=by.dims)
+    return stacked.groupby(by.name).sum(dim="_cell")
+
+
+def _measure_rmse(stats: xr.Dataset) -> xr.DataArray:
+    return np.sqrt(stats["se_sum"] / stats["n"])
+
+
+def _measure_bias(stats: xr.Dataset) -> xr.DataArray:
+    return stats["e_sum"] / stats["n"]
+
+
+def _measure_mae(stats: xr.Dataset) -> xr.DataArray:
+    return stats["ae_sum"] / stats["n"]
+
+
+MEASURES: dict[str, callable] = {"rmse": _measure_rmse, "bias": _measure_bias, "mae": _measure_mae}
+
+MEASURE_REQUIRES = {
+    "rmse": ("se_sum", "n"),
+    "bias": ("e_sum", "n"),
+    "mae": ("ae_sum", "n"),
+}
+
+
+def required_extras(measures: tuple) -> tuple:
+    """The `extra` names `sufficient_stats` must accumulate for these measures."""
+    base = {"n", "e_sum", "se_sum"}
+    needed = {name for measure in measures for name in MEASURE_REQUIRES[measure]}
+    return tuple(sorted(needed - base))
+
+
+def measures_from_stats(stats: xr.Dataset, measures: tuple) -> xr.Dataset:
+    """Evaluate verification measures from pooled sufficient statistics.
+
+    Pure algebra on sums -- no reductions happen here. An all-masked subset yields
+    ``n = 0`` and therefore NaN, which is the intended "no data" signal.
+    """
+    return xr.Dataset({name: MEASURES[name](stats) for name in measures})
 
 
 def compute_grouped_scores(

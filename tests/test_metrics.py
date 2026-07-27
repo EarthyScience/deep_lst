@@ -165,3 +165,141 @@ def test_skill_score():
     baseline = xr.DataArray([2.0, 2.0], dims="lead_time")
     result = skill_score(model, baseline)
     np.testing.assert_allclose(result.values, [0.5, 0.0])
+
+
+# --- the sufficient-statistics chain (mirrors notebooks/suffstats_chain.ipynb) ---
+
+
+def _synthetic_cube():
+    """Small (init, lead, lat, lon) forecast cube with NaNs on both sides, seeded."""
+    rng = np.random.default_rng(7)
+    init_times = pd.date_range("2024-01-01", periods=8, freq="6h")
+    lead_times = pd.timedelta_range("1h", periods=48, freq="1h")
+    shape = (8, 48, 3, 2)
+    pred_values = rng.normal(300.0, 5.0, size=shape)
+    obs_values = pred_values + rng.normal(0.0, 2.0, size=shape)
+    obs_values[rng.random(shape) < 0.15] = np.nan  # clouds
+    pred_values[rng.random(shape) < 0.03] = np.nan
+    coords = {"init_time": init_times, "lead_time": lead_times, "lat": [10.0, 10.05, 10.1], "lon": [0.0, 30.0]}
+    dims = ("init_time", "lead_time", "lat", "lon")
+    pred = xr.DataArray(pred_values, dims=dims, coords=coords)
+    obs = xr.DataArray(obs_values, dims=dims, coords=coords)
+    return pred, obs
+
+
+def test_sufficient_stats_hand_table():
+    from deep_lst.evaluation.metrics import measures_from_stats, sufficient_stats
+
+    pred = xr.DataArray([1.0, 2.0, 3.0, 4.0, np.nan], dims="time")
+    obs = xr.DataArray([1.0, 1.0, np.nan, 2.0, 2.0], dims="time")
+    stats = sufficient_stats(pred, obs, dim="time", extra=("ae_sum",))
+
+    # joint mask keeps samples 0, 1, 3; sample 2 (pred finite, obs NaN) must NOT count
+    assert int(stats["n"]) == 3
+    assert float(stats["e_sum"]) == 3.0
+    assert float(stats["se_sum"]) == 5.0
+    assert float(stats["ae_sum"]) == 3.0
+
+    finished = measures_from_stats(stats, ("rmse", "bias", "mae"))
+    assert np.isclose(float(finished["rmse"]), np.sqrt(5.0 / 3.0))
+    assert np.isclose(float(finished["bias"]), 1.0)
+    assert np.isclose(float(finished["mae"]), 1.0)
+
+
+def test_sufficient_stats_matches_legacy_rmse_stats():
+    from deep_lst.evaluation.metrics import compute_rmse_sufficient_stats, sufficient_stats
+
+    pred, obs = _synthetic_cube()
+    stats = sufficient_stats(pred, obs, dim=["lat", "lon"])
+    legacy = compute_rmse_sufficient_stats(pred, obs)
+    xr.testing.assert_allclose(stats["se_sum"], legacy["se_sum"])
+    assert int((stats["n"] - legacy["count"]).sum()) == 0
+
+
+def test_pool_stats_plain_dim_and_1d_labels():
+    from deep_lst.evaluation.metrics import pool_stats
+
+    s = xr.Dataset({"se_sum": ("t", [1.0, 2.0, 3.0, 4.0]), "n": ("t", [1, 1, 1, 1])})
+    labels = xr.DataArray([0, 0, 1, 1], dims="t", name="group")
+    pooled = pool_stats(s, by=labels)
+    assert list(pooled["se_sum"].values) == [3.0, 7.0]
+    assert list(pooled["n"].values) == [2, 2]
+
+    total = pool_stats(s, dim="t")
+    assert float(total["se_sum"]) == 10.0
+
+
+def test_pool_stats_multidim_labels():
+    from deep_lst.evaluation.metrics import pool_stats
+
+    s = xr.Dataset({"se_sum": (("a", "b"), [[1.0, 2.0, 3.0], [10.0, 20.0, 30.0]])})
+    labels = xr.DataArray([["A", "A", "B"], ["A", "B", "B"]], dims=("a", "b"), name="grp")
+    pooled = pool_stats(s, by=labels)
+    assert list(pooled["se_sum"].values) == [13.0, 53.0]  # A = 1+2+10, B = 3+20+30
+
+
+def test_chain_reproduces_compute_pooled_scores():
+    from deep_lst.evaluation.metrics import compute_pooled_scores, measures_from_stats, pool_stats, sufficient_stats
+
+    pred, obs = _synthetic_cube()
+    old = compute_pooled_scores(pred, obs, ["rmse", "bias", "mae"])
+    stats = sufficient_stats(pred, obs, dim=["lat", "lon"], extra=("ae_sum",))
+    new = measures_from_stats(pool_stats(stats, dim="init_time"), ("rmse", "bias", "mae"))
+    xr.testing.assert_allclose(new, old, rtol=1e-12)
+
+
+def test_chain_reproduces_compute_pooled_by_day():
+    from deep_lst.evaluation.conditioning import forecast_day_labels
+    from deep_lst.evaluation.metrics import compute_pooled_by_day, measures_from_stats, pool_stats, sufficient_stats
+
+    pred, obs = _synthetic_cube()
+    old = compute_pooled_by_day(pred, obs, ["rmse"])
+    stats = sufficient_stats(pred, obs, dim=["lat", "lon"])
+    new = measures_from_stats(pool_stats(stats, dim="init_time", by=forecast_day_labels(pred)), ("rmse",))
+    np.testing.assert_allclose(new["rmse"].values, old["rmse"].values, rtol=1e-12)
+
+
+def test_chain_reproduces_daily_rmse_by_valid_day():
+    from deep_lst.evaluation.conditioning import valid_day_labels
+    from deep_lst.evaluation.metrics import (
+        compute_rmse_sufficient_stats,
+        daily_rmse_by_valid_day,
+        measures_from_stats,
+        pool_stats,
+        sufficient_stats,
+    )
+
+    pred, obs = _synthetic_cube()
+    lead_idx = np.arange(24)  # forecast day 1
+    old_daily, old_total = daily_rmse_by_valid_day(compute_rmse_sufficient_stats(pred, obs), lead_idx)
+
+    stats = sufficient_stats(pred, obs, dim=["lat", "lon"]).isel(lead_time=lead_idx)
+    pooled = pool_stats(stats, by=valid_day_labels(stats))
+    pooled = pooled.where(pooled["n"] > 0, drop=True)  # the old path drops empty days
+    new_daily = measures_from_stats(pooled, ("rmse",))["rmse"]
+    new_total = measures_from_stats(pool_stats(stats, dim=["init_time", "lead_time"]), ("rmse",))["rmse"]
+
+    np.testing.assert_allclose(new_daily.values, old_daily.values, rtol=1e-12)
+    assert np.isclose(float(new_total), old_total, rtol=1e-12)
+
+
+def test_chain_reproduces_masked_pooling():
+    from deep_lst.evaluation.conditioning import time_of_day_mask
+    from deep_lst.evaluation.metrics import measures_from_stats, pool_metric, sufficient_stats
+
+    pred, obs = _synthetic_cube()
+    day_mask = time_of_day_mask(pred, "day")
+    pred_day = pred.where(day_mask)
+    obs_day = obs.where(day_mask)
+
+    old = float(pool_metric(pred_day, obs_day, "rmse", list(pred.dims)))
+    stats = sufficient_stats(pred_day, obs_day, dim=list(pred.dims))
+    new = float(measures_from_stats(stats, ("rmse",))["rmse"])
+    assert np.isclose(new, old, rtol=1e-12)
+
+
+def test_required_extras():
+    from deep_lst.evaluation.metrics import required_extras
+
+    assert required_extras(("rmse", "bias")) == ()
+    assert required_extras(("rmse", "mae")) == ("ae_sum",)

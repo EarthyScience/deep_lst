@@ -7,11 +7,12 @@ information enters as cube-aligned masks or label arrays; a label array plus
 with ``&``.
 """
 
+import numpy as np
 import xarray as xr
 
-from deep_lst.evaluation.metrics import local_valid_hour
+from deep_lst.evaluation.metrics import LEAD_DAY_BUCKETS, local_valid_hour, to_lead_hours
 
-__all__ = ["mask_time_of_day", "time_of_day_mask"]
+__all__ = ["forecast_day_labels", "mask_time_of_day", "time_of_day_mask", "valid_day_labels"]
 
 DAY_HOURS = (10, 15)
 NIGHT_HOURS = (22, 3)
@@ -34,3 +35,21 @@ def time_of_day_mask(da: xr.DataArray, kind: str) -> xr.DataArray:
 def mask_time_of_day(da: xr.DataArray, kind: str) -> xr.DataArray:
     """``da`` with everything outside the ``kind`` window set to NaN."""
     return da.where(time_of_day_mask(da, kind))
+
+
+def forecast_day_labels(da: xr.DataArray) -> xr.DataArray:
+    """Forecast day (1-10) of each lead from `LEAD_DAY_BUCKETS`; 0 for leads outside all buckets."""
+    lead_hours = to_lead_hours(da)
+    day_of_lead = np.zeros(lead_hours.size, dtype=int)
+    for day_number, (low, high) in enumerate(LEAD_DAY_BUCKETS, start=1):
+        in_bucket = (lead_hours >= low) & (lead_hours <= high)
+        day_of_lead[in_bucket] = day_number
+    return xr.DataArray(day_of_lead, dims="lead_time", name="day")
+
+
+def valid_day_labels(obj) -> xr.DataArray:
+    """Valid calendar day (init + lead, floored to days) on ``(init_time, lead_time)``."""
+    init = obj["init_time"].values[:, None]
+    lead = obj["lead_time"].values[None, :]
+    day = (init + lead).astype("datetime64[D]")
+    return xr.DataArray(day, dims=("init_time", "lead_time"), name="day")
