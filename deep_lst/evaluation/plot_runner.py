@@ -540,7 +540,7 @@ class PlotRunnerVerification:
         shift = int(pd.Timedelta(self._INIT_LEADS[0]).total_seconds() // 3600) % 24
         score_over_init_plot(
             series,
-            xlabel="Initialisation hour of day",
+            xlabel="Initialisation hour of day (UTC)",
             ylabel="RMSE (K)",
             x_kind="hour",
             legend_title="Lead time",
@@ -559,7 +559,7 @@ class PlotRunnerVerification:
             return
         diurnal_lead_lines(
             m,
-            xlabel="Initialisation hour of day",
+            xlabel="Initialisation hour of day (UTC)",
             ylabel="RMSE (K)",
             title=f"{self.ev.eval_name} — RMSE by init hour and lead (0–24 h)",
             save_path=self.plots_dir / f"{self.ev.var}_rmse_by_init_hour_leads.pdf",
@@ -596,7 +596,7 @@ class PlotRunnerVerification:
             safe = display.replace(" ", "_")
             score_over_init_plot(
                 series,
-                xlabel="Initialisation hour of day",
+                xlabel="Initialisation hour of day (UTC)",
                 ylabel="RMSE skill score",
                 x_kind="hour",
                 legend_title="Lead time",

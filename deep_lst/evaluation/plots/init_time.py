@@ -119,7 +119,7 @@ def score_over_init_plot(
             ticks = list(range(0, 24, 3))
             secax.set_xticks(ticks)
             secax.set_xticklabels([str((t + valid_shift_h) % 24) for t in ticks])
-            secax.set_xlabel("Valid hour of day")
+            secax.set_xlabel("Valid hour of day (UTC)")
     elif x_kind == "date":
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
@@ -230,7 +230,7 @@ def diurnal_lead_heatmap(
         extent=[hours.min() - 0.5, hours.max() + 0.5, lead_h.min() - 0.5, lead_h.max() + 0.5],
     )
     ax.set_xticks(range(0, 24, 3))
-    ax.set_xlabel("Initialisation hour of day")
+    ax.set_xlabel("Initialisation hour of day (UTC)")
     ax.set_ylabel("Lead time (h)")
     if title:
         ax.set_title(title)

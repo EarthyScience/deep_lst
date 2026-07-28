@@ -86,7 +86,7 @@ def diurnal_line(
             hi[~np.isfinite(vals)] = np.nan
             ax.fill_between(hours, lo, hi, color=color, alpha=0.15)
 
-    ax.set_xlabel("Hour of day (UTC)")
+    ax.set_xlabel("Local solar hour of day")
     ax.set_ylabel(ylabel or metric.upper() + " (K)")
     ax.set_xticks(np.arange(0, 24, 3))
     ax.set_xlim(-0.5, 23.5)
@@ -171,7 +171,7 @@ def diurnal_mean_plot(
         ls = CASE_LINESTYLES.get(label, BASELINE_LINESTYLE)
         ax.plot(hours, bl_mean, color=color, linestyle=ls, linewidth=1.5, label=label, alpha=0.8)
 
-    ax.set_xlabel("Hour of day (UTC)")
+    ax.set_xlabel("Local solar hour of day")
     ax.set_ylabel(f"Mean {var} (K)")
     ax.set_xticks(np.arange(0, 24, 3))
     ax.set_xlim(-0.5, 23.5)
@@ -237,7 +237,7 @@ def diurnal_delta_comparison(
             hours, pred_delta, color=color, linestyle=ls, linewidth=2, marker="o", markersize=4, label=case, alpha=0.85
         )
 
-    ax.set_xlabel("Hour of day (UTC)")
+    ax.set_xlabel("Local solar hour of day")
     ax.set_ylabel(f"Δ{var} (K/h)")
     ax.set_xticks(np.arange(0, 24, 3))
     ax.set_xlim(-0.5, 23.5)

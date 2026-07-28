@@ -247,7 +247,7 @@ def error_growth_day_night_plot(pred, obs, var, save_path, eval_region):
     lead_h = (pred["lead_time"] / np.timedelta64(1, "h")).values
     cmap = plt.get_cmap("twilight_shifted")
 
-    local_hour_bin = np.floor(valid_hour)  # local solar hour is continuous -> bin to integer hours
+    local_hour_bin = np.round(valid_hour) % 24  # nearest integer solar hour (round, matching solar_hour_shift)
     rmse_by_hour = {
         hour: np.sqrt(err2.where(local_hour_bin == hour).mean(["init_time", *space], skipna=True)).values
         for hour in range(24)
@@ -316,7 +316,7 @@ def error_growth_by_init_plot(pred, obs, var, save_path, eval_region):
     ax.set_xlabel("Forecast day")
     ax.set_ylabel(f"{var} RMSE [K]")
     ax.grid(alpha=0.3)
-    ax.legend(title="Initialisation hour", loc="upper left")
+    ax.legend(title="Initialisation hour (UTC)", loc="upper left")
     ax.set_title(f"{eval_region} — {var} RMSE growth by initialisation hour")
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, bbox_inches="tight")

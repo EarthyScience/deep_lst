@@ -215,25 +215,32 @@ def test_diag_map_and_by_time_match_registry():
 
 
 def test_diag_by_hour_matches_registry_per_hour():
+    # hour axis is LOCAL SOLAR: a pixel's UTC-hour scores appear at hour + round(lon/15)
     from deep_lst.evaluation.products import compute_diagnostic_products
 
     pred, obs = _diag_view()
     out = compute_diagnostic_products(pred, obs, ["diag_by_hour"])["diag_by_hour"]
     assert out.sizes["hour"] == 24
 
-    hours = pred["valid_time"].dt.hour.values
+    utc_hours = pred["valid_time"].dt.hour.values
     valid = pred.notnull() & obs.notnull()
-    for hour in np.unique(hours):
-        idx = np.where(hours == hour)[0]
-        pred_h = pred.isel(valid_time=idx)
-        obs_h = obs.isel(valid_time=idx)
-        ref = _ref_rmse(pred_h, obs_h, dim=["valid_time"])
-        np.testing.assert_allclose(out["rmse"].sel(hour=hour).values, ref.values, rtol=1e-4, equal_nan=True)
-        ref_mean = pred_h.where(valid.isel(valid_time=idx)).mean("valid_time", skipna=True)
-        np.testing.assert_allclose(out["pred_mean"].sel(hour=hour).values, ref_mean.values, rtol=1e-4, equal_nan=True)
-    absent = sorted(set(range(24)) - set(hours))
-    if absent:
-        assert bool(out["rmse"].sel(hour=absent).isnull().all())
+    shifts = np.round(pred["lon"].values / 15.0).astype(int)  # lons 0, 30 -> shifts 0, +2
+    assert list(shifts) == [0, 2]
+    for j, shift in enumerate(shifts):
+        for hour in np.unique(utc_hours):
+            idx = np.where(utc_hours == hour)[0]
+            solar = (hour + shift) % 24
+            pred_h = pred.isel(valid_time=idx, lon=j)
+            obs_h = obs.isel(valid_time=idx, lon=j)
+            ref = _ref_rmse(pred_h, obs_h, dim=["valid_time"])
+            got = out["rmse"].sel(hour=solar).isel(lon=j)
+            np.testing.assert_allclose(got.values, ref.values, rtol=1e-4, equal_nan=True)
+            ref_mean = pred_h.where(valid.isel(valid_time=idx, lon=j)).mean("valid_time", skipna=True)
+            got_mean = out["pred_mean"].sel(hour=solar).isel(lon=j)
+            np.testing.assert_allclose(got_mean.values, ref_mean.values, rtol=1e-4, equal_nan=True)
+        absent = sorted(set(range(24)) - set((np.unique(utc_hours) + shift) % 24))
+        if absent:
+            assert bool(out["rmse"].sel(hour=absent).isel(lon=j).isnull().all())
 
 
 def test_diag_by_class_matches_registry_per_class():

@@ -7,8 +7,8 @@ defaults:
   - horizon: h24
 
 # --- derived keys (resolved lazily by OmegaConf) ---
-_spatial:    mtg
-_experiment: ${_loss}_${_horizon}_v9
+_spatial:    mtg_new
+_experiment: ${_loss}_${_horizon}_v10
 
 # eodata-main .eozarr store names (data version)
 _seviri_store:   seviri_2016_2024
@@ -44,7 +44,7 @@ modality_ids: [era5, era5_land, seviri]
 train_dataset:
   spatial: ${_spatial}
   anchor: mtg
-  temporal: train
+  temporal: train_4x3
   era5:
     modality_id: era5
     store: ${_era5_store}

@@ -64,30 +64,44 @@ def _extract(data: "xr.DataArray | xr.Dataset", var: str | None = None) -> xr.Da
 
 
 def _to_fingerprint(da: xr.DataArray) -> np.ndarray:
-    """Bin a DataArray(valid_time, ...) into a (367, 24) DOY × hour matrix.
+    """Bin a DataArray(valid_time, ...) into a (367, 24) DOY × local-solar-hour matrix.
 
-    If the DataArray has spatial dimensions they are averaged first.
+    Pixels are grouped by their whole-hour solar shift (round(lon/15), exact for hourly
+    data); each group is spatially averaged, binned on the UTC clock and placed at its
+    solar hours, and the groups combine weighted by group size. A single-shift region
+    (every box site) reduces to the plain spatial mean, rolled. Inputs without a lon
+    coordinate (already spatially averaged) keep the UTC clock — no shift is known then.
     Cells with no observations remain NaN. DOY axis is 1-based; index 0 unused.
     """
     spatial_dims = [d for d in da.dims if d != "valid_time"]
-    if spatial_dims:
-        values = da.mean(dim=spatial_dims, skipna=True).values
-    else:
-        values = da.values.astype(float)
-
     times = pd.DatetimeIndex(da["valid_time"].values)
     doys = times.day_of_year.values
     hours = times.hour.values
 
-    mat = np.full((367, 24), np.nan, dtype=np.float32)
-    accum: dict[tuple, list] = {}
-    for i, (doy, hour) in enumerate(zip(doys, hours)):
-        v = float(values[i])
-        if np.isfinite(v):
-            accum.setdefault((doy, hour), []).append(v)
-    for (doy, hour), vals in accum.items():
-        mat[doy, hour] = float(np.mean(vals))
+    if spatial_dims and "lon" in da.coords:
+        shift_per_lon = np.round(da["lon"] / 15.0).astype(int)
+        groups = []
+        for shift in np.unique(shift_per_lon.values):
+            group_mask = shift_per_lon == shift
+            group_mean = da.where(group_mask).mean(dim=spatial_dims, skipna=True).values
+            groups.append((int(shift), group_mean, int(group_mask.sum())))
+    elif spatial_dims:
+        groups = [(0, da.mean(dim=spatial_dims, skipna=True).values, 1)]
+    else:
+        groups = [(0, da.values.astype(float), 1)]
 
+    value_sum = np.zeros((367, 24))
+    weight_sum = np.zeros((367, 24))
+    for shift, values, weight in groups:
+        solar_hours = (hours + shift) % 24
+        for i, value in enumerate(values):
+            if np.isfinite(value):
+                value_sum[doys[i], solar_hours[i]] += weight * value
+                weight_sum[doys[i], solar_hours[i]] += weight
+
+    mat = np.full((367, 24), np.nan, dtype=np.float32)
+    filled = weight_sum > 0
+    mat[filled] = value_sum[filled] / weight_sum[filled]
     return mat  # shape (367, 24); row 0 unused
 
 
@@ -196,7 +210,7 @@ def fingerprint_plot(
             interpolation="nearest",
         )
         ax.set_title(label)
-        ax.set_xlabel("Hour of day (UTC)")
+        ax.set_xlabel("Local solar hour of day")
         ax.set_xticks([0, 6, 12, 18, 23])
         ax.set_xticklabels(["00", "06", "12", "18", "23"])
         ax.set_yticks(_MONTH_DOYS)

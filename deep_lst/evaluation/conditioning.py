@@ -12,7 +12,14 @@ import xarray as xr
 
 from deep_lst.evaluation.metrics import LEAD_DAY_BUCKETS, local_valid_hour, to_lead_hours
 
-__all__ = ["forecast_day_labels", "mask_time_of_day", "time_of_day_mask", "valid_day_labels"]
+__all__ = [
+    "forecast_day_labels",
+    "mask_time_of_day",
+    "roll_hours_to_solar",
+    "solar_hour_shift",
+    "time_of_day_mask",
+    "valid_day_labels",
+]
 
 DAY_HOURS = (10, 15)
 NIGHT_HOURS = (22, 3)
@@ -56,9 +63,42 @@ def valid_day_labels(obj) -> xr.DataArray:
 
 
 def hour_of_day_labels(obj, time_dim: str = "valid_time") -> xr.DataArray:
-    """UTC hour-of-day (0-23) of each timestamp on a 1-D time dim (the diurnal groupby axis)."""
+    """UTC hour-of-day (0-23) of each timestamp on a 1-D time dim.
+
+    The UTC groupby step of the diurnal axis; `roll_hours_to_solar` relabels the
+    pooled result to local solar hours afterwards (pooling by UTC hour first keeps
+    the space dims, which a longitude-dependent label array would stack away).
+    """
     hours = obj[time_dim].dt.hour.values
     return xr.DataArray(hours, dims=time_dim, name="hour")
+
+
+def solar_hour_shift(obj) -> xr.DataArray:
+    """Whole-hour offset from UTC to local solar time per longitude, ``round(lon / 15)``.
+
+    Hourly data sits on integer UTC hours, so every sample's nearest-integer solar hour
+    is its UTC hour plus this constant per-longitude shift — switching an hour axis to
+    solar time is then a pure relabelling per longitude, never a re-pooling.
+    """
+    shift = np.round(obj["lon"].values / 15.0).astype(int)
+    lon_dim = "lon" if "lon" in obj.dims else "pixel"
+    return xr.DataArray(shift, dims=lon_dim, name="solar_shift")
+
+
+def roll_hours_to_solar(pooled: xr.Dataset) -> xr.Dataset:
+    """Relabel a UTC ``hour`` axis (0-23) to local solar hours, per longitude.
+
+    ``pooled`` carries an ``hour`` dim and a ``lon`` coordinate (the grid axis, or
+    per-pixel for sparse sites). Solar bin h at a longitude with shift s holds the
+    UTC bin (h - s) % 24 — exact for hourly data (see `solar_hour_shift`). Hours a
+    pixel never observes stay NaN, at their solar position.
+    """
+    shift = solar_hour_shift(pooled)
+    hours = pooled["hour"].values.astype(int)
+    source = (hours[:, None] - shift.values[None, :]) % 24
+    indexer = xr.DataArray(source, dims=("hour", shift.dims[0]))
+    rolled = pooled.isel(hour=indexer)
+    return rolled.assign_coords(hour=("hour", hours))
 
 
 def calendar_day_labels(obj, time_dim: str = "valid_time") -> xr.DataArray:

@@ -540,14 +540,48 @@ def run_monthly(args):
 
 
 # --- fingerprint mode: month x hour-of-day RMSE per region (one panel per lead window) ------------
+def _flat_longitudes(pooled, space):
+    """Longitude of each flattened space element, matching the transpose('cell', *space) order."""
+    template = pooled["n"].isel(cell=0, drop=True)
+    lon_full = pooled["lon"].broadcast_like(template).transpose(*space)
+    return lon_full.values.reshape(-1)
+
+
+def _roll_cells_to_solar(cells, shifts):
+    """Relabel the hour part of a (288, n_pixel) cell array from UTC to local solar hours.
+
+    Hourly data: a pixel's solar hour is its UTC hour plus the constant round(lon/15)
+    shift, so per pixel this is a pure roll of the 24-hour block inside each month.
+    """
+    grid = cells.reshape(12, 24, -1)
+    source = (np.arange(24)[:, None] - shifts[None, :]) % 24  # (24, n_pixel)
+    rolled = grid[:, source, np.arange(len(shifts))[None, :]]
+    return rolled.reshape(288, -1)
+
+
+def _roll_time_counts_to_solar(counts, shifts):
+    """Time-structure counts (per UTC cell, pixel-independent) shown on the solar hour axis.
+
+    Each pixel sees the counts of its own source UTC cell; the displayed per-cell value is
+    the median over pixels — an exact roll when the region spans a single shift (all box
+    sites), a summary for mixed-shift regions (the pan-African sparse store).
+    """
+    grid = counts.reshape(12, 24)
+    source = (np.arange(24)[:, None] - shifts[None, :]) % 24
+    per_pixel = grid[:, source]  # (12, 24, n_pixel)
+    return np.median(per_pixel, axis=2).reshape(288)
+
+
 def _month_hour_suffstats(model, obs, window):
-    """Per-pixel-per-cell sufficient stats on the month x hour grid, for one lead window.
+    """Per-pixel-per-cell sufficient stats on the month x local-solar-hour grid, for one lead window.
 
     The (sum_e, sum_e2, count) tally comes from the chain: per-sample stats pooled by the
-    joint (month, hour) cell labels, cell = (month-1)*24 + hour. n_samples (forecast
-    (init, lead) pairs per cell) and n_distinct (unique target timestamps, for the
-    pseudo-replication check) are label bookkeeping, computed from the time structure
-    alone. Shared by the raw/centered decomposition and the Bessel-corrected one.
+    joint (month, UTC hour) cell labels, cell = (month-1)*24 + hour, then the hour axis is
+    rolled to local solar hours per pixel (exact for hourly data — see conditioning.
+    solar_hour_shift). The month stays the UTC valid month (a boundary shift of up to 3 h
+    is negligible). n_samples (forecast (init, lead) pairs per cell) and n_distinct (unique
+    target timestamps, for the pseudo-replication check) are label bookkeeping from the
+    time structure alone, shown on the solar axis via the per-pixel median roll.
     """
     model_w = _select_window(model, window)
     obs_w = _select_window(obs, window)
@@ -561,9 +595,10 @@ def _month_hour_suffstats(model, obs, window):
 
     pooled = pool_stats(sample_stats(model_w, obs_w), by=cell_labels)
     pooled = pooled.reindex(cell=np.arange(288), fill_value=0)
-    sum_e = pooled["e_sum"].transpose("cell", *space).values.reshape(288, -1)
-    sum_e2 = pooled["se_sum"].transpose("cell", *space).values.reshape(288, -1)
-    count = pooled["n"].transpose("cell", *space).values.reshape(288, -1).astype(float)
+    shifts = np.round(_flat_longitudes(pooled, space) / 15.0).astype(int)
+    sum_e = _roll_cells_to_solar(pooled["e_sum"].transpose("cell", *space).values.reshape(288, -1), shifts)
+    sum_e2 = _roll_cells_to_solar(pooled["se_sum"].transpose("cell", *space).values.reshape(288, -1), shifts)
+    count = _roll_cells_to_solar(pooled["n"].transpose("cell", *space).values.reshape(288, -1).astype(float), shifts)
 
     valid_i8 = valid.asi8
     n_samples = np.zeros(288)
@@ -572,6 +607,8 @@ def _month_hour_suffstats(model, obs, window):
         rows = bucket == cell
         n_samples[cell] = int(rows.sum())
         n_distinct[cell] = np.unique(valid_i8[rows]).size
+    n_samples = _roll_time_counts_to_solar(n_samples, shifts)
+    n_distinct = _roll_time_counts_to_solar(n_distinct, shifts)
     return sum_e, sum_e2, count, n_samples, n_distinct
 
 
@@ -717,7 +754,7 @@ def _print_honest_summary(display, key, decomp_full, honest):
         return
     raw, _, collapse = decomp_full
     daytime = np.full_like(raw, np.nan)
-    daytime[10:16, :] = raw[10:16, :]  # hours 10-15 UTC — the fingerprint hour axis is UTC, not local solar
+    daytime[10:16, :] = raw[10:16, :]  # hours 10-15 local solar — same window as conditioning DAY_HOURS
     if not np.isfinite(daytime).any():
         return
     hour, month = np.unravel_index(np.nanargmax(daytime), daytime.shape)

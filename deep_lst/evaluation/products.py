@@ -346,7 +346,7 @@ def sample_stats(pred: xr.DataArray, obs: xr.DataArray) -> xr.Dataset:
 
 
 def _pool_diag(base: xr.Dataset, pool: str, time_dim: str, space_dims: list) -> xr.Dataset:
-    from deep_lst.evaluation.conditioning import calendar_day_labels, hour_of_day_labels
+    from deep_lst.evaluation.conditioning import calendar_day_labels, hour_of_day_labels, roll_hours_to_solar
 
     if pool == "time":
         return pool_stats(base, dim=[time_dim])
@@ -355,8 +355,9 @@ def _pool_diag(base: xr.Dataset, pool: str, time_dim: str, space_dims: list) -> 
     if pool == "hour":
         pooled = pool_stats(base, by=hour_of_day_labels(base, time_dim))
         # keep the full 24-hour axis: absent hours become NaN rows, matching the legacy
-        # grouped output (a 6-hourly-init single lead only populates 4 of 24 bins)
-        return pooled.reindex(hour=np.arange(24))
+        # grouped output (a 6-hourly-init single lead only populates 4 of 24 bins);
+        # then relabel to local solar hours per longitude (exact roll for hourly data)
+        return roll_hours_to_solar(pooled.reindex(hour=np.arange(24)))
     if pool == "day":
         pooled = pool_stats(base, dim=space_dims, by=calendar_day_labels(base, time_dim))
         months = pd.DatetimeIndex(pooled["day"].values).month

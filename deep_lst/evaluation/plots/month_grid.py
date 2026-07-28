@@ -169,7 +169,7 @@ def _fingerprint_panel(fig, ax, matrix, cmap, norm, bounds, title, cbar_label):
 def _hour_yaxis(ax):
     ax.set_yticks(range(0, 24, 3))
     ax.set_yticklabels([f"{hour:02d}" for hour in range(0, 24, 3)])
-    ax.set_ylabel("Hour of day (UTC)", fontweight="bold")
+    ax.set_ylabel("Local solar hour of day", fontweight="bold")
 
 
 def fingerprint_rmse_heatmap(panels, save_path, *, step=1.0):
