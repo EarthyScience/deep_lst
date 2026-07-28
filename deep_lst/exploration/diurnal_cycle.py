@@ -8,13 +8,14 @@
 #   - morning warming rate and evening cooling rate
 
 import warnings
-from multiprocessing import Pool, cpu_count
 
 import numpy as np
-import xarray as xr
 
+from deep_lst.dataset.dataset import STORE_EPOCH_OFFSET
+from deep_lst.exploration.full_store import SEVIRI_STORE, load_store_columns
 from deep_lst.exploration.plots import plot_cloudiness_heatmap, plot_cloudiness_polar, plot_diurnal_cycle
 from deep_lst.utils import ExperimentPaths
+from deep_lst.utils.spatial import store_grid
 
 
 def equation_of_time(doy):
@@ -84,58 +85,65 @@ EVAL_SITES = ["dahra", "gobabeb", "yangambi", "bouamir", "west_africa", "east_af
 PERIOD_NAMES = [f"test_period_{i:02d}" for i in range(25)]
 N_DAYS, N_HOURS = 14, 24  # each test period is exactly 14 days × 24 h
 
-# COLORS = [plt.cm.Blues(x) for x in np.linspace(0.35, 0.9, len(PERIOD_NAMES))]
-
-# Load shared time axis (identical across all eval sites)
-times = xr.open_zarr(PATHS.sampled_store_path("seviri", "eval_dahra")).time_idx.values
-
-# Dahra lat/lon center — used later for solar time offset in descriptor computation
-_n = 3201
-_lons_grid = np.linspace(-80, 80, _n)
-_lats_grid = np.linspace(80, -80, _n)
-_mapping = np.load(PATHS.eval_indices_path("seviri", "dahra"))["mapping"]
-_center_lat = _lats_grid[_mapping // _n].mean()
-_center_lon = _lons_grid[_mapping % _n].mean()
-print(
-    f"Dahra eval region — center: {_center_lat:.2f}°N, {_center_lon:.2f}°E  |  solar noon ≈ {12 - _center_lon / 15:.1f} UTC"
-)
-site_center_lons = {
-    site: _lons_grid[np.load(PATHS.eval_indices_path("seviri", site))["mapping"] % _n].mean() for site in EVAL_SITES
-}
-
 period_indices = {name: np.load(PATHS.temporal_indices_path(name))["time_indices"] for name in PERIOD_NAMES}
 
+
+def hours_to_datetime(hours):
+    """T1H positions on the 2016-01-01 hourly axis -> datetime64."""
+    return np.datetime64("2016-01-01") + hours * np.timedelta64(1, "h")
+
+
 period_labels = {
-    name: (f"{np.datetime_as_string(times[idx[0]], unit='D')} – {np.datetime_as_string(times[idx[-1]], unit='D')}")
+    name: (
+        f"{np.datetime_as_string(hours_to_datetime(idx[0]), unit='D')} – "
+        f"{np.datetime_as_string(hours_to_datetime(idx[-1]), unit='D')}"
+    )
     for name, idx in period_indices.items()
 }
 
+# Contiguous store-day window covering every test period — the only days read below.
+_all_hours = np.concatenate(list(period_indices.values()))
+DAY_LO = int((_all_hours.min() + STORE_EPOCH_OFFSET) // 24)
+DAY_HI = int((_all_hours.max() + STORE_EPOCH_OFFSET) // 24) + 1
+
+_seviri_centers = store_grid("seviri").centers  # (n_cells, 2) lon/lat
+
 
 def _load_site(site):
-    lst_full = xr.open_zarr(PATHS.sampled_store_path("seviri", f"eval_{site}"))["LST"]
+    """Site LST from the full seviri store: eval anchors ARE seviri pixels (rows pass through)."""
+    columns, _, _, anchor_ids = load_store_columns(
+        "seviri",
+        SEVIRI_STORE,
+        f"eval_{site}",
+        {"data": ["LST"]},
+        anchor="seviri",
+        day_range=(DAY_LO, DAY_HI),
+        num_workers=16,
+    )
+    lst_full = columns["data"].numpy()[:, :, 0]  # (n_pixels, n_hours_loaded)
+    center_lon = float(_seviri_centers[anchor_ids, 0].mean())
     diurnal_mean, cloudi_fraction = {}, {}
     for name, idx in period_indices.items():
-        lst_period = lst_full.isel(time_idx=idx).values  # (n_pixels, 336) — triggers compute
+        positions = idx + STORE_EPOCH_OFFSET - DAY_LO * 24
+        lst_period = lst_full[:, positions]  # (n_pixels, 336)
         cloudi_fraction[name] = np.isnan(lst_period).mean(axis=0).reshape(N_DAYS, N_HOURS)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             diurnal_mean[name] = np.nanmean(lst_period, axis=0).reshape(N_DAYS, N_HOURS)
-    print(f"  {site}: loaded {len(PERIOD_NAMES)} periods")
-    return site, diurnal_mean, cloudi_fraction
+    print(f"  {site}: loaded {len(PERIOD_NAMES)} periods ({len(anchor_ids)} pixels)")
+    return center_lon, diurnal_mean, cloudi_fraction
 
 
-with Pool(min(len(EVAL_SITES), cpu_count())) as pool:
-    results = pool.map(_load_site, EVAL_SITES)
-
-diurnal = {site: diurnal_mean for site, diurnal_mean, _ in results}
-nan_frac = {site: cloudi_fraction for site, _, cloudi_fraction in results}
+diurnal, nan_frac, site_center_lons = {}, {}, {}
+for site in EVAL_SITES:
+    site_center_lons[site], diurnal[site], nan_frac[site] = _load_site(site)
 
 
 save_dir = PATHS.results_root / "exploration" / "diurnal_cycle"
 
 
 def solar_offset(best_period, center_lon):
-    _center_ts = times[period_indices[best_period][len(period_indices[best_period]) // 2]]
+    _center_ts = hours_to_datetime(period_indices[best_period][len(period_indices[best_period]) // 2])
     _center_doy = int((_center_ts.astype("datetime64[D]") - _center_ts.astype("datetime64[Y]")).astype(int)) + 1
     offset = center_lon / 15 + equation_of_time(_center_doy) / 60
     print(

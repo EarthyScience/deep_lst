@@ -2,8 +2,8 @@
 
 score_boxplots(scores_by_group, ...)
     Cross-experiment grouped boxplots. Used by run_comparison.py.
-    Compares cases side by side, grouped by sample size (S/M/L) or
-    stratification (KG/KGLC).
+    Compares cases side by side, grouped by an axis of the historical
+    run names (sample size or stratification).
 
     Input: scores_by_group : dict[str, dict[str, xr.Dataset]]
         Outer key -- group label on x-axis, e.g. "S", "M", "L".

@@ -82,9 +82,9 @@ def load_samples(
 
 
 def _load_anchor_ids(spatial_name):
-    """Anchor cell ids for a split: global MTG ids for training, seviri equiangular pixels for
-    an eval holdout region. Stored identically across modalities, so read the seviri npz."""
-    return np.sort(np.load(PATHS.spatial_indices_path("seviri", spatial_name))["src_indices"].astype(np.int64))
+    """Anchor cell ids for a split: global MTG ids for training, seviri equiangular pixels
+    for an eval holdout region."""
+    return np.sort(np.load(PATHS.spatial_indices_path(spatial_name))["src_indices"].astype(np.int64))
 
 
 def _flatten_hours(values, valid):
@@ -118,21 +118,24 @@ def _static_column(leaf, mask):
     return column
 
 
-def _preload_pixel(reader, normalizer, pixel, select=None):
-    """Read one pixel's full day-axis and return every configured leaf as a RAM array.
+def _preload_pixel(reader, normalizer, pixel, select=None, day_range=None):
+    """Read one pixel's day-axis and return every configured leaf as a RAM array.
 
     The full leaf is read and normalized (so the positional full-set statistics align), then
     the config's variables are selected by channel — dropping a variable is a config change,
     never a statistics recompute. Hourly (data, metadata) and daily (data_daily) leaves flatten
     to a continuous hour axis (position = day * 24 + hour, the T1H index); static leaves collapse
     to one per-pixel vector. Missing values are re-injected as NaN via each leaf's data mask; int
-    categoricals keep their fill. Returns {key: hourly/daily -> (n_days * 24, C); static -> (C,)}.
+    categoricals keep their fill. day_range=(start_day, end_day) restricts the read to a store-day
+    window (default: the full preload axis). Returns {key: hourly/daily -> (n_days * 24, C);
+    static -> (C,)}.
     """
     hourly_keys = ("data", "metadata")
     daily_keys = ("data_daily",)
     static_keys = ("data_static", "data_static_categorical")
 
-    sample = reader.get_data_multi([(int(pixel), day) for day in range(PRELOAD_START_DAY, PRELOAD_END_DAY)])
+    start_day, end_day = day_range if day_range is not None else (PRELOAD_START_DAY, PRELOAD_END_DAY)
+    sample = reader.get_data_multi([(int(pixel), day) for day in range(start_day, end_day)])
     if normalizer is not None:  # None => raw values (e.g. statistics computation)
         sample = normalizer.normalize(sample)
     if select is None:  # no selection: keep every loaded leaf, all channels
@@ -154,8 +157,8 @@ def _preload_pixel(reader, normalizer, pixel, select=None):
     return columns
 
 
-def _preload_columns(reader, normalizer, pixel_ids, select=None, num_workers=1):
-    """Preload every pixel's full day-axis into RAM, one stacked entry per configured leaf.
+def _preload_columns(reader, normalizer, pixel_ids, select=None, num_workers=1, day_range=None):
+    """Preload every pixel's day-axis into RAM, one stacked entry per configured leaf.
 
     Returns {leaf_key: tensor}: hourly/daily leaves -> (n_pixels, n_days * 24, C); static leaves
     -> (n_pixels, C). select maps each leaf to the channel indices of its config variables. With
@@ -164,7 +167,7 @@ def _preload_columns(reader, normalizer, pixel_ids, select=None, num_workers=1):
     """
 
     def load(pixel):
-        return _preload_pixel(reader, normalizer, pixel, select)
+        return _preload_pixel(reader, normalizer, pixel, select, day_range)
 
     if num_workers and num_workers > 1:
         with ThreadPoolExecutor(max_workers=num_workers) as pool:

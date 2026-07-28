@@ -4,6 +4,8 @@ One-off WeatherGenerator comparison; runs its whole pipeline at import time agai
 hardcoded paths. Its imports reference the deleted legacy metrics layer
 (compute_pooled_by_day / pool_metric) -- port to the sufficient-statistics chain
 (metrics.sufficient_stats / pool_stats / measures_from_stats) before reuse.
+SEV points at a retired sampled zarr -- port the obs read to the full seviri store
+via deep_lst.exploration.full_store.load_store_columns (anchor "seviri") as well.
 """
 
 from pathlib import Path
@@ -731,7 +733,7 @@ LC_NAMES = {
     17: "Water",
 }
 
-INDICES = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/spatial/indices_eval_eval_mtg.npz"
+INDICES = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/spatial/indices_eval_eval_mtg.npz"
 classes_npz = np.load(INDICES)
 global_to_kg = dict(zip(classes_npz["mapping"].tolist(), classes_npz["kg_classes"].tolist()))
 global_to_lc = dict(zip(classes_npz["mapping"].tolist(), classes_npz["modis_lc_classes"].tolist()))

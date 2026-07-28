@@ -10,9 +10,6 @@ class ExperimentPaths:
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
     plots_root: Path = field(default_factory=lambda: Path("./plots"))
-    stores_root: Path = field(
-        default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/wegen-stores/sampled_stores/")
-    )
     eozarr_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/weathergenerator/"))
     preload_cache_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/tmp"))
     # --- directories ---
@@ -72,25 +69,20 @@ class ExperimentPaths:
         name = f"preload_{spatial}_{fingerprint}.pt" if spatial else f"preload_{fingerprint}.pt"
         return self.preload_cache_root / name
 
-    def spatial_indices_path(self, modality: str, name: str) -> Path:
-        return self.assets_root / modality / "spatial" / f"indices_{name}.npz"
+    def spatial_indices_path(self, name: str) -> Path:
+        """Anchor-id index file for a spatial selection. The ids are anchor-grid cell
+        ids (MTG for training, seviri pixels for eval regions); every modality maps
+        them to its own full-store rows at preload, so there is one file per selection."""
+        return self.assets_root / "spatial" / f"indices_{name}.npz"
 
-    def sampled_store_path(self, modality: str, spatial: str) -> Path:
-        """Resolve the sampled zarr store for *modality* and *spatial* experiment name.
-
-        e.g. sampled_store_path('seviri', 'KGLC_L') →
-             .../seviri_sampled_KGLC_L.zarr
-        """
-        return self.stores_root / f"{modality}_sampled_{spatial}.zarr"
-
-    def eval_indices_path(self, modality: str, name: str) -> Path:
-        """Resolve the dense evaluation pixel index file for *modality* and *eval name*."""
+    def eval_indices_path(self, name: str) -> Path:
+        """Resolve the dense evaluation pixel index file for *eval name*."""
         if name.startswith("train_"):
-            return self.assets_root / modality / "spatial" / f"indices_{name.removeprefix('train_')}.npz"
-        return self.assets_root / modality / "spatial" / f"indices_eval_{name}.npz"
+            return self.assets_root / "spatial" / f"indices_{name.removeprefix('train_')}.npz"
+        return self.assets_root / "spatial" / f"indices_eval_{name}.npz"
 
-    def eval_meta_path(self, modality: str) -> Path:
-        return self.assets_root / modality / "spatial" / "eval_meta.json"
+    def eval_meta_path(self) -> Path:
+        return self.assets_root / "spatial" / "eval_meta.json"
 
     @staticmethod
     def _eval_fname(eval_name: str) -> str:

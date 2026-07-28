@@ -70,7 +70,7 @@ def parse_args():
 def run_by_class(args, fc_dir, figures_dir):
     """Forecast limit per (land-cover class, month, day/night) for one site, pooling its pixels."""
     class_key = args.by_class
-    labels = json.loads(PATHS.eval_meta_path("seviri").read_text())[f"{class_key}_labels"]
+    labels = json.loads(PATHS.eval_meta_path().read_text())[f"{class_key}_labels"]
     stem = f"{args.experiment}_{args.version}_{args.baseline}_{class_key}"
 
     records = build_class_records(

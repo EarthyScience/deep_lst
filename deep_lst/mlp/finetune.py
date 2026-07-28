@@ -9,8 +9,8 @@ fields are ignored to keep the state_dict loadable.
 Usage
 -----
 uv run deep_lst/mlp/finetune.py \\
-    model=mlp_rollout stratification=KG size=L loss=crps horizon=h12 \\
-    from_run=mlp_rollout_L_KG_mse_h3_v1/version_0
+    model=mlp_rollout stratification=mtg size=L loss=smoothl1 horizon=h72 \\
+    from_run=mlp_rollout_smoothl1_h24_v9/version_0
 
 Override any single value on the CLI:
     uv run deep_lst/mlp/finetune.py ... training.max_epochs=40 checkpoint=last

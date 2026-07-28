@@ -171,7 +171,7 @@ class Evaluator:
         to the forecast pixels. Dense box regions scatter into the (lat, lon) grid via pixel_grid on
         the seviri cell centres — the same geometry the writer used.
         """
-        path = self.paths.eval_indices_path("seviri", self.eval_name)
+        path = self.paths.eval_indices_path(self.eval_name)
         if not path.exists():
             raise FileNotFoundError(f"Eval indices not found for {self.eval_name}: {path}")
         indices_ds = np.load(path)

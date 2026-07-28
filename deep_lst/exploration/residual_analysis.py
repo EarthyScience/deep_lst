@@ -27,12 +27,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
+from eodata.grids import T1H
+
+from deep_lst.exploration.full_store import SEVIRI_STORE, load_store_columns
+from deep_lst.utils.spatial import store_grid
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)  # all-NaN-slice noise from cloudy pixels
 N_THREADS = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
 ERA5_PATTERN = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/era5/eval_{}.nc"
-SAMPLED_PATTERN = "/Net/Groups/BGI/tscratch/mwessel/wegen-stores/sampled_stores/seviri_sampled_eval_{}.zarr"
 REGIONS = [
     "antananarivo",
     "bouamir",
@@ -51,35 +54,51 @@ YEAR = 2024
 DAY_HOURS = (10, 15)  # inclusive UTC valid-hour window
 NIGHT_HOURS = (22, 3)  # wraps midnight
 
+SEVIRI_LOAD = {
+    "data": ["LST"],
+    "data_daily": ["FVC", "AL-BB-DH"],
+    "data_static": ["DEM"],
+    "data_static_categorical": ["LANDCOV"],
+}
+YEAR_DAY_RANGE = (T1H.date_to_index(f"{YEAR}-01-01") // 24, T1H.date_to_index(f"{YEAR + 1}-01-01") // 24)
+
 
 # --- stage 1: build ----------------------------------------------------------
 def region_table(region):
     """Tidy per-(pixel, month) table for one region: day/night ERA5 RMSE + drivers, for YEAR."""
     era5 = xr.open_dataset(ERA5_PATTERN.format(region))
-    sampled = xr.open_zarr(SAMPLED_PATTERN.format(region))
     era5_time = pd.DatetimeIndex(era5["valid_time"].values)
-    sampled_time = pd.DatetimeIndex(sampled["time_idx"].values)
+
+    # Eval anchors ARE seviri pixels, so the full-store rows are the anchor ids themselves.
+    columns, _, _, anchor_ids = load_store_columns(
+        "seviri", SEVIRI_STORE, f"eval_{region}", SEVIRI_LOAD, anchor="seviri", day_range=YEAR_DAY_RANGE
+    )
+    lst_hourly = columns["data"].numpy()[:, :, 0]  # (n_pixel, n_hours)
+    fvc_hourly = columns["data_daily"].numpy()[:, :, 0]  # daily values, repeated per hour
+    albedo_hourly = columns["data_daily"].numpy()[:, :, 1]
+    dem = columns["data_static"].numpy()[:, 0]
+    landcov = columns["data_static_categorical"].numpy()[:, 0]
+    centers = store_grid("seviri").centers[anchor_ids]  # (n_pixel, 2) lon/lat
+    pix_lon, pix_lat = centers[:, 0], centers[:, 1]
+    n_pixel = len(anchor_ids)
+    store_time = pd.date_range(f"{YEAR}-01-01", periods=lst_hourly.shape[1], freq="h")
 
     grid_lat, grid_lon = era5["lat"].values, era5["lon"].values
-    pix_lat, pix_lon = sampled["lat"].values, sampled["lon"].values
     nearest_lat = np.abs(pix_lat[:, None] - grid_lat[None, :]).argmin(axis=1)
     nearest_lon = np.abs(pix_lon[:, None] - grid_lon[None, :]).argmin(axis=1)
-    dem = sampled["DEM"].values
-    landcov = sampled["LANDCOV"].values
-    n_pixel = sampled.sizes["spatial_idx"]
 
     months = []
     for month in range(1, 13):
         era5_idx = np.where((era5_time.year == YEAR) & (era5_time.month == month))[0]
-        sampled_idx = np.where((sampled_time.year == YEAR) & (sampled_time.month == month))[0]
-        if len(era5_idx) == 0 or len(era5_idx) != len(sampled_idx) or len(era5_idx) % 24 != 0:
+        month_idx = np.where(store_time.month == month)[0]
+        if len(era5_idx) == 0 or len(era5_idx) != len(month_idx) or len(era5_idx) % 24 != 0:
             continue
 
         era5_pix = era5["skt"].isel(valid_time=era5_idx).values[:, nearest_lat, nearest_lon]
-        lst = sampled["LST"].isel(time_idx=sampled_idx).transpose("time_idx", "spatial_idx").values
-        fvc = sampled["FVC"].isel(time_idx=sampled_idx).transpose("time_idx", "spatial_idx").values
-        albedo = sampled["AL-BB-DH"].isel(time_idx=sampled_idx).transpose("time_idx", "spatial_idx").values
-        hour = pd.DatetimeIndex(era5["valid_time"].values[era5_idx]).hour.values
+        lst = lst_hourly[:, month_idx].T  # (t, n_pixel)
+        fvc = fvc_hourly[:, month_idx].T
+        albedo = albedo_hourly[:, month_idx].T
+        hour = era5_time[era5_idx].hour.values
 
         squared_error = (era5_pix - lst) ** 2
         day_mask = (hour >= DAY_HOURS[0]) & (hour <= DAY_HOURS[1])

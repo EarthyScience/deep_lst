@@ -2,6 +2,6 @@
 eval_name: eval_mtg
 
 test_dataset:
-  spatial: eval_mtg         # your renamed 400-px sampled stores
+  spatial: eval_mtg         # 400-site MTG training-distribution holdout
   temporal: test
   anchor: mtg

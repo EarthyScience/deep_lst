@@ -67,25 +67,3 @@ class ClimatologyLookup(torch.nn.Module):
         time_window = time_idx[:, None] + offsets[None, :]
         clim_rows = self.time_to_clim_row[time_window]
         return self.clim[clim_rows, pixel_ranks[:, None]]
-
-
-if __name__ == "__main__":
-    clim_path = Path("/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/climatology_hourly/eval_KG_L.nc")
-    spatial_idx_path = Path("/Net/Groups/BGI/people/mwessel/deep_lst/assets/seviri/spatial/indices_KG_L.npz")
-    store_time_range = pd.date_range("2015-01-01", "2020-12-31 23:00:00", freq="H")
-    lookup = ClimatologyLookup(
-        clim_path,
-        spatial_idx_path,
-        lookback=24,
-        horizon=24,
-        state_mean=300.0,
-        state_std=10.0,
-        store_time_range=store_time_range,
-    )
-
-    mapping = np.load(spatial_idx_path)["mapping"]
-    spatial_idx = torch.tensor([mapping[0], mapping[1], mapping[2]])  # real flat ints
-    time_idx = torch.tensor([100, 1000, 5000])  # safely past lookback
-    clim_window = lookup.lookup_window(spatial_idx, time_idx)
-    print(clim_window.shape)  # (3, 49) with lookback=24, horizon=24
-    print(clim_window.dtype)  # float32

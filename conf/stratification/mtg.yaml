@@ -1,6 +1,4 @@
 # @package _global_
-_stratification: MT
 # MajorTom 5 km land grid — Africa subset (3000 sites, colleague's indices).
-# _spatial and _statistics are fixed (no size variants for this grid).
+# The only spatial selection; anchors are MTG cell ids (assets/spatial/indices_mtg.npz).
 _spatial: mtg
-_statistics: mtg

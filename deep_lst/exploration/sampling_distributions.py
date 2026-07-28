@@ -13,10 +13,12 @@ within-training distances defines the "training envelope" — eval samples
 beyond it occupy feature-space regions the model has not seen during
 training.
 
-Each sample is the temporal mean of ERA5 forcing at one spatial pixel over
-a configurable time window (default: 2024).  Training samples are the
-2 000 KG-stratified pixels; evaluation samples are the dense pixel sets
-within each evaluation region.
+Each sample is the temporal mean of the forcing at one anchor site over a
+configurable time window (default: 2024), read from the full era5 and
+era5_land stores via the same nearest-neighbour anchor mapping the training
+preload uses (coarse cells repeat across nearby anchors).  Training samples
+are the 3000 MTG training sites; evaluation samples are the dense pixel
+sets within each evaluation region.
 """
 
 import warnings
@@ -24,16 +26,18 @@ import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import zarr
+from eodata.grids import T1H
 from matplotlib.colors import TwoSlopeNorm
 from sklearn.decomposition import PCA
 
+from deep_lst.exploration.full_store import ERA5_LAND_STORE, ERA5_STORE, load_store_columns
 from deep_lst.utils import ExperimentPaths
+from deep_lst.utils.spatial import store_grid
 
 # ── configuration ─────────────────────────────────────────────────────────────
 PATHS = ExperimentPaths()
 
-TRAIN_NAME = "MT"
+TRAIN_SPATIAL = "mtg"
 EVAL_NAMES = [
     "dahra",
     "gobabeb",
@@ -44,7 +48,7 @@ EVAL_NAMES = [
     "johannesburg",
     "antananarivo",
 ]
-MODALITY = "era5"
+# cp (convective precipitation) is not in the era5 full store — dropped from the original list.
 FEATURE_VARS = [
     "stl1",
     "swvl1",
@@ -56,61 +60,70 @@ FEATURE_VARS = [
     "sf",
     "strd",
     "ssrd",
-    "cp",
     "tp",
     "tcwv",
     "skt",
     "tvh",
     "tvl",
 ]
+MODALITY_LOAD = {
+    "era5": {
+        "store": ERA5_STORE,
+        "data": ["u10", "v10", "sp", "sf", "strd", "ssrd", "tp", "tcwv"],
+        "data_static_categorical": ["tvh", "tvl"],
+    },
+    "era5_land": {
+        "store": ERA5_LAND_STORE,
+        "data": ["stl1", "swvl1", "t2m", "d2m", "skt"],
+    },
+}
 
 RIDGE_ALPHA = 1e-6  # added to Sigma diagonal when the condition number is high
 N_SUBSAMPLE = 500  # training points sampled for the within-training reference
-YEAR_FILTER = 2024  # restrict time window for temporal means (None = all years)
+YEAR_FILTER = 2024  # time window for the temporal means
 
 OUT_DIR = PATHS.results_root / "exploration" / "mahalanobis_distance"
 SAVE_CSV = True
 SAVE_FIGURES = True
 
-# ERA5 global 0.25-degree grid
-_ERA5_N_LON = 1440
-_ERA5_DX = 0.25
+YEAR_DAY_RANGE = (
+    T1H.date_to_index(f"{YEAR_FILTER}-01-01") // 24,
+    T1H.date_to_index(f"{YEAR_FILTER + 1}-01-01") // 24,
+)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def era5_latlon(spatial_idx: np.ndarray):
-    rows = spatial_idx // _ERA5_N_LON
-    cols = spatial_idx % _ERA5_N_LON
-    return 90.0 - rows * _ERA5_DX, cols * _ERA5_DX - 180.0
+def load_feature_matrix(spatial, anchor):
+    """Return (X, lonlat): X is (n_anchors, n_features) of temporal means, lonlat the
+    per-anchor era5 cell centres (lon, lat).
 
+    Each anchor gets its nearest era5 and era5_land cell's features; hourly variables
+    are averaged over YEAR_FILTER, static categoricals (tvh, tvl) pass through.
+    """
+    per_var = {}
+    lonlat = None
+    for modality, spec in MODALITY_LOAD.items():
+        load = {leaf: names for leaf, names in spec.items() if leaf != "store"}
+        columns, unique_rows, inverse, _ = load_store_columns(
+            modality, spec["store"], spatial, load, anchor=anchor, day_range=YEAR_DAY_RANGE, num_workers=16
+        )
+        data = columns["data"].numpy().astype(np.float64)  # (n_unique, n_hours, C)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            means = np.nanmean(data, axis=1)  # (n_unique, C)
+        for channel, var in enumerate(load["data"]):
+            per_var[var] = means[inverse, channel]
+        if "data_static_categorical" in load:
+            static = columns["data_static_categorical"].numpy().astype(np.float64)
+            for channel, var in enumerate(load["data_static_categorical"]):
+                per_var[var] = static[inverse, channel]
+        if modality == "era5":
+            lonlat = store_grid("era5").centers[unique_rows][inverse]  # (n_anchors, 2)
 
-def load_feature_matrix(store_path, feature_vars, year_filter=None):
-    """Return (X, spatial_idx) where X is (n_pixels, n_features) of temporal means."""
-    z = zarr.open(str(store_path), mode="r")
-
-    spatial_idx = z["spatial_idx"][:]
-
-    if year_filter is not None:
-        time_vals = z["time_idx"][:]
-        years = time_vals.astype("datetime64[Y]").astype(int) + 1970
-        t_idx = np.where(years == year_filter)[0]
-        # year boundaries are always contiguous — use a slice for efficiency
-        time_sel = slice(t_idx[0], t_idx[-1] + 1)
-    else:
-        time_sel = slice(None)
-
-    cols = []
-    for var in feature_vars:
-        arr = z[var]
-        if arr.ndim == 2:  # (spatial, time)
-            col = arr[:, time_sel].astype(np.float64).mean(axis=1)
-        else:  # (spatial,) static variable
-            col = arr[:].astype(np.float64)
-        cols.append(col)
-
-    return np.stack(cols, axis=1), spatial_idx
+    X = np.stack([per_var[var] for var in FEATURE_VARS], axis=1)
+    return X, lonlat
 
 
 def fit_training_distribution(X_train, ridge_alpha=1e-6):
@@ -169,8 +182,8 @@ def mahalanobis_distances(X, mu, Sigma_inv):
 
 # ── load & fit ────────────────────────────────────────────────────────────────
 
-print(f"Loading training data ({TRAIN_NAME}, year={YEAR_FILTER}) …")
-X_train, train_idx = load_feature_matrix(PATHS.sampled_store_path(MODALITY, TRAIN_NAME), FEATURE_VARS, YEAR_FILTER)
+print(f"Loading training data ({TRAIN_SPATIAL}, year={YEAR_FILTER}) …")
+X_train, _ = load_feature_matrix(TRAIN_SPATIAL, "mtg")
 n_train, n_feat = X_train.shape
 print(f"  X_train: {X_train.shape}  ({n_feat} features)")
 
@@ -194,9 +207,7 @@ summary_rows = []
 
 for name in EVAL_NAMES:
     print(f"Loading eval region '{name}' …")
-    X_eval, eval_sidx = load_feature_matrix(
-        PATHS.sampled_store_path(MODALITY, f"eval_{name}"), FEATURE_VARS, YEAR_FILTER
-    )
+    X_eval, eval_lonlat = load_feature_matrix(f"eval_{name}", "seviri")
     n_eval = len(X_eval)
 
     if n_eval < n_feat:
@@ -208,7 +219,7 @@ for name in EVAL_NAMES:
     d_eval = mahalanobis_distances(X_eval, mu, Sigma_inv)
     centroid_d = mahalanobis_distances(X_eval.mean(axis=0, keepdims=True), mu, Sigma_inv)[0]
     frac_outside = (d_eval > p95_train).mean()
-    lats, lons = era5_latlon(eval_sidx)
+    lons, lats = eval_lonlat[:, 0], eval_lonlat[:, 1]
 
     eval_results[name] = dict(
         X=X_eval,

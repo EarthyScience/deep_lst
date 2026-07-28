@@ -16,7 +16,6 @@ def paths(tmp_path):
         config_root=tmp_path / "configs",
         assets_root=tmp_path / "assets",
         plots_root=tmp_path / "plots",
-        stores_root=tmp_path / "stores",
     )
 
 
@@ -53,15 +52,11 @@ def test_statistics_path(paths, tmp_path):
 
 
 def test_spatial_indices_path(paths, tmp_path):
-    assert paths.spatial_indices_path("seviri", "train_scene_000") == (
-        tmp_path / "assets" / "seviri" / "spatial" / "indices_train_scene_000.npz"
-    )
+    assert paths.spatial_indices_path("mtg") == (tmp_path / "assets" / "spatial" / "indices_mtg.npz")
 
 
 def test_eval_indices_path(paths, tmp_path):
-    assert paths.eval_indices_path("seviri", "dahra") == (
-        tmp_path / "assets" / "seviri" / "spatial" / "indices_eval_dahra.npz"
-    )
+    assert paths.eval_indices_path("dahra") == (tmp_path / "assets" / "spatial" / "indices_eval_dahra.npz")
 
 
 def test_temporal_indices_path(paths, tmp_path):

@@ -10,7 +10,7 @@
 # timesteps from time_indices_<temporal>.npz.
 
 modality: ???          # CLI: modality=seviri | era5 | era5_land  — required
-spatial: mtg           # MTG index selection: assets/seviri/spatial/indices_<spatial>.npz
+spatial: mtg           # MTG index selection: assets/spatial/indices_<spatial>.npz
 temporal: statistics   # timestep subset:     assets/temporal/time_indices_<temporal>.npz
 anchor: mtg            # anchor grid the selection lives on
 num_workers: 8         # threads for the raw preload

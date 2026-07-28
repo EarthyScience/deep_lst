@@ -173,7 +173,7 @@ class PlotRunnerDiagnostics:
     def _class_labels(self) -> dict[str, dict]:
         if getattr(self, "_class_labels_cache", None) is not None:
             return self._class_labels_cache
-        meta_path = self.ev.paths.eval_meta_path("seviri")
+        meta_path = self.ev.paths.eval_meta_path()
         try:
             meta = json.loads(meta_path.read_text())
             labels = {coord: meta.get(f"{coord}_labels", {}) for coord in self.CLASS_COORDS}

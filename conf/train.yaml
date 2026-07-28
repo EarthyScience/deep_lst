@@ -7,8 +7,7 @@ defaults:
   - horizon: h24
 
 # --- derived keys (resolved lazily by OmegaConf) ---
-_spatial:    ${_stratification}_${_size}
-_statistics: ${_stratification}_${_size}
+_spatial:    mtg
 _experiment: ${_loss}_${_horizon}_v9
 
 # eodata-main .eozarr store names (data version)

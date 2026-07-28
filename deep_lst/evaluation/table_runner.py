@@ -425,7 +425,7 @@ def run_monthly(args):
     region_df = pd.DataFrame.from_records(
         monthly_rmse_records(args.experiment, args.version, region_specs, args.temporal, windows, args.variable)
     )
-    class_labels = json.loads(PATHS.eval_meta_path("seviri").read_text())[f"{args.by_class}_labels"]
+    class_labels = json.loads(PATHS.eval_meta_path().read_text())[f"{args.by_class}_labels"]
     class_df = pd.DataFrame.from_records(
         monthly_rmse_class_records(
             args.experiment,
