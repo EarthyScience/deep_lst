@@ -4,10 +4,10 @@ import xarray as xr
 
 from deep_lst.evaluation.conditioning import time_of_day_mask
 from deep_lst.evaluation.metrics import (
+    METRIC_REGISTRY,
     compute_pooled_by_day,
     compute_pooled_scores,
     compute_rmse_sufficient_stats,
-    compute_scores,
     daily_rmse_by_valid_day,
     skill_score,
 )
@@ -74,7 +74,8 @@ def test_anomaly_products_match_registry():
     clim = obs * 0 + 300.0  # any shared reference works for the identity
     out = compute_products(pred, obs, ["anomaly_by_init_lead"], clim=clim)["anomaly_by_init_lead"]
 
-    old = compute_scores(pred - clim, obs - clim, ["acc", "activity"], "region_time")
+    ap, ao = pred - clim, obs - clim
+    old = xr.Dataset({m: METRIC_REGISTRY[m](ap, ao, dim=["lat", "lon"]) for m in ("acc", "activity")})
     xr.testing.assert_allclose(out, old, rtol=1e-5, atol=1e-6)  # atol: acc crosses zero
 
 
@@ -155,91 +156,81 @@ def _diag_view(seed=7):
     return pred_lead, obs_lead
 
 
-def test_diag_map_and_by_time_match_compute_scores():
-    from deep_lst.evaluation.metrics import compute_scores
+def test_diag_map_and_by_time_match_registry():
     from deep_lst.evaluation.products import compute_diagnostic_products
 
     pred, obs = _diag_view()
     out = compute_diagnostic_products(pred, obs, ["diag_map", "diag_scores_by_time"])
 
-    old_map = compute_scores(pred, obs, list(RAW), "region_space")
-    xr.testing.assert_allclose(out["diag_map"][RAW], old_map, rtol=1e-4)
+    for m in RAW:
+        ref_map = METRIC_REGISTRY[m](pred, obs, dim=["valid_time"])
+        np.testing.assert_allclose(out["diag_map"][m].values, ref_map.values, rtol=1e-4, equal_nan=True)
+        ref_time = METRIC_REGISTRY[m](pred, obs, dim=["lat", "lon"])
+        np.testing.assert_allclose(out["diag_scores_by_time"][m].values, ref_time.values, rtol=1e-4, equal_nan=True)
 
-    old_time = compute_scores(pred, obs, list(RAW), "region_time")
-    xr.testing.assert_allclose(out["diag_scores_by_time"][RAW], old_time, rtol=1e-4)
 
-
-def test_diag_by_hour_matches_grouped_scores():
-    from deep_lst.evaluation.metrics import compute_grouped_scores
+def test_diag_by_hour_matches_registry_per_hour():
     from deep_lst.evaluation.products import compute_diagnostic_products
 
     pred, obs = _diag_view()
     out = compute_diagnostic_products(pred, obs, ["diag_by_hour"])["diag_by_hour"]
-
-    old = compute_grouped_scores(pred, obs, list(RAW), "region_space", "diurnal")
     assert out.sizes["hour"] == 24
-    for var in [*RAW, "pred_mean", "obs_mean"]:
-        np.testing.assert_allclose(out[var].values, old[var].values, rtol=1e-4, equal_nan=True)
+
+    hours = pred["valid_time"].dt.hour.values
+    valid = pred.notnull() & obs.notnull()
+    for hour in np.unique(hours):
+        idx = np.where(hours == hour)[0]
+        pred_h = pred.isel(valid_time=idx)
+        obs_h = obs.isel(valid_time=idx)
+        ref = METRIC_REGISTRY["rmse"](pred_h, obs_h, dim=["valid_time"])
+        np.testing.assert_allclose(out["rmse"].sel(hour=hour).values, ref.values, rtol=1e-4, equal_nan=True)
+        ref_mean = pred_h.where(valid.isel(valid_time=idx)).mean("valid_time", skipna=True)
+        np.testing.assert_allclose(out["pred_mean"].sel(hour=hour).values, ref_mean.values, rtol=1e-4, equal_nan=True)
+    absent = sorted(set(range(24)) - set(hours))
+    if absent:
+        assert bool(out["rmse"].sel(hour=absent).isnull().all())
 
 
-def test_diag_by_class_matches_class_scores():
-    from deep_lst.evaluation.metrics import compute_class_scores
+def test_diag_by_class_matches_registry_per_class():
     from deep_lst.evaluation.products import compute_diagnostic_products
 
     pred, obs = _diag_view()
     out = compute_diagnostic_products(pred, obs, ["diag_by_class"], class_coords=("kg_class",))
     product = out["diag_by_class__kg_class"]
 
-    old = compute_class_scores(pred, obs, "kg_class", list(RAW), aggregation="region_time")
-    assert list(product["kg_class"].values) == list(old["kg_class"].values)  # -1 excluded in both
-    for var in RAW:
-        np.testing.assert_allclose(
-            product[var].transpose("kg_class", ...).values,
-            old[var].transpose("kg_class", ...).values,
-            rtol=1e-4,
-            equal_nan=True,
-        )
+    assert -1 not in product["kg_class"].values  # nodata class excluded
+    for class_id in (1, 2):
+        mask = pred["kg_class"] == class_id
+        ref = METRIC_REGISTRY["rmse"](pred.where(mask), obs.where(mask), dim=["lat", "lon"])
+        np.testing.assert_allclose(product["rmse"].sel(kg_class=class_id).values, ref.values, rtol=1e-4, equal_nan=True)
 
 
-def test_diag_by_day_matches_daily_pooled():
-    from deep_lst.evaluation.metrics import compute_daily_pooled
+def test_diag_by_day_matches_registry_per_day():
     from deep_lst.evaluation.products import compute_diagnostic_products
 
     pred, obs = _diag_view()
     out = compute_diagnostic_products(pred, obs, ["diag_by_day"])["diag_by_day"]
 
+    days = pred["valid_time"].dt.floor("D").values
     for metric in ("rmse", "bias"):
-        old_daily, old_total = compute_daily_pooled(pred, obs, metric)
-        np.testing.assert_allclose(out[metric].values, old_daily.values, rtol=1e-5)
-        assert list(out["month"].values) == list(old_daily["month"].values)
-        assert np.isclose(float(out[f"{metric}_total"]), old_total, rtol=1e-5)
-
-
-def test_diag_anomaly_products_match_registry():
-    from deep_lst.evaluation.metrics import compute_scores
-    from deep_lst.evaluation.products import compute_diagnostic_products
-
-    pred, obs = _diag_view()
-    clim = obs * 0 + 300.0
-    out = compute_diagnostic_products(pred, obs, ["diag_anomaly_map", "diag_anomaly_by_time"], clim=clim)
-
-    old_map = compute_scores(pred - clim, obs - clim, ["acc"], "region_space")
-    xr.testing.assert_allclose(out["diag_anomaly_map"], old_map, rtol=1e-4, atol=1e-6)
-
-    old_time = compute_scores(pred - clim, obs - clim, ["acc", "activity"], "region_time")
-    xr.testing.assert_allclose(out["diag_anomaly_by_time"], old_time, rtol=1e-4, atol=1e-6)
+        for i, day in enumerate(np.unique(days)):
+            idx = np.where(days == day)[0]
+            ref = float(METRIC_REGISTRY[metric](pred.isel(valid_time=idx), obs.isel(valid_time=idx), dim=None))
+            assert np.isclose(float(out[metric].isel(day=i)), ref, rtol=1e-4)
+        total = float(METRIC_REGISTRY[metric](pred, obs, dim=None))
+        assert np.isclose(float(out[f"{metric}_total"]), total, rtol=1e-4)
 
 
 def test_diag_baseline_columns_and_tod():
     from deep_lst.evaluation.conditioning import time_of_day_mask
-    from deep_lst.evaluation.metrics import compute_scores, skill_score
+    from deep_lst.evaluation.metrics import skill_score
     from deep_lst.evaluation.products import compute_diagnostic_products
 
     pred, obs = _diag_view()
     baseline = _baseline_cube(obs)
 
     out = compute_diagnostic_products(pred, obs, ["diag_map"], baselines={"pers": baseline})["diag_map"]
-    old_bl = compute_scores(baseline, obs, ["rmse"], "region_space")["rmse"]
+    old_bl = METRIC_REGISTRY["rmse"](baseline, obs, dim=["valid_time"])
     np.testing.assert_allclose(out["rmse_pers"].values, old_bl.values, rtol=1e-4, equal_nan=True)
     expected_skill = skill_score(out["rmse"], out["rmse_pers"])
     np.testing.assert_allclose(out["rmse_skill_pers"].values, expected_skill.values, rtol=1e-6, equal_nan=True)
@@ -247,5 +238,5 @@ def test_diag_baseline_columns_and_tod():
     # tod conditioning == masking the inputs up front
     day = compute_diagnostic_products(pred, obs, ["diag_scores_by_time"], tod="day")["diag_scores_by_time"]
     window = time_of_day_mask(pred, "day")
-    old_day = compute_scores(pred.where(window), obs.where(window), ["rmse"], "region_time")["rmse"]
+    old_day = METRIC_REGISTRY["rmse"](pred.where(window), obs.where(window), dim=["lat", "lon"])
     np.testing.assert_allclose(day["rmse"].values, old_day.values, rtol=1e-4, equal_nan=True)

@@ -23,8 +23,8 @@ from pathlib import Path
 
 import xarray as xr
 
-from deep_lst.evaluation.evaluator import EvaluatorDiagnostics
-from deep_lst.evaluation.metrics import compute_scores
+from deep_lst.evaluation.evaluator import EvaluatorVerification
+from deep_lst.evaluation.plot_runner import _quantile_bands, _with_delta
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison
 from deep_lst.evaluation.plots.scores import score_boxplots
 from deep_lst.evaluation.plots.spectra import power_spectrum_from_forecasts
@@ -42,16 +42,6 @@ def _infer_group_label(experiment: str, group_by: str) -> str:
         return m.group(1) if m else experiment
     m = _STRAT_RE.search(experiment)
     return m.group(1) if m else experiment
-
-
-def _with_delta(ds: xr.Dataset) -> xr.Dataset:
-    group_dim = next(d for d in ds.dims if d in ("hour", "month"))
-    pm = "pred_mean_q50" if "pred_mean_q50" in ds else "pred_mean"
-    om = "obs_mean_q50" if "obs_mean_q50" in ds else "obs_mean"
-    ds = ds.copy()
-    ds["pred_delta"] = ds[pm].roll({group_dim: -1}) - ds[pm]
-    ds["obs_delta"] = ds[om].roll({group_dim: -1}) - ds[om]
-    return ds
 
 
 def parse_args():
@@ -74,22 +64,23 @@ def parse_args():
     return p.parse_args()
 
 
-def _make_eval(experiment, version, eval_name, lead_time) -> EvaluatorDiagnostics:
-    ev = EvaluatorDiagnostics(
+def _make_products(experiment, version, eval_name, lead_time, temporal) -> dict:
+    """One region's diagnostic products for the comparison: per-timestep scores + diurnal bands."""
+    ev = EvaluatorVerification(
         experiment=experiment,
         version=version,
         eval_name=eval_name,
         var="LST",
         baseline=None,
-        temporal=None,
-        aggregation="region_space",
-        groupby="diurnal",
+        temporal=temporal,
+        aggregation="region_time",
         consistent_mask=False,
         overwrite=False,
-        lead_time=lead_time,
     )
-    ev.run()
-    return ev
+    ev.load()
+    ev.compute_diagnostics(lead_time, ["diag_scores_by_time", "diag_by_hour"])
+    ev.materialise_diagnostics()
+    return ev.diag_products
 
 
 def run_comparison():
@@ -110,11 +101,13 @@ def run_comparison():
     print(f"Metric      : {args.metric}   Lead time: {args.lead_time}")
 
     # Load one evaluator per (case_type, group)
-    ev_by: dict[tuple[str, str], EvaluatorDiagnostics] = {}
+    ev_by: dict[tuple[str, str], dict] = {}
     for case_type, experiments in [("MLP-Diag", args.diag), ("MLP-Rollout", args.rollout)]:
         for i, exp in enumerate(experiments):
             try:
-                ev_by[(case_type, group_labels[i])] = _make_eval(exp, args.version, args.eval, args.lead_time)
+                ev_by[(case_type, group_labels[i])] = _make_products(
+                    exp, args.version, args.eval, args.lead_time, args.temporal
+                )
                 print(f"  [ok] {case_type} [{group_labels[i]}]: {exp}")
             except FileNotFoundError as e:
                 print(f"  [skip] {exp}: {e}")
@@ -125,10 +118,8 @@ def run_comparison():
 
     if "boxplot" in requested:
         scores_by_group: dict[str, dict[str, xr.Dataset]] = {}
-        for (case_type, group_label), ev in ev_by.items():
-            scores_by_group.setdefault(group_label, {})[case_type] = compute_scores(
-                ev.pred, ev.obs, [args.metric], "region_time"
-            )
+        for (case_type, group_label), prods in ev_by.items():
+            scores_by_group.setdefault(group_label, {})[case_type] = prods["diag_scores_by_time"]
         xlabel = "Sample size" if args.group_by == "sample_size" else "Stratification"
         score_boxplots(
             scores_by_group=scores_by_group,
@@ -144,8 +135,10 @@ def run_comparison():
             keys = [k for k in ev_by if k[0] == case_type]
             if not keys:
                 continue
-            ev = ev_by[keys[-1]]  # last = most representative experiment
-            diurnal_by_case[case_type] = _with_delta(ev.summarise(ev.grouped))
+            prods = ev_by[keys[-1]]  # last = most representative experiment
+            by_hour = prods["diag_by_hour"]
+            space_dims = [d for d in by_hour.dims if d in ("lat", "lon", "pixel")]
+            diurnal_by_case[case_type] = _with_delta(_quantile_bands(by_hour, space_dims))
         if diurnal_by_case:
             diurnal_delta_comparison(
                 diurnal_mean_by_case=diurnal_by_case,

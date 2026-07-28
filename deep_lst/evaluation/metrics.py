@@ -20,20 +20,9 @@ import xarray as xr
 
 METRIC_REGISTRY: dict[str, callable] = {}
 
-_AGGREGATION_DIMS = {
-    "total": ["valid_time", "init_time", "lat", "lon", "pixel"],
-    "region_time": ["lat", "lon", "pixel"],
-    "region_space": ["valid_time", "init_time"],
-}
-
 _REDUCTION_DIMS = {
     "time": ["valid_time", "init_time"],
     "space": ["lat", "lon", "pixel"],
-}
-
-_GROUPBY = {
-    "diurnal": (lambda da: da.dt.hour.values, "hour", np.arange(24)),
-    "monthly": (lambda da: da.dt.month.values, "month", np.arange(1, 13)),
 }
 
 # Inclusive lead-hour bounds of each forecast day (24 h blocks). Single source of truth shared by
@@ -199,25 +188,6 @@ def skill_score(model_score, baseline_score):
     return 1.0 - model_score / baseline_score
 
 
-def compute_scores(
-    pred: xr.DataArray,
-    obs: xr.DataArray,
-    metrics: list[str] | None = None,
-    aggregation: str = "total",
-) -> xr.Dataset:
-    """Compute metrics between pred and obs, reducing over the dims of `aggregation`.
-
-    "total" pools over every dim -- the former nested metric-of-metric estimator
-    (reduction_order) is gone, so "total" has exactly one semantics: pooled.
-    """
-    available_dims = set(pred.dims)
-    dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in available_dims] or None
-    data_vars = {}
-    for name in metrics:
-        data_vars[name] = METRIC_REGISTRY[name](pred, obs, dim=dim)
-    return xr.Dataset(data_vars)
-
-
 def pool_metric(pred: xr.DataArray, obs: xr.DataArray, metric: str, dim) -> xr.DataArray:
     """Reduce one registered metric over `dim` in the squared-error domain."""
     return METRIC_REGISTRY[metric](pred, obs, dim=dim)
@@ -308,55 +278,6 @@ def compute_pooled_by_day(
         return xr.Dataset()
     ds = xr.Dataset(parts)
     return ds.assign_coords(day_label=("day", [f"Day {d}" for d in ds["day"].values]))
-
-
-def compute_daily_pooled(
-    pred: xr.DataArray,
-    obs: xr.DataArray,
-    metric: str,
-) -> tuple[xr.DataArray, float]:
-    """Daily pooled metric (one value per calendar day) and the total pooled over everything.
-
-    Each daily value pools over space and that calendar day's timesteps in the squared-error domain;
-    the total pools over all dims. For the monthly violins: per month the distribution of daily
-    scores, with the total as a reference line. Returns (daily_scores, total) where daily_scores is a
-    DataArray on a 'day' dim with a 'month' coord.
-    """
-    time_dim = next(d for d in ("valid_time", "init_time") if d in pred.dims)
-
-    if metric in MEASURES:
-        # Chain path: one stats pass + a day-label groupby-sum, instead of one eager
-        # metric evaluation per calendar day (the measured hotspot of the Diag workers).
-        space_dims = [d for d in pred.dims if d != time_dim]
-        stats = sufficient_stats(pred, obs, dim=space_dims, extra=required_extras((metric,)))
-        day_labels = xr.DataArray(pred[time_dim].dt.floor("D").values, dims=time_dim, name="day")
-        pooled = pool_stats(stats, by=day_labels)
-        daily_scores = measures_from_stats(pooled, (metric,))[metric]
-        months = pd.DatetimeIndex(daily_scores["day"].values).month
-        daily_scores = daily_scores.assign_coords(month=("day", months))
-        total_stats = pool_stats(stats, dim=time_dim)
-        total = float(measures_from_stats(total_stats, (metric,))[metric])
-        return daily_scores, total
-
-    day_key = pred[time_dim].dt.floor("D").values
-    unique_days = np.unique(day_key)
-
-    values, days = [], []
-    for day in unique_days:
-        idx = np.where(day_key == day)[0]
-        pred_day = pred.isel({time_dim: idx})
-        obs_day = obs.isel({time_dim: idx})
-        values.append(float(METRIC_REGISTRY[metric](pred_day, obs_day, dim=list(pred_day.dims))))
-        days.append(day)
-
-    months = pd.DatetimeIndex(days).month
-    daily_scores = xr.DataArray(
-        values,
-        dims="day",
-        coords={"day": np.array(days), "month": ("day", months)},
-    )
-    total = float(METRIC_REGISTRY[metric](pred, obs, dim=list(pred.dims)))
-    return daily_scores, total
 
 
 def daily_rmse_by_valid_day(rmse_stats: xr.Dataset, lead_idx: np.ndarray) -> tuple[xr.DataArray, float]:
@@ -539,84 +460,3 @@ def measures_from_stats(stats: xr.Dataset, measures: tuple) -> xr.Dataset:
             raise KeyError(f"No finisher for measure {name!r}")
         finished[name] = finisher(stats)
     return xr.Dataset(finished)
-
-
-def compute_grouped_scores(
-    pred: xr.DataArray,
-    obs: xr.DataArray,
-    metrics: list[str] | None = None,
-    aggregation: str = "total",
-    groupby: str = "diurnal",
-) -> xr.Dataset:
-    # detect time dimension (valid_time or init_time) for grouping
-    time_dim = next(dim for dim in ("valid_time", "init_time") if dim in pred.dims)
-    get_group, dim_name, dim_values = _GROUPBY[groupby]
-    group_idx = get_group(pred[time_dim])
-
-    slices = []
-    for group_bin in dim_values:
-        idx = np.where(group_idx == group_bin)[0]
-        pred_group_bin = pred.isel({time_dim: idx})
-        obs_group_bin = obs.isel({time_dim: idx})
-
-        group_bin_scores = compute_scores(pred_group_bin, obs_group_bin, metrics, aggregation=aggregation)
-        dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in set(pred_group_bin.dims)] or None
-        # Joint mask: pred_mean and obs_mean average the SAME samples, so the diurnal-mean
-        # comparison is not land-only pred against land+water obs.
-        valid = pred_group_bin.notnull() & obs_group_bin.notnull()
-        group_bin_scores = group_bin_scores.assign(
-            {
-                "pred_mean": pred_group_bin.where(valid).mean(dim=dim, skipna=True),
-                "obs_mean": obs_group_bin.where(valid).mean(dim=dim, skipna=True),
-            }
-        )
-        slices.append(group_bin_scores)
-
-    ds = xr.concat(slices, dim=pd.Index(dim_values, name=dim_name))
-
-    return ds
-
-
-def compute_class_scores(
-    pred: xr.DataArray,
-    obs: xr.DataArray,
-    class_coord: str,
-    metrics: list[str] | None = None,
-    groupby: str | None = None,
-    aggregation: str = "total",
-) -> xr.Dataset:
-    if class_coord not in pred.coords:
-        raise ValueError(f"Class coordinate '{class_coord}' not found in data coords.")
-
-    class_bins = np.unique(pred[class_coord].values)
-    class_bins = class_bins[class_bins != -1]  # Exclude invalid class bin if present
-    if len(class_bins) == 0:
-        # No valid class bins (e.g. anomaly path with all-NaN pixels filtering everything to -1).
-        return xr.Dataset()
-    slices = []
-    for class_bin in class_bins:
-        pred_class = pred.where(pred.coords[class_coord] == class_bin)
-        obs_class = obs.where(obs.coords[class_coord] == class_bin)
-
-        if groupby is not None:
-            scores = compute_grouped_scores(
-                pred_class,
-                obs_class,
-                metrics,
-                aggregation=aggregation,
-                groupby=groupby,
-            )
-        else:
-            scores = compute_scores(pred_class, obs_class, metrics, aggregation=aggregation)
-            dim = [d for d in _AGGREGATION_DIMS[aggregation] if d in set(pred_class.dims)] or None
-            valid = pred_class.notnull() & obs_class.notnull()  # same joint-mask rule as the groups
-            scores = scores.assign(
-                {
-                    "pred_mean": pred_class.where(valid).mean(dim=dim, skipna=True),
-                    "obs_mean": obs_class.where(valid).mean(dim=dim, skipna=True),
-                }
-            )
-        slices.append(scores)
-
-    ds = xr.concat(slices, dim=pd.Index(class_bins, name=class_coord))
-    return ds

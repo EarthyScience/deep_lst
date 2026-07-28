@@ -300,7 +300,7 @@ class DiagnosticProduct:
 
 
 DIAG_PRODUCTS: dict[str, DiagnosticProduct] = {
-    # today: EvaluatorDiagnostics.scores (region_space) + plot_score_map / plot_improvement_map
+    # replaces legacy per-pixel scores (region_space) + plot_score_map / plot_improvement_map
     "diag_map": DiagnosticProduct(measures=DIAG_RAW, pool="time", with_baselines=True),
     "diag_anomaly_map": DiagnosticProduct(measures=("acc",), pool="time", anomaly=True),
     # today: plot_error_overview's region_time scores
@@ -309,7 +309,7 @@ DIAG_PRODUCTS: dict[str, DiagnosticProduct] = {
     # today: grouped / climate_grouped (diurnal, region_space) incl. pred_mean/obs_mean
     "diag_by_hour": DiagnosticProduct(measures=DIAG_RAW, pool="hour", with_baselines=True, with_means=True),
     "diag_anomaly_by_hour": DiagnosticProduct(measures=("acc", "activity"), pool="hour", anomaly=True, with_means=True),
-    # today: plot_class_score_violin's compute_class_scores (expanded per class coord present)
+    # replaces legacy class scores (expanded per class coord present)
     "diag_by_class": DiagnosticProduct(measures=DIAG_RAW, pool="class"),
     "diag_anomaly_by_class": DiagnosticProduct(measures=("acc", "activity"), pool="class", anomaly=True),
     # today: daily_pooled / daily_pooled_anom (monthly violins; adds {measure}_total)

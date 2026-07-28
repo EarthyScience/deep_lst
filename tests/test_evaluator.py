@@ -2,13 +2,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from deep_lst.evaluation.evaluator import Evaluator
 from deep_lst.evaluation.products import align_baseline
-
-
-class _DummyEvaluator(Evaluator):
-    def _compute(self):
-        pass
 
 
 def _make_baseline_full_inputs():

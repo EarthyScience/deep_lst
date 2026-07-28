@@ -2,12 +2,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from deep_lst.evaluation.metrics import (
-    compute_daily_pooled,
-    compute_grouped_scores,
-    compute_scores,
-    to_valid_time,
-)
+from deep_lst.evaluation.metrics import to_valid_time
 from deep_lst.evaluation.products import align_baseline, compute_diagnostic_products, compute_products
 from deep_lst.evaluation.spatial import pixel_grid
 from deep_lst.utils import ExperimentPaths
@@ -33,9 +28,8 @@ CLIMATE_BASELINES = ("clim_smooth", "clim_hourly")
 class Evaluator:
     """Shared loading and the product contract: load() / load_baseline() / compute() / materialise().
 
-    Finished products land in self.products (see evaluation/products.py for the catalogue).
-    `EvaluatorDiagnostics` adds the legacy single-lead run()/_compute path on top, pending
-    its fold into products.
+    Finished products land in self.products / self.diag_products (see
+    evaluation/products.py for both catalogues).
     """
 
     def __init__(
@@ -275,27 +269,6 @@ class Evaluator:
         idx = [lookup[(float(la), float(lo))] for la, lo in zip(p_lats, p_lons)]
         return baseline_ds.isel(pixel=idx)
 
-    def summarise(self, source: xr.Dataset, quantiles=(0.05, 0.50, 0.95)) -> xr.Dataset:
-        keep_dim = next((d for d in source.dims if d in ("lead_time", "hour", "month")), None)
-        first_metric = next(iter(source.data_vars.values()))
-        spatial_dims = [d for d in first_metric.dims if d != keep_dim]
-        if not spatial_dims:
-            return source
-        q_labels = [f"q{int(q * 100):02d}" for q in quantiles]
-        data_vars = {}
-        for metric in source.data_vars:
-            var = source[metric]
-            has_data = bool(var.notnull().any())
-            for q, ql in zip(quantiles, q_labels):
-                if has_data:
-                    data_vars[f"{metric}_{ql}"] = var.quantile(q, dim=spatial_dims).drop_vars("quantile")
-                else:
-                    # quantile mis-shapes on fully-NaN input (e.g. a baseline that aligned
-                    # to no data); emit the NaN result with the kept dims directly.
-                    reduce_dims = [d for d in spatial_dims if d in var.dims]
-                    data_vars[f"{metric}_{ql}"] = var.isel({d: 0 for d in reduce_dims}, drop=True) * np.nan
-        return xr.Dataset(data_vars)
-
     def bootstrap_summarise(
         self,
         stats: xr.Dataset,
@@ -346,127 +319,9 @@ class Evaluator:
         return xr.Dataset(data_vars, coords={"lead_time": stats["lead_time"].values})
 
 
-class EvaluatorDiagnostics(Evaluator):
-    """Fixed lead time → valid_time space. Standard metrics, diurnal, spatial.
-
-    Stores two independent score datasets:
-      self.scores         — raw-field metrics over RAW_METRICS (rmse/mae/bias/nse)
-      self.climate_scores — anomaly metrics over ANOMALY_METRICS (acc/activity),
-                            populated only when a climate baseline is loaded; else None.
-    Same separation applies to self.grouped vs self.climate_grouped.
-    """
-
-    def __init__(
-        self,
-        experiment,
-        version,
-        eval_name,
-        var,
-        baseline,
-        temporal,
-        aggregation,
-        groupby,
-        consistent_mask,
-        overwrite,
-        lead_time,
-    ):
-        super().__init__(
-            experiment,
-            version,
-            eval_name,
-            var,
-            baseline,
-            temporal,
-            aggregation,
-            consistent_mask,
-            overwrite,
-        )
-        self.lead_time = lead_time
-        self.groupby = groupby
-
-    def run(self, forecast_ds=None):
-        """Legacy single-lead entry: load, align the configured baseline, fill the score attributes."""
-        if forecast_ds is not None:
-            self.forecast_ds = forecast_ds
-        else:
-            self.forecast_ds = self._load_forecast()
-            self.forecast_ds = self._filter(self.forecast_ds)
-
-        self.forecast_ds = self._attach_class_coords(self.forecast_ds)
-
-        self.pred = self.forecast_ds[f"{self.var}_pred"]
-        self.obs = self.forecast_ds[f"{self.var}_obs"]
-
-        self.baseline_ds = self._load_baseline()  # raw, unaligned
-
-        if self.baseline_ds is not None:
-            self.baseline_ds = self._subset_pixels(self.baseline_ds, self.pred.isel(lead_time=0))
-            self._check_baseline_coords(self.baseline_ds, self.baseline)
-
-        self._compute()
-
-    def _compute(self):
-        self.pred = to_valid_time(self.pred.sel(lead_time=self.lead_time), self.lead_time)
-        self.obs = to_valid_time(self.obs.sel(lead_time=self.lead_time), self.lead_time)
-
-        self.scores = compute_scores(self.pred, self.obs, RAW_METRICS, self.aggregation)
-        self.grouped = compute_grouped_scores(self.pred, self.obs, RAW_METRICS, self.aggregation, self.groupby)
-        # Per-metric (daily_scores, total) for the monthly violins -- daily pooled over space + the
-        # calendar day's timesteps, total pooled over everything. Computed here so plot_runner stays thin.
-        self.daily_pooled = {m: compute_daily_pooled(self.pred, self.obs, m) for m in RAW_METRICS}
-
-        self.pred_anom = None
-        self.obs_anom = None
-        self.climate_scores = None
-        self.climate_grouped = None
-        self.daily_pooled_anom = None
-
-        if self.baseline_ds is not None:
-            aligned = self._align_baseline(self.obs["valid_time"].values)
-            aligned_masked = aligned.where(np.isfinite(self.pred))
-            self.baseline_aligned = aligned_masked
-
-            self.baseline_scores = compute_scores(aligned_masked, self.obs, RAW_METRICS, self.aggregation)
-            self.baseline_grouped = compute_grouped_scores(
-                aligned_masked, self.obs, RAW_METRICS, self.aggregation, self.groupby
-            )
-
-            if self.baseline in CLIMATE_BASELINES:
-                self.pred_anom = self.pred - self.baseline_aligned
-                self.obs_anom = self.obs - self.baseline_aligned
-                self.climate_scores = compute_scores(self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation)
-                self.climate_grouped = compute_grouped_scores(
-                    self.pred_anom, self.obs_anom, ANOMALY_METRICS, self.aggregation, self.groupby
-                )
-                self.daily_pooled_anom = {
-                    m: compute_daily_pooled(self.pred_anom, self.obs_anom, m) for m in ANOMALY_METRICS
-                }
-        else:
-            self.baseline_aligned = None
-            self.baseline_scores = None
-            self.baseline_grouped = None
-
-
 class EvaluatorVerification(Evaluator):
     """Full (init_time, lead_time) verification on evaluation products.
 
     Use load() / load_baseline() / compute(products) / materialise(); the finished
     datasets land in self.products (see evaluation/products.py for the catalogue).
     """
-
-
-def run_evaluators_across_sites(
-    ev_kwargs: dict,
-    eval_names: list[str],
-    baseline: str | None = None,
-) -> dict[str, EvaluatorDiagnostics]:
-    """Run EvaluatorDiagnostics for each eval region, skipping missing forecasts."""
-    results = {}
-    for eval_region in eval_names:
-        try:
-            evaluator = EvaluatorDiagnostics(**ev_kwargs, eval_name=eval_region, baseline=baseline)
-            evaluator.run()
-            results[eval_region] = evaluator
-        except FileNotFoundError:
-            print(f"  [skip] {eval_region}: forecast not found")
-    return results

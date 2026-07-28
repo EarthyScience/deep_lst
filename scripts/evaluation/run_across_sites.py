@@ -24,7 +24,7 @@ import argparse
 
 import numpy as np
 
-from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, run_evaluators_across_sites
+from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, EvaluatorVerification
 from deep_lst.evaluation.plots.across_sites import (
     cross_site_acc_boxplot,
     cross_site_rmse_boxplot,
@@ -36,6 +36,7 @@ PATHS = ExperimentPaths()
 
 _BASELINES = {
     "era5": "ERA5",
+    "era5_land": "ERA5-Land",
     "clim_hourly": "Climatology",
     "clim_smooth": "Climatology (smooth)",
     "persistence": "Persistence",
@@ -92,50 +93,57 @@ def run_across_sites():
     print(f"Experiment      : {args.experiment} / {args.version}")
     print(f"Baselines       : {args.baseline}   Lead time: {args.lead_time}")
 
-    # aggregation="region_time" → scores have shape (valid_time,), one value per timestep.
-    # All metrics come from ev.scores / ev.baseline_scores / ev.climate_scores; no compute_scores in this script.
-    ev_kwargs = dict(
-        experiment=args.experiment,
-        version=args.version,
-        var="LST",
-        temporal=args.temporal,
-        aggregation="region_time",
-        groupby="diurnal",
-        consistent_mask=False,
-        overwrite=False,
-        lead_time=args.lead_time,
-    )
-
-    model_evs = run_evaluators_across_sites(ev_kwargs, args.evals, baseline=None)
-    baseline_evs = {b: run_evaluators_across_sites(ev_kwargs, args.evals, baseline=b) for b in args.baseline}
-
-    # Proper (anomaly) ACC requires a climate baseline; pick the first one passed.
+    # Per-timestep (region_time) scores per region, from two diagnostic products:
+    # diag_scores_by_time carries the model + per-baseline columns, diag_anomaly_by_time the ACC.
     climate_baseline = next((b for b in args.baseline if b in CLIMATE_BASELINES), None)
-    acc_source_evs = baseline_evs[climate_baseline] if climate_baseline else None
-    if acc_source_evs is None:
+    if climate_baseline is None:
         print("  [warn] No climate baseline in --baseline; ACC will be skipped.")
+    products = ["diag_scores_by_time"] + (["diag_anomaly_by_time"] if climate_baseline else [])
+
+    region_products = {}
+    for region in args.evals:
+        ev = EvaluatorVerification(
+            experiment=args.experiment,
+            version=args.version,
+            eval_name=region,
+            var="LST",
+            baseline=None,
+            temporal=args.temporal,
+            aggregation="region_time",
+            consistent_mask=False,
+            overwrite=False,
+        )
+        try:
+            ev.load()
+            ev.compute_diagnostics(
+                args.lead_time, products, baselines=tuple(args.baseline), clim_baseline=climate_baseline
+            )
+            ev.materialise_diagnostics()
+        except FileNotFoundError as error:
+            print(f"  [skip] {region}: {error}")
+            continue
+        region_products[region] = ev.diag_products
+        print(f"  [ok] {region}")
 
     model_rmse, acc_vals, nse_vals = {}, {}, {}
-    for region, evaluator in model_evs.items():
-        rmse = evaluator.scores["rmse"].values
+    baselines_rmse = {_BASELINES.get(b, b): {} for b in args.baseline}
+    for region, prods in region_products.items():
+        by_time = prods["diag_scores_by_time"]
+        rmse = by_time["rmse"].values
         model_rmse[region] = rmse[np.isfinite(rmse)]
-        nse = evaluator.scores["nse"].values.ravel()
+        nse = by_time["nse"].values.ravel()
         if np.isfinite(nse).any():
             nse_vals[region] = nse[np.isfinite(nse)]
-        if acc_source_evs is not None and region in acc_source_evs:
-            cs = acc_source_evs[region].climate_scores
-            if cs is not None and "acc" in cs:
-                acc = cs["acc"].values.ravel()
-                if np.isfinite(acc).any():
-                    acc_vals[region] = acc[np.isfinite(acc)]
-
-    baselines_rmse = {}
-    for baseline, evaluator in baseline_evs.items():
-        label = _BASELINES[baseline]
-        baselines_rmse[label] = {
-            region: ev_bl.baseline_scores["rmse"].values[np.isfinite(ev_bl.baseline_scores["rmse"].values)]
-            for region, ev_bl in evaluator.items()
-        }
+        for baseline in args.baseline:
+            column = f"rmse_{baseline}"
+            if column in by_time:
+                values = by_time[column].values
+                baselines_rmse[_BASELINES.get(baseline, baseline)][region] = values[np.isfinite(values)]
+        anomaly = prods.get("diag_anomaly_by_time")
+        if anomaly is not None and "acc" in anomaly:
+            acc = anomaly["acc"].values.ravel()
+            if np.isfinite(acc).any():
+                acc_vals[region] = acc[np.isfinite(acc)]
 
     # --- apply display names ---
     model_rmse = {_REGION_DISPLAY.get(r, r): v for r, v in model_rmse.items()}

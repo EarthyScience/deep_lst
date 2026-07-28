@@ -72,6 +72,17 @@ def _grid_vmax(tod_values, labels, percentile, use_abs):
     return float(np.nanpercentile(pooled, percentile)) if pooled.size else None
 
 
+def _with_delta(ds: xr.Dataset) -> xr.Dataset:
+    """Add pred_delta / obs_delta (circular roll) to a banded grouped dataset."""
+    group_dim = next(d for d in ds.dims if d in ("hour", "month"))
+    pm_key = "pred_mean_q50" if "pred_mean_q50" in ds else "pred_mean"
+    om_key = "obs_mean_q50" if "obs_mean_q50" in ds else "obs_mean"
+    ds = ds.copy()
+    ds["pred_delta"] = ds[pm_key].roll({group_dim: -1}) - ds[pm_key]
+    ds["obs_delta"] = ds[om_key].roll({group_dim: -1}) - ds[om_key]
+    return ds
+
+
 def _quantile_bands(source, dims, quantiles=(0.05, 0.50, 0.95)):
     """Render-side q05/q50/q95 bands over `dims` for every variable (legacy summarise schema).
 
@@ -251,29 +262,19 @@ class PlotRunnerDiagnostics:
                 title=f"{self.ev.eval_name} — {m.upper()} (diurnal)",
             )
 
-    def _with_delta(self, ds: xr.Dataset) -> xr.Dataset:
-        """Add pred_delta / obs_delta (circular roll) to a banded grouped dataset."""
-        group_dim = next(d for d in ds.dims if d in ("hour", "month"))
-        pm_key = "pred_mean_q50" if "pred_mean_q50" in ds else "pred_mean"
-        om_key = "obs_mean_q50" if "obs_mean_q50" in ds else "obs_mean"
-        ds = ds.copy()
-        ds["pred_delta"] = ds[pm_key].roll({group_dim: -1}) - ds[pm_key]
-        ds["obs_delta"] = ds[om_key].roll({group_dim: -1}) - ds[om_key]
-        return ds
-
     @_requires("diag_by_hour")
     def plot_grouped_delta(self):
         product = self._product("diag_by_hour")
         if product is None:
             return
         bands = _quantile_bands(product, self._space_dims(product))
-        cases = {self.label: self._with_delta(bands)}
+        cases = {self.label: _with_delta(bands)}
         for name, display in self.baseline_labels.items():
             pm_key = f"pred_mean_{name}_q50"
             if pm_key not in bands:
                 continue
             entity = xr.Dataset({"pred_mean_q50": bands[pm_key], "obs_mean_q50": bands["obs_mean_q50"]})
-            cases[display] = self._with_delta(entity)
+            cases[display] = _with_delta(entity)
         diurnal_delta_comparison(
             cases,
             var=self.ev.var,

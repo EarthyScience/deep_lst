@@ -154,8 +154,8 @@ def category_score_violinplot(
     Parameters
     ----------
     scores : xr.Dataset
-        Output of ``compute_grouped_scores(..., aggregation="region_time")`` or
-        ``compute_class_scores(..., aggregation="region_time")``. Must contain
+        A per-timestep or per-class score dataset (diag_scores_by_time /
+        diag_by_class products, evaluation/products.py). Must contain
         ``metric`` with dims ``(category_dim, valid_time)``.
     metric : str
         Variable in ``scores`` to plot.
@@ -234,7 +234,7 @@ def monthly_daily_violin(
     ----------
     daily_scores : xr.DataArray
         Per-calendar-day pooled metric on a ``day`` dim with a ``month`` coord
-        (see metrics.compute_daily_pooled). Each violin is the distribution of daily
+        (the diag_by_day product). Each violin is the distribution of daily
         scores within that month.
     total : float
         Pooled-over-all score, drawn as a vertical reference line (the table's total).
@@ -374,7 +374,7 @@ def error_overview_plot(
     ----------
     scores_by_case : dict[str, xr.Dataset]
         ``{case_label: scores_dataset}`` -- output of
-        ``compute_scores(..., aggregation="region_time")`` for the model
+        the diag_scores_by_time product (per-timestep scores) for the model
         and each baseline. Each dataset has dim ``valid_time``.
     metric : str
         Which variable to plot. Default: "rmse".
