@@ -7,11 +7,8 @@ import xarray as xr
 
 from deep_lst.evaluation.evaluator import (
     ANOMALY_METRICS,
-    CLIMATE_BASELINES,
     RAW_METRICS,
-    EvaluatorDiagnostics,
 )
-from deep_lst.evaluation.metrics import compute_class_scores, compute_scores
 from deep_lst.evaluation.plots.cdf import day_night_summary, lst_cdf_plot, rmse_cdf_plot
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison, diurnal_line, diurnal_mean_plot
 from deep_lst.evaluation.plots.error_growth import (
@@ -75,334 +72,28 @@ def _grid_vmax(tod_values, labels, percentile, use_abs):
     return float(np.nanpercentile(pooled, percentile)) if pooled.size else None
 
 
-class PlotRunnerDiagnostics:
-    def __init__(
-        self,
-        evaluator: EvaluatorDiagnostics,
-        label: str,
-        plots_dir: Path,
-        baseline_evaluators: dict[str, EvaluatorDiagnostics] | None = None,
-        class_coords: tuple[str, ...] = (
-            "kg_class",
-            "kg_major",
-            "kg_classes",
-            "biome_classes",
-            "modis_lc_classes",
-            "ecoregion_classes",
-        ),
-    ):
-        self.ev = evaluator
-        self.label = label
-        self.plots_dir = Path(plots_dir)
-        self.baselines = baseline_evaluators or {}  # {display_label: EvaluatorDiagnostics}
-        self.class_coords = class_coords
+def _quantile_bands(source, dims, quantiles=(0.05, 0.50, 0.95)):
+    """Render-side q05/q50/q95 bands over `dims` for every variable (legacy summarise schema).
 
-        # The primary evaluator runs with baseline=None and cannot compute
-        # anomalies on its own. Copy them across from the climate-baseline
-        # evaluator (same model pred/obs, with clim_smooth subtracted) so
-        # self.ev exposes climate_scores/climate_grouped/pred_anom/obs_anom
-        # for all downstream anomaly plots.
-        clim_ev = next(
-            (bl for bl in self.baselines.values() if bl.baseline in CLIMATE_BASELINES),
-            None,
-        )
-        if clim_ev is not None and clim_ev.climate_scores is not None:
-            self.ev.pred_anom = clim_ev.pred_anom
-            self.ev.obs_anom = clim_ev.obs_anom
-            self.ev.climate_scores = clim_ev.climate_scores
-            self.ev.climate_grouped = clim_ev.climate_grouped
-
-    def run(self, plots: list[str] | None = None):
-        requested = set(plots) if plots else None
-        for name in sorted(dir(self)):
-            if name.startswith("plot_"):
-                if requested is None or name[5:] in requested:
-                    getattr(self, name)()
-
-    # --- fast eval ---
-
-    def plot_timeseries(self):
-        timeseries_plot(
-            self.ev.forecast_ds,
-            var=self.ev.var,
-            save_path=self.plots_dir / f"{self.ev.var}_timeseries.pdf",
-            eval_region=self.ev.eval_name,
-        )
-
-    def plot_temporal_power_spectrum(self):
-        diffs = np.diff(self.ev.pred["valid_time"].values).astype("timedelta64[h]").astype(float)
-        dt_hours = float(np.median(diffs[diffs > 0])) if len(diffs) > 0 else 1.0
-        spectra = {
-            self.label: compute_temporal_power_spectrum(
-                self.ev.pred.transpose("valid_time", ...).values, dt_hours=dt_hours
-            )
-        }
-        obs_spectrum = compute_temporal_power_spectrum(
-            self.ev.obs.transpose("valid_time", ...).values, dt_hours=dt_hours
-        )
-        temporal_power_spectrum_plot(
-            pred_spectra_by_case=spectra,
-            obs_spectrum=obs_spectrum,
-            var=self.ev.var,
-            save_path=self.plots_dir / f"{self.ev.var}_temporal_power_spectrum.pdf",
-            eval_region=self.ev.eval_name,
-        )
-
-    # --- grouped (diurnal / monthly) ---
-
-    def plot_grouped_mean(self):
-        summarised = self.ev.summarise(self.ev.grouped)
-        bl_means = {
-            label: bl_ev.summarise(bl_ev.baseline_grouped)["pred_mean_q50"].values
-            for label, bl_ev in self.baselines.items()
-            if getattr(bl_ev, "baseline_grouped", None) is not None
-        }
-        diurnal_mean_plot(
-            summarised,
-            var=self.ev.var,
-            baselines_mean=bl_means or None,
-            save_path=self.plots_dir / f"{self.ev.var}_grouped_mean.pdf",
-            eval_region=self.ev.eval_name,
-            case_label=self.label,
-        )
-
-    def plot_grouped_scores(self):
-        # Raw-field metrics: from self.ev.grouped (rmse, mae, bias, nse).
-        summarised = self.ev.summarise(self.ev.grouped)
-        for m in RAW_METRICS:
-            if m not in self.ev.grouped:
-                continue
-            diurnal_line(
-                {self.label: summarised},
-                metric=m,
-                save_path=self.plots_dir / f"{self.ev.var}_grouped_{m}.pdf",
-                title=f"{self.ev.eval_name} — {m.upper()} ({self.ev.groupby})",
-            )
-        # Anomaly metrics: from self.ev.climate_grouped (acc, activity).
-        if self.ev.climate_grouped is None:
-            return
-        summarised_anom = self.ev.summarise(self.ev.climate_grouped)
-        for m in ANOMALY_METRICS:
-            if m not in self.ev.climate_grouped:
-                continue
-            diurnal_line(
-                {self.label: summarised_anom},
-                metric=m,
-                save_path=self.plots_dir / f"{self.ev.var}_grouped_{m}.pdf",
-                title=f"{self.ev.eval_name} — {m.upper()} ({self.ev.groupby})",
-            )
-
-    def _class_labels(self) -> dict[str, dict]:
-        if getattr(self, "_class_labels_cache", None) is not None:
-            return self._class_labels_cache
-        meta_path = self.ev.paths.eval_meta_path("seviri")
-        try:
-            meta = json.loads(meta_path.read_text())
-            labels = {coord: meta.get(f"{coord}_labels", {}) for coord in self.class_coords}
-        except FileNotFoundError:
-            labels = {coord: {} for coord in self.class_coords}
-        self._class_labels_cache = labels
-        return labels
-
-    def plot_monthly_score_violin(self):
-        # Per month, the distribution of daily pooled scores (horizontal violins) with the total
-        # pooled score as a vertical reference line. Computed on the evaluator (self.ev.daily_pooled).
-        daily_pooled = dict(self.ev.daily_pooled)
-        if self.ev.daily_pooled_anom is not None:
-            daily_pooled.update(self.ev.daily_pooled_anom)
-        for m, (daily_scores, total) in daily_pooled.items():
-            monthly_daily_violin(
-                daily_scores,
-                total,
-                metric=m,
-                case_label=self.label,
-                month_labels=_MONTH_LABELS,
-                title=f"{self.ev.eval_name} — {m.upper()} by month (lead_time={self.ev.lead_time})",
-                save_path=self.plots_dir / f"{self.ev.var}_monthly_score_violin_{m}.pdf",
-            )
-
-    def plot_class_score_violin(self):
-        available = [c for c in self.class_coords if c in self.ev.pred.coords]
-        labels_by_coord = self._class_labels()
-        for class_coord in available:
-            labels = labels_by_coord.get(class_coord) or None
-            # Raw-field metrics
-            raw_scores = compute_class_scores(
-                self.ev.pred, self.ev.obs, class_coord=class_coord, metrics=RAW_METRICS, aggregation="region_time"
-            )
-            for m in RAW_METRICS:
-                if m not in raw_scores:
-                    continue
-                category_score_violinplot(
-                    raw_scores,
-                    metric=m,
-                    category_dim=class_coord,
-                    case_label=self.label,
-                    category_labels=labels,
-                    xlabel=class_coord,
-                    title=f"{self.ev.eval_name} — {m.upper()} by {class_coord} (lead_time={self.ev.lead_time})",
-                    save_path=self.plots_dir / f"{self.ev.var}_class_score_violin_{class_coord}_{m}.pdf",
-                )
-            # Anomaly metrics
-            if self.ev.pred_anom is None:
-                continue
-            anom_scores = compute_class_scores(
-                self.ev.pred_anom,
-                self.ev.obs_anom,
-                class_coord=class_coord,
-                metrics=ANOMALY_METRICS,
-                aggregation="region_time",
-            )
-            for m in ANOMALY_METRICS:
-                if m not in anom_scores:
-                    continue
-                category_score_violinplot(
-                    anom_scores,
-                    metric=m,
-                    category_dim=class_coord,
-                    case_label=self.label,
-                    category_labels=labels,
-                    xlabel=class_coord,
-                    title=f"{self.ev.eval_name} — {m.upper()} by {class_coord} (lead_time={self.ev.lead_time})",
-                    save_path=self.plots_dir / f"{self.ev.var}_class_score_violin_{class_coord}_{m}.pdf",
-                )
-
-    # --- benchmark (silently skip if no baselines) ---
-
-    def plot_error_overview(self):
-        if not self.baselines:
-            return
-        # Raw-field metrics: model + every baseline as side-by-side boxes.
-        raw_cases = {self.label: compute_scores(self.ev.pred, self.ev.obs, RAW_METRICS, "region_time")}
-        for label, bl_ev in self.baselines.items():
-            bl = getattr(bl_ev, "baseline_aligned", None)
-            if bl is not None:
-                raw_cases[label] = compute_scores(bl, self.ev.obs, RAW_METRICS, "region_time")
-        for m in RAW_METRICS:
-            if m not in raw_cases[self.label]:
-                continue
-            error_overview_plot(
-                raw_cases,
-                metric=m,
-                save_path=self.plots_dir / f"{self.ev.var}_error_overview_{m}.pdf",
-                title=f"{self.ev.eval_name} — {m.upper()} (lead_time={self.ev.lead_time})",
-            )
-        # Anomaly metrics: only the model (no meaningful per-baseline anomaly).
-        if self.ev.pred_anom is None:
-            return
-        anom_cases = {self.label: compute_scores(self.ev.pred_anom, self.ev.obs_anom, ANOMALY_METRICS, "region_time")}
-        for m in ANOMALY_METRICS:
-            if m not in anom_cases[self.label]:
-                continue
-            error_overview_plot(
-                anom_cases,
-                metric=m,
-                save_path=self.plots_dir / f"{self.ev.var}_error_overview_{m}.pdf",
-                title=f"{self.ev.eval_name} — {m.upper()} (lead_time={self.ev.lead_time})",
-            )
-
-    def _with_delta(self, ds: xr.Dataset) -> xr.Dataset:
-        """Add pred_delta / obs_delta (circular roll) to a grouped dataset."""
-        group_dim = next(d for d in ds.dims if d in ("hour", "month"))
-        pm_key = "pred_mean_q50" if "pred_mean_q50" in ds else "pred_mean"
-        om_key = "obs_mean_q50" if "obs_mean_q50" in ds else "obs_mean"
-        ds = ds.copy()
-        ds["pred_delta"] = ds[pm_key].roll({group_dim: -1}) - ds[pm_key]
-        ds["obs_delta"] = ds[om_key].roll({group_dim: -1}) - ds[om_key]
-        return ds
-
-    def plot_grouped_delta(self):
-        cases = {self.label: self._with_delta(self.ev.summarise(self.ev.grouped))}
-        cases.update(
-            {
-                label: self._with_delta(bl_ev.summarise(bl_ev.baseline_grouped))
-                for label, bl_ev in self.baselines.items()
-                if getattr(bl_ev, "baseline_grouped", None) is not None
-            }
-        )
-        diurnal_delta_comparison(
-            cases,
-            var=self.ev.var,
-            save_path=self.plots_dir / f"{self.ev.var}_grouped_delta.pdf",
-            eval_region=self.ev.eval_name,
-        )
-
-    _SCORE_MAP_METRICS = {
-        "acc": "ACC",
-        "nse": "NSE",
-    }
-
-    def plot_score_map(self):
-        if "pixel" in self.ev.forecast_ds.dims:
-            return
-        for m, label in self._SCORE_MAP_METRICS.items():
-            if m in ANOMALY_METRICS:
-                if self.ev.pred_anom is None:
-                    continue
-                pred_in, obs_in = self.ev.pred_anom, self.ev.obs_anom
+    NaN-safe: fully-NaN variables (e.g. empty hour bins) yield NaN bands instead of
+    tripping xarray's quantile on all-NaN input.
+    """
+    q_labels = [f"q{int(q * 100):02d}" for q in quantiles]
+    data_vars = {}
+    for name in source.data_vars:
+        var = source[name]
+        reduce_dims = [d for d in dims if d in var.dims]
+        if not reduce_dims:
+            for ql in q_labels:
+                data_vars[f"{name}_{ql}"] = var
+            continue
+        has_data = bool(var.notnull().any())
+        for q, ql in zip(quantiles, q_labels):
+            if has_data:
+                data_vars[f"{name}_{ql}"] = var.quantile(q, dim=reduce_dims).drop_vars("quantile")
             else:
-                pred_in, obs_in = self.ev.pred, self.ev.obs
-            score = compute_scores(pred_in, obs_in, [m], "region_space")[m]
-            acc_map(
-                acc=score,
-                cbar_label=label,
-                save_path=self.plots_dir / f"{self.ev.var}_{m}_map.pdf",
-                eval_region=self.ev.eval_name,
-            )
-
-    def plot_improvement_map(self):
-        if "pixel" in self.ev.forecast_ds.dims or not self.baselines:
-            return
-        rmse_model = compute_scores(self.ev.pred, self.ev.obs, ["rmse"], "region_space")["rmse"]
-        rmse_by_baseline = {
-            label: compute_scores(bl_ev.baseline_aligned, self.ev.obs, ["rmse"], "region_space")["rmse"]
-            for label, bl_ev in self.baselines.items()
-            if getattr(bl_ev, "baseline_aligned", None) is not None
-        }
-        if not rmse_by_baseline:
-            return
-        improvement_map_multi(
-            rmse_model=rmse_model,
-            rmse_by_baseline=rmse_by_baseline,
-            save_path=self.plots_dir / f"{self.ev.var}_improvement_map.pdf",
-            model_label=self.label,
-            eval_region=self.ev.eval_name,
-        )
-
-    def plot_grouped_comparison(self):
-        if not self.baselines:
-            return
-        # Raw-field metrics: model + every baseline.
-        cases = {self.label: self.ev.summarise(self.ev.grouped)}
-        cases.update(
-            {
-                label: bl_ev.summarise(bl_ev.baseline_grouped)
-                for label, bl_ev in self.baselines.items()
-                if getattr(bl_ev, "baseline_grouped", None) is not None
-            }
-        )
-        for m in RAW_METRICS:
-            if m not in self.ev.grouped:
-                continue
-            diurnal_line(
-                cases,
-                metric=m,
-                save_path=self.plots_dir / f"{self.ev.var}_grouped_comparison_{m}.pdf",
-                title=f"{self.ev.eval_name} — {m.upper()} comparison ({self.ev.groupby})",
-            )
-        # Anomaly metrics: only the model line.
-        if self.ev.climate_grouped is None:
-            return
-        anom_cases = {self.label: self.ev.summarise(self.ev.climate_grouped)}
-        for m in ANOMALY_METRICS:
-            if m not in self.ev.climate_grouped:
-                continue
-            diurnal_line(
-                anom_cases,
-                metric=m,
-                save_path=self.plots_dir / f"{self.ev.var}_grouped_comparison_{m}.pdf",
-                title=f"{self.ev.eval_name} — {m.upper()} comparison ({self.ev.groupby})",
-            )
+                data_vars[f"{name}_{ql}"] = var.isel({d: 0 for d in reduce_dims}, drop=True) * np.nan
+    return xr.Dataset(data_vars)
 
 
 def _requires(*products):
@@ -426,6 +117,314 @@ def required_products(runner_cls, plots: list | None = None) -> tuple:
             continue
         needed.extend(getattr(getattr(runner_cls, name), "requires", ()))
     return tuple(dict.fromkeys(needed))
+
+
+class PlotRunnerDiagnostics:
+    """Renders single-lead diagnostic plots from evaluator diag products (evaluation/products.py).
+
+    Score plots declare their products via `@_requires` (checked against ev.diag_products);
+    field plots (timeseries, temporal spectrum) consume the raw forecast by declared
+    exception. `baseline_labels` maps registry baseline names to display labels.
+    """
+
+    CLASS_COORDS = ("kg_class", "kg_major", "kg_classes", "biome_classes", "modis_lc_classes", "ecoregion_classes")
+
+    def __init__(self, evaluator, label, plots_dir, baseline_labels=None, clim_baseline=None, lead_time="1h"):
+        self.ev = evaluator
+        self.label = label
+        self.plots_dir = Path(plots_dir)
+        self.baseline_labels = baseline_labels or {}
+        self.clim_baseline = clim_baseline
+        self.lead_time = lead_time
+
+    def run(self, plots: list[str] | None = None):
+        requested = set(plots) if plots else None
+        for name in sorted(dir(self)):
+            if name.startswith("plot_"):
+                if requested is None or name[5:] in requested:
+                    getattr(self, name)()
+
+    def _product(self, name: str):
+        return getattr(self.ev, "diag_products", {}).get(name)
+
+    def _space_dims(self, ds) -> list:
+        return [d for d in ds.dims if d in ("lat", "lon", "pixel")]
+
+    def _entity_datasets(self, product, measures) -> dict:
+        """{display_label: Dataset of `measures`} for the model and every baseline column present."""
+        entities = {self.label: xr.Dataset({m: product[m] for m in measures if m in product})}
+        for name, display in self.baseline_labels.items():
+            columns = {m: product[f"{m}_{name}"] for m in measures if f"{m}_{name}" in product}
+            if columns:
+                entities[display] = xr.Dataset(columns)
+        return entities
+
+    def _class_labels(self) -> dict[str, dict]:
+        if getattr(self, "_class_labels_cache", None) is not None:
+            return self._class_labels_cache
+        meta_path = self.ev.paths.eval_meta_path("seviri")
+        try:
+            meta = json.loads(meta_path.read_text())
+            labels = {coord: meta.get(f"{coord}_labels", {}) for coord in self.CLASS_COORDS}
+        except FileNotFoundError:
+            labels = {coord: {} for coord in self.CLASS_COORDS}
+        self._class_labels_cache = labels
+        return labels
+
+    # --- field plots ----------------------------------------------------------
+
+    def plot_timeseries(self):
+        timeseries_plot(
+            self.ev.forecast_ds,
+            var=self.ev.var,
+            save_path=self.plots_dir / f"{self.ev.var}_timeseries.pdf",
+            eval_region=self.ev.eval_name,
+        )
+
+    def plot_temporal_power_spectrum(self):
+        from deep_lst.evaluation.metrics import to_valid_time
+
+        pred = to_valid_time(self.ev.pred.sel(lead_time=self.lead_time), self.lead_time)
+        obs = to_valid_time(self.ev.obs.sel(lead_time=self.lead_time), self.lead_time)
+        diffs = np.diff(pred["valid_time"].values).astype("timedelta64[h]").astype(float)
+        dt_hours = float(np.median(diffs[diffs > 0])) if len(diffs) > 0 else 1.0
+        spectra = {
+            self.label: compute_temporal_power_spectrum(pred.transpose("valid_time", ...).values, dt_hours=dt_hours)
+        }
+        obs_spectrum = compute_temporal_power_spectrum(obs.transpose("valid_time", ...).values, dt_hours=dt_hours)
+        temporal_power_spectrum_plot(
+            pred_spectra_by_case=spectra,
+            obs_spectrum=obs_spectrum,
+            var=self.ev.var,
+            save_path=self.plots_dir / f"{self.ev.var}_temporal_power_spectrum.pdf",
+            eval_region=self.ev.eval_name,
+        )
+
+    # --- grouped (diurnal) ------------------------------------------------------
+
+    @_requires("diag_by_hour")
+    def plot_grouped_mean(self):
+        product = self._product("diag_by_hour")
+        if product is None:
+            return
+        bands = _quantile_bands(product, self._space_dims(product))
+        bl_means = {}
+        for name, display in self.baseline_labels.items():
+            key = f"pred_mean_{name}_q50"
+            if key in bands:
+                bl_means[display] = bands[key].values
+        diurnal_mean_plot(
+            bands,
+            var=self.ev.var,
+            baselines_mean=bl_means or None,
+            save_path=self.plots_dir / f"{self.ev.var}_grouped_mean.pdf",
+            eval_region=self.ev.eval_name,
+            case_label=self.label,
+        )
+
+    @_requires("diag_by_hour", "diag_anomaly_by_hour")
+    def plot_grouped_scores(self):
+        product = self._product("diag_by_hour")
+        if product is None:
+            return
+        bands = _quantile_bands(product, self._space_dims(product))
+        for m in RAW_METRICS:
+            if m not in product:
+                continue
+            diurnal_line(
+                {self.label: bands},
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_grouped_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} (diurnal)",
+            )
+        anomaly = self._product("diag_anomaly_by_hour")
+        if anomaly is None:
+            return
+        anomaly_bands = _quantile_bands(anomaly, self._space_dims(anomaly))
+        for m in ANOMALY_METRICS:
+            if m not in anomaly:
+                continue
+            diurnal_line(
+                {self.label: anomaly_bands},
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_grouped_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} (diurnal)",
+            )
+
+    def _with_delta(self, ds: xr.Dataset) -> xr.Dataset:
+        """Add pred_delta / obs_delta (circular roll) to a banded grouped dataset."""
+        group_dim = next(d for d in ds.dims if d in ("hour", "month"))
+        pm_key = "pred_mean_q50" if "pred_mean_q50" in ds else "pred_mean"
+        om_key = "obs_mean_q50" if "obs_mean_q50" in ds else "obs_mean"
+        ds = ds.copy()
+        ds["pred_delta"] = ds[pm_key].roll({group_dim: -1}) - ds[pm_key]
+        ds["obs_delta"] = ds[om_key].roll({group_dim: -1}) - ds[om_key]
+        return ds
+
+    @_requires("diag_by_hour")
+    def plot_grouped_delta(self):
+        product = self._product("diag_by_hour")
+        if product is None:
+            return
+        bands = _quantile_bands(product, self._space_dims(product))
+        cases = {self.label: self._with_delta(bands)}
+        for name, display in self.baseline_labels.items():
+            pm_key = f"pred_mean_{name}_q50"
+            if pm_key not in bands:
+                continue
+            entity = xr.Dataset({"pred_mean_q50": bands[pm_key], "obs_mean_q50": bands["obs_mean_q50"]})
+            cases[display] = self._with_delta(entity)
+        diurnal_delta_comparison(
+            cases,
+            var=self.ev.var,
+            save_path=self.plots_dir / f"{self.ev.var}_grouped_delta.pdf",
+            eval_region=self.ev.eval_name,
+        )
+
+    @_requires("diag_by_hour", "diag_anomaly_by_hour")
+    def plot_grouped_comparison(self):
+        product = self._product("diag_by_hour")
+        if product is None or not self.baseline_labels:
+            return
+        space = self._space_dims(product)
+        cases = {self.label: _quantile_bands(product[[m for m in RAW_METRICS if m in product]], space)}
+        for name, display in self.baseline_labels.items():
+            columns = {m: product[f"{m}_{name}"] for m in RAW_METRICS if f"{m}_{name}" in product}
+            if columns:
+                cases[display] = _quantile_bands(xr.Dataset(columns), space)
+        for m in RAW_METRICS:
+            if m not in product:
+                continue
+            diurnal_line(
+                cases,
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_grouped_comparison_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} comparison (diurnal)",
+            )
+        anomaly = self._product("diag_anomaly_by_hour")
+        if anomaly is None:
+            return
+        anomaly_bands = _quantile_bands(anomaly, self._space_dims(anomaly))
+        for m in ANOMALY_METRICS:
+            if m not in anomaly:
+                continue
+            diurnal_line(
+                {self.label: anomaly_bands},
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_grouped_comparison_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} comparison (diurnal)",
+            )
+
+    # --- monthly / class violins ------------------------------------------------
+
+    @_requires("diag_by_day", "diag_anomaly_by_day")
+    def plot_monthly_score_violin(self):
+        for product_name, metrics in (("diag_by_day", RAW_METRICS), ("diag_anomaly_by_day", ANOMALY_METRICS)):
+            product = self._product(product_name)
+            if product is None:
+                continue
+            for m in metrics:
+                if m not in product:
+                    continue
+                monthly_daily_violin(
+                    product[m],
+                    float(product[f"{m}_total"]),
+                    metric=m,
+                    case_label=self.label,
+                    month_labels=_MONTH_LABELS,
+                    title=f"{self.ev.eval_name} — {m.upper()} by month (lead_time={self.lead_time})",
+                    save_path=self.plots_dir / f"{self.ev.var}_monthly_score_violin_{m}.pdf",
+                )
+
+    @_requires("diag_by_class", "diag_anomaly_by_class")
+    def plot_class_score_violin(self):
+        labels_by_coord = self._class_labels()
+        for prefix, metrics in (("diag_by_class", RAW_METRICS), ("diag_anomaly_by_class", ANOMALY_METRICS)):
+            for coord in self.CLASS_COORDS:
+                product = self._product(f"{prefix}__{coord}")
+                if product is None:
+                    continue
+                labels = labels_by_coord.get(coord) or None
+                for m in metrics:
+                    if m not in product:
+                        continue
+                    category_score_violinplot(
+                        product,
+                        metric=m,
+                        category_dim=coord,
+                        case_label=self.label,
+                        category_labels=labels,
+                        xlabel=coord,
+                        title=f"{self.ev.eval_name} — {m.upper()} by {coord} (lead_time={self.lead_time})",
+                        save_path=self.plots_dir / f"{self.ev.var}_class_score_violin_{coord}_{m}.pdf",
+                    )
+
+    # --- benchmark ----------------------------------------------------------------
+
+    @_requires("diag_scores_by_time", "diag_anomaly_by_time")
+    def plot_error_overview(self):
+        product = self._product("diag_scores_by_time")
+        if product is None or not self.baseline_labels:
+            return
+        raw_cases = self._entity_datasets(product, RAW_METRICS)
+        for m in RAW_METRICS:
+            if m not in product:
+                continue
+            error_overview_plot(
+                raw_cases,
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_error_overview_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} (lead_time={self.lead_time})",
+            )
+        anomaly = self._product("diag_anomaly_by_time")
+        if anomaly is None:
+            return
+        anom_cases = {self.label: anomaly}
+        for m in ANOMALY_METRICS:
+            if m not in anomaly:
+                continue
+            error_overview_plot(
+                anom_cases,
+                metric=m,
+                save_path=self.plots_dir / f"{self.ev.var}_error_overview_{m}.pdf",
+                title=f"{self.ev.eval_name} — {m.upper()} (lead_time={self.lead_time})",
+            )
+
+    _SCORE_MAP_METRICS = {"acc": "ACC", "nse": "NSE"}
+
+    @_requires("diag_map", "diag_anomaly_map")
+    def plot_score_map(self):
+        if "pixel" in self.ev.forecast_ds.dims:
+            return
+        for m, label in self._SCORE_MAP_METRICS.items():
+            product = self._product("diag_anomaly_map" if m in ANOMALY_METRICS else "diag_map")
+            if product is None or m not in product:
+                continue
+            acc_map(
+                acc=product[m],
+                cbar_label=label,
+                save_path=self.plots_dir / f"{self.ev.var}_{m}_map.pdf",
+                eval_region=self.ev.eval_name,
+            )
+
+    @_requires("diag_map")
+    def plot_improvement_map(self):
+        product = self._product("diag_map")
+        if product is None or "pixel" in self.ev.forecast_ds.dims or not self.baseline_labels:
+            return
+        rmse_by_baseline = {}
+        for name, display in self.baseline_labels.items():
+            if f"rmse_{name}" in product:
+                rmse_by_baseline[display] = product[f"rmse_{name}"]
+        if not rmse_by_baseline:
+            return
+        improvement_map_multi(
+            rmse_model=product["rmse"],
+            rmse_by_baseline=rmse_by_baseline,
+            save_path=self.plots_dir / f"{self.ev.var}_improvement_map.pdf",
+            model_label=self.label,
+            eval_region=self.ev.eval_name,
+        )
 
 
 class PlotRunnerVerification:

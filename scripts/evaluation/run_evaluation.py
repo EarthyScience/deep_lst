@@ -23,15 +23,13 @@ Available --baselines:
 """
 
 import argparse
-import multiprocessing
 import time
-from concurrent.futures import ProcessPoolExecutor
 
 import dask
 
-from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, EvaluatorDiagnostics, EvaluatorVerification
+from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, EvaluatorVerification
 from deep_lst.evaluation.plot_runner import PlotRunnerDiagnostics, PlotRunnerVerification, required_products
-from deep_lst.evaluation.products import PRODUCTS
+from deep_lst.evaluation.products import DIAG_PRODUCTS, PRODUCTS
 from deep_lst.utils import ExperimentPaths
 
 PATHS = ExperimentPaths()
@@ -43,33 +41,6 @@ BASELINE_LABELS = {
     "clim_smooth": "smoothed clim",
     "persistence": "persistence",
 }
-
-
-def _run_evaluator(cls_name, kwargs):
-    """Module-level worker for ProcessPoolExecutor (must be picklable)."""
-    dask.config.set(
-        scheduler="threads", num_workers=2
-    )  # bounded threads: caps memory without OOM; 8 tasks already run as separate processes
-    cls = {"EvaluatorDiagnostics": EvaluatorDiagnostics, "EvaluatorVerification": EvaluatorVerification}[cls_name]
-    ev = cls(**kwargs)
-    ev.run()
-    for attr in (
-        "scores",
-        "grouped",
-        "pred",
-        "obs",
-        "baseline_scores",
-        "baseline_grouped",
-        "baseline_aligned",
-        "climate_scores",
-        "climate_grouped",
-        "pred_anom",
-        "obs_anom",
-    ):
-        val = getattr(ev, attr, None)
-        if val is not None and hasattr(val, "compute"):
-            setattr(ev, attr, val.compute())
-    return ev
 
 
 def _detect_case_label(experiment: str) -> str:
@@ -109,50 +80,53 @@ def run_evaluation():
     print(f"Case label : {label}")
     print(f"Baselines  : {args.baselines or '(none)'}")
 
-    base_kwargs = dict(
+    dask.config.set(scheduler="threads", num_workers=8)  # bounded: one process runs everything now
+    baselines = tuple(args.baselines or ())
+    clim_baseline = next((b for b in baselines if b in CLIMATE_BASELINES), None)
+    baseline_labels = {b: BASELINE_LABELS[b] for b in baselines}
+
+    ev = EvaluatorVerification(
         experiment=args.experiment,
         version=args.version,
         eval_name=args.eval,
         var=args.variable,
+        baseline=None,
         temporal=args.temporal,
+        aggregation="region_time",
         consistent_mask=False,
         overwrite=args.overwrite,
     )
-    diag_extra = dict(aggregation="region_space", groupby="diurnal", lead_time=args.lead_time)
-    baselines = args.baselines or []
-
-    # Diagnostics: legacy per-baseline worker pool (folds into products in a later step).
-    task_specs = {("Diag", None): ("EvaluatorDiagnostics", {**base_kwargs, **diag_extra, "baseline": None})}
-    for b in baselines:
-        task_specs[("Diag", b)] = ("EvaluatorDiagnostics", {**base_kwargs, **diag_extra, "baseline": b})
-
-    ctx = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(max_workers=len(task_specs), mp_context=ctx) as pool:
-        futures = {key: pool.submit(_run_evaluator, cls_name, kw) for key, (cls_name, kw) in task_specs.items()}
-        results = {key: f.result() for key, f in futures.items()}
-
-    eval_diagnostics = results[("Diag", None)]
-    baselines_diagnostics = {BASELINE_LABELS[b]: results[("Diag", b)] for b in baselines}
-    PlotRunnerDiagnostics(eval_diagnostics, label, plots_dir, baselines_diagnostics).run(args.plots)
-
-    # Verification: one evaluator, products computed once on shared stats tables.
-    dask.config.set(scheduler="threads", num_workers=8)  # bound the main-process product graphs
-    ev = EvaluatorVerification(**base_kwargs, aggregation="region_time", baseline=None)
     ev.load()
 
-    products = list(required_products(PlotRunnerVerification, args.plots))
-    clim_baseline = next((b for b in baselines if b in CLIMATE_BASELINES), None)
+    verification_products = list(required_products(PlotRunnerVerification, args.plots))
     if clim_baseline is None:
-        products = [p for p in products if PRODUCTS[p].table != "anomaly_profile"]
+        verification_products = [p for p in verification_products if PRODUCTS[p].table != "anomaly_profile"]
     if not baselines:
-        products = [p for p in products if not PRODUCTS[p].with_skill or p == "scores_by_init_lead"]
-    if products:
-        ev.compute(products, baselines=tuple(baselines), clim_baseline=clim_baseline)
+        verification_products = [
+            p for p in verification_products if not PRODUCTS[p].with_skill or p == "scores_by_init_lead"
+        ]
+    if verification_products:
+        ev.compute(verification_products, baselines=baselines, clim_baseline=clim_baseline)
         ev.materialise()
 
-    baseline_labels = {b: BASELINE_LABELS[b] for b in baselines}
-    runner = PlotRunnerVerification(ev, label, plots_dir, baseline_labels, clim_baseline=clim_baseline)
-    runner.run(args.plots)
+    diagnostic_products = list(required_products(PlotRunnerDiagnostics, args.plots))
+    if clim_baseline is None:
+        diagnostic_products = [p for p in diagnostic_products if not DIAG_PRODUCTS[p].anomaly]
+    if diagnostic_products:
+        ev.compute_diagnostics(
+            args.lead_time,
+            diagnostic_products,
+            baselines=baselines,
+            clim_baseline=clim_baseline,
+            class_coords=PlotRunnerDiagnostics.CLASS_COORDS,
+        )
+        ev.materialise_diagnostics()
+
+    diag_runner = PlotRunnerDiagnostics(
+        ev, label, plots_dir, baseline_labels, clim_baseline=clim_baseline, lead_time=args.lead_time
+    )
+    diag_runner.run(args.plots)
+    PlotRunnerVerification(ev, label, plots_dir, baseline_labels, clim_baseline=clim_baseline).run(args.plots)
 
     print("\nDone.")
 
