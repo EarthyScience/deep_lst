@@ -32,26 +32,12 @@ class Evaluator:
     evaluation/products.py for both catalogues).
     """
 
-    def __init__(
-        self,
-        experiment,
-        version,
-        eval_name,
-        var,
-        baseline,
-        temporal,
-        aggregation,
-        consistent_mask,
-        overwrite,
-    ):
+    def __init__(self, experiment, version, eval_name, var, temporal=None, consistent_mask=False):
         self.experiment = experiment
         self.version = version
         self.eval_name = eval_name
         self.var = var
-        self.baseline = baseline
-        self.overwrite = overwrite
         self.temporal = temporal
-        self.aggregation = aggregation
         self.consistent_mask = consistent_mask
         self.paths = ExperimentPaths()
 
@@ -214,21 +200,6 @@ class Evaluator:
         ds = ds.assign_coords(coords)
         return ds
 
-    def _load_baseline(self) -> xr.DataArray | None:
-        if self.baseline is None:
-            return None
-        if self.baseline not in _BASELINE_REGISTRY:
-            raise ValueError(f"Unknown baseline: {self.baseline!r}. Available: {list(_BASELINE_REGISTRY)}")
-
-        path_fn, var_name = _BASELINE_REGISTRY[self.baseline]
-        path = path_fn(self.paths, self.eval_name)
-        if not path.exists():
-            raise FileNotFoundError(f"Baseline '{self.baseline}' not found: {path}")
-
-        # chunks={} -> dask-backed, so the per-lead reindex/concat in baseline_full
-        # streams instead of materialising the full aligned cube in numpy.
-        return xr.open_dataset(path, chunks={})[var_name]
-
     def _check_baseline_coords(self, baseline: xr.DataArray, name: str) -> None:
         """Baseline coords are float64 BY CONTRACT (see BaselineExtractor._make_dataset).
 
@@ -243,9 +214,6 @@ class Evaluator:
                     "pre-2026-07 extraction. Re-extract with scripts/baselines/run_baselines.py "
                     "(era5 itself is not extractable: the era5 store carries no skt)"
                 )
-
-    def _align_baseline(self, valid_times: np.ndarray) -> xr.DataArray:
-        return self.baseline_ds.reindex(valid_time=valid_times)
 
     def _subset_pixels(self, baseline_ds: xr.DataArray, forecast_ds: xr.DataArray) -> xr.DataArray:
         """Subset da's pixel dim to match ref's lat/lon coordinates.
@@ -268,60 +236,3 @@ class Evaluator:
         p_lons = forecast_ds["lon"].values.astype(np.float32)
         idx = [lookup[(float(la), float(lo))] for la, lo in zip(p_lats, p_lons)]
         return baseline_ds.isel(pixel=idx)
-
-    def bootstrap_summarise(
-        self,
-        stats: xr.Dataset,
-        metric: str = "rmse",
-        block: int = 24,
-        n_boot: int = 500,
-        quantiles=(0.05, 0.50, 0.95),
-        seed: int = 0,
-    ) -> xr.Dataset:
-        """Block-bootstrap CI for a pooled metric over init_time, per lead_time.
-
-        `stats` carries additive sufficient statistics (se_sum, count) with dims
-        (init_time, lead_time) — see metrics.compute_rmse_sufficient_stats. We moving-block
-        resample init_time (blocks of `block` consecutive inits, to respect temporal
-        autocorrelation — block=1 recovers the iid/climpred bootstrap), pool each resample via
-        sqrt(Σse_sum / Σcount), and take percentiles over the bootstrap curves.
-
-        Returns the SAME schema as `summarise` ({metric}_q05/q50/q95 over lead_time) so the plots
-        are unchanged. q50 is the point estimate (pooled over ALL inits); the outer quantiles are
-        bootstrap percentiles. NOTE: `block` is in init-INDEX units, so its wall-clock span depends
-        on the init spacing (e.g. 6-hourly inits → block=4 ≈ 1 day).
-        """
-        se = stats["se_sum"].transpose("init_time", "lead_time").values
-        cnt = stats["count"].transpose("init_time", "lead_time").values
-        n_init = se.shape[0]
-
-        def pooled(rows):
-            with np.errstate(invalid="ignore", divide="ignore"):
-                return np.sqrt(se[rows].sum(0) / cnt[rows].sum(0))
-
-        block = min(block, n_init)
-        n_blocks = int(np.ceil(n_init / block))
-        starts = np.arange(n_init - block + 1)
-        rng = np.random.default_rng(seed)
-        curves = np.empty((n_boot, se.shape[1]))
-        for b in range(n_boot):
-            rows = np.concatenate([np.arange(s, s + block) for s in rng.choice(starts, n_blocks)])[:n_init]
-            curves[b] = pooled(rows)
-
-        point = pooled(np.arange(n_init))
-        data_vars = {}
-        for q in quantiles:
-            label = f"{metric}_q{int(q * 100):02d}"
-            if abs(q - 0.5) < 1e-9:
-                data_vars[label] = ("lead_time", point)
-            else:
-                data_vars[label] = ("lead_time", np.nanpercentile(curves, q * 100, axis=0))
-        return xr.Dataset(data_vars, coords={"lead_time": stats["lead_time"].values})
-
-
-class EvaluatorVerification(Evaluator):
-    """Full (init_time, lead_time) verification on evaluation products.
-
-    Use load() / load_baseline() / compute(products) / materialise(); the finished
-    datasets land in self.products (see evaluation/products.py for the catalogue).
-    """

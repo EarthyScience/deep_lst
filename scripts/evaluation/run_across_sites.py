@@ -24,7 +24,7 @@ import argparse
 
 import numpy as np
 
-from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, EvaluatorVerification
+from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, Evaluator
 from deep_lst.evaluation.plots.across_sites import (
     cross_site_acc_boxplot,
     cross_site_rmse_boxplot,
@@ -102,16 +102,12 @@ def run_across_sites():
 
     region_products = {}
     for region in args.evals:
-        ev = EvaluatorVerification(
+        ev = Evaluator(
             experiment=args.experiment,
             version=args.version,
             eval_name=region,
             var="LST",
-            baseline=None,
             temporal=args.temporal,
-            aggregation="region_time",
-            consistent_mask=False,
-            overwrite=False,
         )
         try:
             ev.load()

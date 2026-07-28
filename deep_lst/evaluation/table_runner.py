@@ -30,7 +30,7 @@ import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.conditioning import mask_time_of_day
-from deep_lst.evaluation.evaluator import EvaluatorVerification
+from deep_lst.evaluation.evaluator import Evaluator
 from deep_lst.evaluation.latex import latex_table, write_month_tables
 from deep_lst.evaluation.metrics import pool_metric, skill_score, to_lead_hours
 from deep_lst.evaluation.plots.month_grid import (
@@ -220,16 +220,12 @@ def load_entities(experiment, version, eval_name, var, baselines, temporal, atta
     the evaluator's own alignment (`_baseline_full`) against that in-memory array,
     which makes each baseline a few seconds and gives identical results.
     """
-    evaluator = EvaluatorVerification(
+    evaluator = Evaluator(
         experiment=experiment,
         version=version,
         eval_name=eval_name,
         var=var,
-        baseline=None,
         temporal=temporal,
-        aggregation="region_time",
-        consistent_mask=False,
-        overwrite=False,
     )
     evaluator.load()  # class coords are always attached now; attach_classes kept for API compatibility
     evaluator.pred = evaluator.pred.load()

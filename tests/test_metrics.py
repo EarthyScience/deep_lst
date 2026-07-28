@@ -96,7 +96,7 @@ def test_sufficient_stats_hand_table():
 
     pred = xr.DataArray([1.0, 2.0, 3.0, 4.0, np.nan], dims="time")
     obs = xr.DataArray([1.0, 1.0, np.nan, 2.0, 2.0], dims="time")
-    stats = sufficient_stats(pred, obs, dim="time", extra=("ae_sum",))
+    stats = sufficient_stats(pred, obs, dim="time")
 
     # joint mask keeps samples 0, 1, 3; sample 2 (pred finite, obs NaN) must NOT count
     assert int(stats["n"]) == 3
@@ -108,16 +108,6 @@ def test_sufficient_stats_hand_table():
     assert np.isclose(float(finished["rmse"]), np.sqrt(5.0 / 3.0))
     assert np.isclose(float(finished["bias"]), 1.0)
     assert np.isclose(float(finished["mae"]), 1.0)
-
-
-def test_sufficient_stats_matches_legacy_rmse_stats():
-    from deep_lst.evaluation.metrics import compute_rmse_sufficient_stats, sufficient_stats
-
-    pred, obs = _synthetic_cube()
-    stats = sufficient_stats(pred, obs, dim=["lat", "lon"])
-    legacy = compute_rmse_sufficient_stats(pred, obs)
-    xr.testing.assert_allclose(stats["se_sum"], legacy["se_sum"])
-    assert int((stats["n"] - legacy["count"]).sum()) == 0
 
 
 def test_pool_stats_plain_dim_and_1d_labels():
@@ -147,7 +137,7 @@ def test_chain_reproduces_compute_pooled_scores():
 
     pred, obs = _synthetic_cube()
     old = compute_pooled_scores(pred, obs, ["rmse", "bias", "mae"])
-    stats = sufficient_stats(pred, obs, dim=["lat", "lon"], extra=("ae_sum",))
+    stats = sufficient_stats(pred, obs, dim=["lat", "lon"])
     new = measures_from_stats(pool_stats(stats, dim="init_time"), ("rmse", "bias", "mae"))
     xr.testing.assert_allclose(new, old, rtol=1e-12)
 
@@ -161,30 +151,6 @@ def test_chain_reproduces_compute_pooled_by_day():
     stats = sufficient_stats(pred, obs, dim=["lat", "lon"])
     new = measures_from_stats(pool_stats(stats, dim="init_time", by=forecast_day_labels(pred)), ("rmse",))
     np.testing.assert_allclose(new["rmse"].values, old["rmse"].values, rtol=1e-12)
-
-
-def test_chain_reproduces_daily_rmse_by_valid_day():
-    from deep_lst.evaluation.conditioning import valid_day_labels
-    from deep_lst.evaluation.metrics import (
-        compute_rmse_sufficient_stats,
-        daily_rmse_by_valid_day,
-        measures_from_stats,
-        pool_stats,
-        sufficient_stats,
-    )
-
-    pred, obs = _synthetic_cube()
-    lead_idx = np.arange(24)  # forecast day 1
-    old_daily, old_total = daily_rmse_by_valid_day(compute_rmse_sufficient_stats(pred, obs), lead_idx)
-
-    stats = sufficient_stats(pred, obs, dim=["lat", "lon"]).isel(lead_time=lead_idx)
-    pooled = pool_stats(stats, by=valid_day_labels(stats))
-    pooled = pooled.where(pooled["n"] > 0, drop=True)  # the old path drops empty days
-    new_daily = measures_from_stats(pooled, ("rmse",))["rmse"]
-    new_total = measures_from_stats(pool_stats(stats, dim=["init_time", "lead_time"]), ("rmse",))["rmse"]
-
-    np.testing.assert_allclose(new_daily.values, old_daily.values, rtol=1e-12)
-    assert np.isclose(float(new_total), old_total, rtol=1e-12)
 
 
 def test_chain_reproduces_masked_pooling():
@@ -202,13 +168,6 @@ def test_chain_reproduces_masked_pooling():
     assert np.isclose(new, old, rtol=1e-12)
 
 
-def test_required_extras():
-    from deep_lst.evaluation.metrics import required_extras
-
-    assert required_extras(("rmse", "bias")) == ()
-    assert required_extras(("rmse", "mae")) == ("ae_sum",)
-
-
 def test_nse_joint_masking_hand_table():
     from deep_lst.evaluation.metrics import METRIC_REGISTRY, measures_from_stats, sufficient_stats
 
@@ -218,7 +177,7 @@ def test_nse_joint_masking_hand_table():
     registry_nse = float(METRIC_REGISTRY["nse"](pred, obs, dim="time"))
     assert np.isclose(registry_nse, -6.5)
 
-    stats = sufficient_stats(pred, obs, dim="time", extra=("o_sum", "o2_sum"))
+    stats = sufficient_stats(pred, obs, dim="time")
     chain_nse = float(measures_from_stats(stats, ("nse",))["nse"])
     assert np.isclose(chain_nse, -6.5)
 
@@ -228,6 +187,6 @@ def test_nse_chain_matches_registry_on_cube():
 
     pred, obs = _synthetic_cube()
     registry_nse = float(METRIC_REGISTRY["nse"](pred, obs, dim=list(pred.dims)))
-    stats = sufficient_stats(pred, obs, dim=list(pred.dims), extra=("o_sum", "o2_sum"))
+    stats = sufficient_stats(pred, obs, dim=list(pred.dims))
     chain_nse = float(measures_from_stats(stats, ("nse",))["nse"])
     assert np.isclose(chain_nse, registry_nse, rtol=1e-4)  # float32 registry vs float64 chain sums

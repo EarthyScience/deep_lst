@@ -20,11 +20,6 @@ import xarray as xr
 
 METRIC_REGISTRY: dict[str, callable] = {}
 
-_REDUCTION_DIMS = {
-    "time": ["valid_time", "init_time"],
-    "space": ["lat", "lon", "pixel"],
-}
-
 # Inclusive lead-hour bounds of each forecast day (24 h blocks). Single source of truth shared by
 # the pooled-by-day scores here and the day/night plots.
 LEAD_DAY_BUCKETS = [
@@ -199,10 +194,9 @@ def _pooled_measures(pred: xr.DataArray, obs: xr.DataArray, metrics: list[str], 
     Chain measures (`MEASURES`) share a single sufficient-statistics pass; every other
     registered metric reduces directly via `pool_metric`.
     """
-    chain_measures = tuple(name for name in metrics if name in MEASURES)
     stats = None
-    if chain_measures:
-        stats = sufficient_stats(pred, obs, dim=dim, extra=required_extras(chain_measures))
+    if any(name in MEASURES for name in metrics):
+        stats = sufficient_stats(pred, obs, dim=dim)
 
     pooled = {}
     for name in metrics:
@@ -247,7 +241,7 @@ def compute_pooled_by_day(
     chain_ds = None
     if chain_measures:
         pooled_dims = [d for d in pred.dims if d != "lead_time"]
-        stats = sufficient_stats(pred, obs, dim=pooled_dims, extra=required_extras(chain_measures))
+        stats = sufficient_stats(pred, obs, dim=pooled_dims)
         pooled = pool_stats(stats, by=forecast_day_labels(pred))
         pooled = pooled.sel(day=pooled["day"] != 0)  # leads outside every bucket
         chain_ds = measures_from_stats(pooled, chain_measures)
@@ -280,96 +274,35 @@ def compute_pooled_by_day(
     return ds.assign_coords(day_label=("day", [f"Day {d}" for d in ds["day"].values]))
 
 
-def daily_rmse_by_valid_day(rmse_stats: xr.Dataset, lead_idx: np.ndarray) -> tuple[xr.DataArray, float]:
-    """Pooled RMSE per VALID calendar day within a lead bucket, plus the bucket total.
-
-    Reuses the per-(init_time, lead_time) sufficient statistics (se_sum, count) from
-    compute_rmse_sufficient_stats (space already reduced) — no recompute over the cube. The bucket's
-    (init, lead) cells are grouped by valid day (= init + lead) and re-pooled. Returns
-    (daily_rmse on a 'day' dim with a 'month' coord, total). For the per-forecast-day-bucket monthly
-    violins: the month therefore reflects the valid time, not the initialisation time.
-    """
-    se = rmse_stats["se_sum"].isel(lead_time=lead_idx).transpose("init_time", "lead_time")
-    count = rmse_stats["count"].isel(lead_time=lead_idx).transpose("init_time", "lead_time")
-    init = pd.DatetimeIndex(se["init_time"].values).values
-    lead = pd.TimedeltaIndex(se["lead_time"].values).values
-    valid_day = pd.DatetimeIndex((init[:, None] + lead[None, :]).ravel()).floor("D")
-
-    frame = pd.DataFrame({"day": valid_day, "se_sum": se.values.ravel(), "count": count.values.ravel().astype(float)})
-    grouped = frame.groupby("day", sort=True).sum()
-    grouped = grouped[grouped["count"] > 0]
-
-    days = pd.DatetimeIndex(grouped.index)
-    daily = xr.DataArray(
-        np.sqrt(grouped["se_sum"].values / grouped["count"].values),
-        dims="day",
-        coords={"day": days.values, "month": ("day", days.month)},
-    )
-    total = float(np.sqrt(grouped["se_sum"].sum() / grouped["count"].sum()))
-    return daily, total
-
-
-def compute_rmse_sufficient_stats(
-    pred: xr.DataArray,
-    obs: xr.DataArray,
-) -> xr.Dataset:
-    """Per-(init_time, lead_time) additive sufficient statistics for a pooled-RMSE bootstrap.
-
-    Reduces only the SPACE dims (lat/lon/pixel), keeping init_time and lead_time. Returns:
-      - ``se_sum``: sum of squared error over space (NaNs skipped),
-      - ``count``:  number of valid (non-NaN) pixels.
-    A pooled RMSE over any set of init_times is then ``sqrt(se_sum.sum / count.sum)`` — which is
-    what the block bootstrap resamples over. Keeping the sums (not per-init RMSE) is what lets the
-    bootstrap re-pool correctly over resampled init_times.
-    """
-    space_dims = [d for d in _REDUCTION_DIMS["space"] if d in pred.dims]
-    stats = sufficient_stats(pred, obs, dim=space_dims)
-    return xr.Dataset({"se_sum": stats["se_sum"], "count": stats["n"]})
-
-
-_EXTRA_STATS = ("ae_sum", "o_sum", "o2_sum", "p_sum", "p2_sum", "po_sum")
-
-
-def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim, extra: tuple = ()) -> xr.Dataset:
+def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.Dataset:
     """Additive sufficient statistics of the forecast-observation pairs, reduced over *dim*.
 
-    Always returns ``n``, ``e_sum``, ``se_sum`` (error convention ``e = pred - obs``);
-    each name in *extra* adds a variable (currently ``ae_sum``). All variables are sums
-    or counts over the jointly valid samples, so any later regrouping (`pool_stats`) is
-    exact. Choose *dim* as the dims that will never be conditioned on downstream --
-    reducing a dim is the one irreversible act in the chain.
+    Always returns the FULL tally -- ``n, e_sum, se_sum, ae_sum, o_sum, o2_sum, p_sum,
+    p2_sum, po_sum`` (error convention ``e = pred - obs``; obs/pred moments in float64,
+    the NSE/ACC finishes cancel large sums). Computing every column always costs ~1.7x
+    the minimal pass but keeps the API and the engines free of column bookkeeping.
+    All variables are sums/counts over the jointly valid samples, so any later
+    regrouping (`pool_stats`) is exact. Choose *dim* as the dims that will never be
+    conditioned on downstream -- reducing a dim is the one irreversible act in the chain.
     """
-    unknown = set(extra) - set(_EXTRA_STATS)
-    if unknown:
-        raise ValueError(f"Unknown extra statistics: {sorted(unknown)}")
     valid = pred.notnull() & obs.notnull()
     signed_error = pred - obs  # joint-NaN by construction
+    obs_valid = obs.where(valid).astype("float64")
+    pred_valid = pred.where(valid).astype("float64")
 
-    stats = {
-        "n": valid.sum(dim=dim),
-        "e_sum": signed_error.sum(dim=dim, skipna=True),
-        "se_sum": (signed_error**2).sum(dim=dim, skipna=True),
-    }
-    if "ae_sum" in extra:
-        stats["ae_sum"] = np.abs(signed_error).sum(dim=dim, skipna=True)
-    if "o_sum" in extra or "o2_sum" in extra:
-        # float64: the NSE finish cancels o2_sum against o_sum²/n, which float32 sums
-        # of ~300 K values cannot survive.
-        obs_valid = obs.where(valid).astype("float64")
-        if "o_sum" in extra:
-            stats["o_sum"] = obs_valid.sum(dim=dim, skipna=True)
-        if "o2_sum" in extra:
-            stats["o2_sum"] = (obs_valid**2).sum(dim=dim, skipna=True)
-    if "p_sum" in extra or "p2_sum" in extra or "po_sum" in extra:
-        pred_valid = pred.where(valid).astype("float64")
-        if "p_sum" in extra:
-            stats["p_sum"] = pred_valid.sum(dim=dim, skipna=True)
-        if "p2_sum" in extra:
-            stats["p2_sum"] = (pred_valid**2).sum(dim=dim, skipna=True)
-        if "po_sum" in extra:
-            obs_valid = obs.where(valid).astype("float64")
-            stats["po_sum"] = (pred_valid * obs_valid).sum(dim=dim, skipna=True)
-    return xr.Dataset(stats)
+    return xr.Dataset(
+        {
+            "n": valid.sum(dim=dim),
+            "e_sum": signed_error.sum(dim=dim, skipna=True),
+            "se_sum": (signed_error**2).sum(dim=dim, skipna=True),
+            "ae_sum": np.abs(signed_error).sum(dim=dim, skipna=True),
+            "o_sum": obs_valid.sum(dim=dim, skipna=True),
+            "o2_sum": (obs_valid**2).sum(dim=dim, skipna=True),
+            "p_sum": pred_valid.sum(dim=dim, skipna=True),
+            "p2_sum": (pred_valid**2).sum(dim=dim, skipna=True),
+            "po_sum": (pred_valid * obs_valid).sum(dim=dim, skipna=True),
+        }
+    )
 
 
 def pool_stats(stats: xr.Dataset, dim=None, by: xr.DataArray | None = None) -> xr.Dataset:
@@ -429,6 +362,8 @@ def _measure_activity(stats: xr.Dataset) -> xr.DataArray:
 # bit-identically; the products engine consults both dicts.
 ANOMALY_MEASURES: dict[str, callable] = {"acc": _measure_acc, "activity": _measure_activity}
 
+# Documentation only since the all-columns tally: which columns each measure's finish
+# touches (tuple length reveals its family: 2 = per-case average, more = composite).
 MEASURE_REQUIRES = {
     "rmse": ("se_sum", "n"),
     "bias": ("e_sum", "n"),
@@ -437,13 +372,6 @@ MEASURE_REQUIRES = {
     "acc": ("po_sum", "p2_sum", "o2_sum", "n"),
     "activity": ("p_sum", "p2_sum", "n"),
 }
-
-
-def required_extras(measures: tuple) -> tuple:
-    """The `extra` names `sufficient_stats` must accumulate for these measures."""
-    base = {"n", "e_sum", "se_sum"}
-    needed = {name for measure in measures for name in MEASURE_REQUIRES[measure]}
-    return tuple(sorted(needed - base))
 
 
 def measures_from_stats(stats: xr.Dataset, measures: tuple) -> xr.Dataset:

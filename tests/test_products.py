@@ -7,8 +7,6 @@ from deep_lst.evaluation.metrics import (
     METRIC_REGISTRY,
     compute_pooled_by_day,
     compute_pooled_scores,
-    compute_rmse_sufficient_stats,
-    daily_rmse_by_valid_day,
     skill_score,
 )
 from deep_lst.evaluation.products import align_baseline, compute_products
@@ -60,13 +58,19 @@ def test_scores_by_forecast_day_matches_and_skill():
     np.testing.assert_allclose(product["rmse_skill_pers"].values, expected_skill.values, rtol=1e-5)
 
 
-def test_valid_day_product_matches_daily_rmse():
+def test_valid_day_product_matches_registry_per_day():
+    from deep_lst.evaluation.conditioning import valid_day_labels
+
     pred, obs = _synthetic_cube()
+    pred_win = pred.isel(lead_time=slice(0, 24))
+    obs_win = obs.isel(lead_time=slice(0, 24))
     out = compute_products(pred, obs, ["rmse_by_valid_day_lead1_24"])["rmse_by_valid_day_lead1_24"]
 
-    old_daily, _ = daily_rmse_by_valid_day(compute_rmse_sufficient_stats(pred, obs), np.arange(24))
-    np.testing.assert_allclose(out["rmse"].values, old_daily.values, rtol=1e-5)
-    assert list(out["month"].values) == list(old_daily["month"].values)
+    labels = valid_day_labels(pred_win)
+    for i, day in enumerate(out["day"].values):
+        cell_mask = labels == day
+        ref = float(METRIC_REGISTRY["rmse"](pred_win.where(cell_mask), obs_win.where(cell_mask), dim=None))
+        assert np.isclose(float(out["rmse"].isel(day=i)), ref, rtol=1e-5), str(day)
 
 
 def test_anomaly_products_match_registry():

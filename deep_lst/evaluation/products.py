@@ -23,7 +23,6 @@ import xarray as xr
 
 from deep_lst.evaluation.conditioning import forecast_day_labels, time_of_day_mask, valid_day_labels
 from deep_lst.evaluation.metrics import (
-    MEASURE_REQUIRES,
     measures_from_stats,
     pool_stats,
     skill_score,
@@ -35,7 +34,6 @@ from deep_lst.evaluation.metrics import (
 __all__ = ["PRODUCTS", "ScoreProduct", "align_baseline", "compute_products", "compute_tables"]
 
 RAW = ("rmse", "mae", "bias", "nse")
-_BASE_STATS = ("n", "e_sum", "se_sum")
 
 
 @dataclass(frozen=True)
@@ -98,22 +96,16 @@ PRODUCTS: dict[str, ScoreProduct] = {
 }
 
 
-def required_stats(products: list) -> dict:
-    """{(table, tod): extras tuple} covering every requested product."""
-    needed = {}
+def required_tables(products: list) -> tuple:
+    """Ordered unique (table, tod) keys covering every requested product."""
+    needed = []
     for name in products:
         product = PRODUCTS[name]
         flavours = ("day", "night") if product.table == "map" else (product.tod,)
         for tod in flavours:
-            key = (product.table, tod)
-            extras = {
-                column
-                for measure in product.measures
-                for column in MEASURE_REQUIRES[measure]
-                if column not in _BASE_STATS
-            }
-            needed[key] = tuple(sorted(set(needed.get(key, ())) | extras))
-    return needed
+            if (product.table, tod) not in needed:
+                needed.append((product.table, tod))
+    return tuple(needed)
 
 
 def _masked(pred: xr.DataArray, obs: xr.DataArray, tod: str, window_source: xr.DataArray):
@@ -134,7 +126,7 @@ def compute_tables(
 ) -> dict:
     """Build each required stats table exactly once.
 
-    `needed` is the output of `required_stats`. Profile tables reduce space and keep
+    `needed` is the output of `required_tables`. Profile tables reduce space and keep
     (init_time, lead_time); map tables keep space and pool (init, lead) under
     forecast-day labels per time-of-day flavour. anomaly tables require `clim`.
     """
@@ -142,7 +134,7 @@ def compute_tables(
         window_source = pred
     space_dims = [d for d in pred.dims if d in ("lat", "lon", "pixel")]
     tables = {}
-    for (table, tod), extras in needed.items():
+    for table, tod in needed:
         if table == "profile":
             pred_in, obs_in = _masked(pred, obs, tod, window_source)
         elif table == "anomaly_profile":
@@ -151,12 +143,12 @@ def compute_tables(
             pred_in, obs_in = _masked(pred - clim, obs - clim, tod, window_source)
         elif table == "map":
             pred_in, obs_in = _masked(pred, obs, tod, window_source)
-            stats = sufficient_stats(pred_in, obs_in, dim=["init_time"], extra=extras)
+            stats = sufficient_stats(pred_in, obs_in, dim=["init_time"])
             tables[(table, tod)] = pool_stats(stats, by=forecast_day_labels(pred))
             continue
         else:
             raise ValueError(f"Unknown table kind: {table!r}")
-        tables[(table, tod)] = sufficient_stats(pred_in, obs_in, dim=space_dims, extra=extras)
+        tables[(table, tod)] = sufficient_stats(pred_in, obs_in, dim=space_dims)
     return tables
 
 
@@ -217,11 +209,11 @@ def compute_products(
     `clim` is the aligned climate cube used for anomaly tables.
     """
     baselines = baselines or {}
-    needed = required_stats(products)
+    needed = required_tables(products)
     tables = compute_tables(pred, obs, needed, clim=clim)
     baseline_tables = {}
     for baseline_name, baseline_cube in baselines.items():
-        baseline_needed = {key: extras for key, extras in needed.items() if key[0] != "anomaly_profile"}
+        baseline_needed = tuple(key for key in needed if key[0] != "anomaly_profile")
         baseline_tables[baseline_name] = compute_tables(
             baseline_cube, obs, baseline_needed, clim=None, window_source=pred
         )
@@ -317,47 +309,31 @@ DIAG_PRODUCTS: dict[str, DiagnosticProduct] = {
     "diag_anomaly_by_day": DiagnosticProduct(measures=("acc", "activity"), pool="day", anomaly=True),
 }
 
-_MEANS_EXTRAS = ("p_sum", "o_sum")
 
-
-def _sample_stats(pred: xr.DataArray, obs: xr.DataArray, extra: tuple = ()) -> xr.Dataset:
-    """Per-sample sufficient statistics: the unreduced base of every diagnostic table.
+def _sample_stats(pred: xr.DataArray, obs: xr.DataArray) -> xr.Dataset:
+    """Per-sample sufficient statistics (full tally): the unreduced base of every diagnostic table.
 
     All variables are zero-filled outside the jointly valid samples, so any later
-    pooling is a plain sum (`pool_stats` does not skip NaNs — there are none).
+    pooling is a plain sum (`pool_stats` does not skip NaNs -- there are none).
     """
     valid = pred.notnull() & obs.notnull()
     error = (pred - obs).where(valid)
-
-    stats = {
-        "n": valid.astype("int64"),
-        "e_sum": error.fillna(0.0),
-        "se_sum": (error**2).fillna(0.0),
-    }
-    if "ae_sum" in extra:
-        stats["ae_sum"] = np.abs(error).fillna(0.0)
     obs_valid = obs.where(valid).astype("float64")
     pred_valid = pred.where(valid).astype("float64")
-    if "o_sum" in extra:
-        stats["o_sum"] = obs_valid.fillna(0.0)
-    if "o2_sum" in extra:
-        stats["o2_sum"] = (obs_valid**2).fillna(0.0)
-    if "p_sum" in extra:
-        stats["p_sum"] = pred_valid.fillna(0.0)
-    if "p2_sum" in extra:
-        stats["p2_sum"] = (pred_valid**2).fillna(0.0)
-    if "po_sum" in extra:
-        stats["po_sum"] = (pred_valid * obs_valid).fillna(0.0)
-    return xr.Dataset(stats)
 
-
-def _diag_extras(product: DiagnosticProduct) -> tuple:
-    extras = {
-        column for measure in product.measures for column in MEASURE_REQUIRES[measure] if column not in _BASE_STATS
-    }
-    if product.with_means:
-        extras.update(_MEANS_EXTRAS)
-    return tuple(sorted(extras))
+    return xr.Dataset(
+        {
+            "n": valid.astype("int64"),
+            "e_sum": error.fillna(0.0),
+            "se_sum": (error**2).fillna(0.0),
+            "ae_sum": np.abs(error).fillna(0.0),
+            "o_sum": obs_valid.fillna(0.0),
+            "o2_sum": (obs_valid**2).fillna(0.0),
+            "p_sum": pred_valid.fillna(0.0),
+            "p2_sum": (pred_valid**2).fillna(0.0),
+            "po_sum": (pred_valid * obs_valid).fillna(0.0),
+        }
+    )
 
 
 def _pool_diag(base: xr.Dataset, pool: str, time_dim: str, space_dims: list) -> xr.Dataset:
@@ -421,16 +397,13 @@ def compute_diagnostic_products(
     space_dims = [d for d in pred.dims if d in ("lat", "lon", "pixel")]
 
     requested = [DIAG_PRODUCTS[name] for name in products]
-    raw_extras = tuple(sorted({e for p in requested if not p.anomaly for e in _diag_extras(p)}))
-    anom_extras = tuple(sorted({e for p in requested if p.anomaly for e in _diag_extras(p)}))
-
-    base = _sample_stats(pred, obs, extra=raw_extras)
+    base = _sample_stats(pred, obs)
     anomaly_base = None
     if any(p.anomaly for p in requested):
         if clim is None:
             raise ValueError("anomaly diagnostic products require a climate baseline cube")
-        anomaly_base = _sample_stats(pred - clim, obs - clim, extra=anom_extras)
-    baseline_bases = {name: _sample_stats(cube, obs, extra=raw_extras) for name, cube in baselines.items()}
+        anomaly_base = _sample_stats(pred - clim, obs - clim)
+    baseline_bases = {name: _sample_stats(cube, obs) for name, cube in baselines.items()}
 
     out = {}
     for name, product in zip(products, requested):
@@ -462,7 +435,7 @@ def align_baseline(baseline: xr.DataArray, pred: xr.DataArray) -> xr.DataArray:
     """Align a valid_time-indexed baseline to pred's (init_time, lead_time, space) cube.
 
     Per lead: reindex to init + lead valid times, relabel back to init_time, mask to
-    finite pred (the same alignment EvaluatorVerification._baseline_full performs).
+    finite pred (the same per-lead alignment the legacy evaluator performed).
     """
     slices = []
     lead_times = pred["lead_time"].values

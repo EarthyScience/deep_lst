@@ -27,7 +27,7 @@ import time
 
 import dask
 
-from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, EvaluatorVerification
+from deep_lst.evaluation.evaluator import CLIMATE_BASELINES, Evaluator
 from deep_lst.evaluation.plot_runner import PlotRunnerDiagnostics, PlotRunnerVerification, required_products
 from deep_lst.evaluation.products import DIAG_PRODUCTS, PRODUCTS
 from deep_lst.utils import ExperimentPaths
@@ -85,16 +85,12 @@ def run_evaluation():
     clim_baseline = next((b for b in baselines if b in CLIMATE_BASELINES), None)
     baseline_labels = {b: BASELINE_LABELS[b] for b in baselines}
 
-    ev = EvaluatorVerification(
+    ev = Evaluator(
         experiment=args.experiment,
         version=args.version,
         eval_name=args.eval,
         var=args.variable,
-        baseline=None,
         temporal=args.temporal,
-        aggregation="region_time",
-        consistent_mask=False,
-        overwrite=args.overwrite,
     )
     ev.load()
 

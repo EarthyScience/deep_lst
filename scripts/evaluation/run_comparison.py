@@ -23,7 +23,7 @@ from pathlib import Path
 
 import xarray as xr
 
-from deep_lst.evaluation.evaluator import EvaluatorVerification
+from deep_lst.evaluation.evaluator import Evaluator
 from deep_lst.evaluation.plot_runner import _quantile_bands, _with_delta
 from deep_lst.evaluation.plots.diurnal import diurnal_delta_comparison
 from deep_lst.evaluation.plots.scores import score_boxplots
@@ -66,16 +66,12 @@ def parse_args():
 
 def _make_products(experiment, version, eval_name, lead_time, temporal) -> dict:
     """One region's diagnostic products for the comparison: per-timestep scores + diurnal bands."""
-    ev = EvaluatorVerification(
+    ev = Evaluator(
         experiment=experiment,
         version=version,
         eval_name=eval_name,
         var="LST",
-        baseline=None,
         temporal=temporal,
-        aggregation="region_time",
-        consistent_mask=False,
-        overwrite=False,
     )
     ev.load()
     ev.compute_diagnostics(lead_time, ["diag_scores_by_time", "diag_by_hour"])
