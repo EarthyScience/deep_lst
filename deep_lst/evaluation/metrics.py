@@ -185,9 +185,13 @@ def local_valid_hour(da: xr.DataArray) -> xr.DataArray:
     grid axis, or `pixel` for sparse sites). Day/night windows built on this track the diurnal
     cycle by longitude instead of a fixed UTC clock, so they stay comparable across regions.
     """
-    init_hour = da["init_time"].dt.hour
-    lead_hour = (da["lead_time"] / np.timedelta64(1, "h")).astype(int)
-    return (init_hour + lead_hour + da["lon"] / 15.0) % 24
+    if "valid_time" in da.coords:
+        utc_hour = da["valid_time"].dt.hour  # single-lead view: the axis IS the valid time
+    else:
+        init_hour = da["init_time"].dt.hour
+        lead_hour = (da["lead_time"] / np.timedelta64(1, "h")).astype(int)
+        utc_hour = init_hour + lead_hour
+    return (utc_hour + da["lon"] / 15.0) % 24
 
 
 def skill_score(model_score, baseline_score):

@@ -8,7 +8,7 @@ from deep_lst.evaluation.metrics import (
     compute_scores,
     to_valid_time,
 )
-from deep_lst.evaluation.products import align_baseline, compute_products
+from deep_lst.evaluation.products import align_baseline, compute_diagnostic_products, compute_products
 from deep_lst.evaluation.spatial import pixel_grid
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.spatial import store_grid
@@ -114,6 +114,44 @@ class Evaluator:
     def materialise(self) -> None:
         """Eager-ify the finished products (small); pred/obs stay lazy."""
         self.products = {name: ds.compute() for name, ds in self.products.items()}
+
+    def compute_diagnostics(
+        self,
+        lead_time,
+        products: list,
+        baselines: tuple = (),
+        clim_baseline: str | None = None,
+        class_coords: tuple = (),
+        tod: str = "all",
+    ) -> dict:
+        """Single-lead diagnostic products on the valid_time view; stored in self.diag_products.
+
+        Baseline cubes are the cached load_baseline() alignments sliced at the lead, so
+        verification and diagnostics share one load and one alignment per baseline.
+        `tod` conditions every product on the local-solar day/night window.
+        """
+        pred_lead = to_valid_time(self.pred.sel(lead_time=lead_time), lead_time)
+        obs_lead = to_valid_time(self.obs.sel(lead_time=lead_time), lead_time)
+        baseline_slices = {
+            name: to_valid_time(self.load_baseline(name).sel(lead_time=lead_time), lead_time) for name in baselines
+        }
+        clim = None
+        if clim_baseline is not None:
+            clim = to_valid_time(self.load_baseline(clim_baseline).sel(lead_time=lead_time), lead_time)
+        self.diag_products = compute_diagnostic_products(
+            pred_lead,
+            obs_lead,
+            products,
+            baselines=baseline_slices,
+            clim=clim,
+            class_coords=class_coords,
+            tod=tod,
+        )
+        return self.diag_products
+
+    def materialise_diagnostics(self) -> None:
+        """Eager-ify the finished diagnostic products (small)."""
+        self.diag_products = {name: ds.compute() for name, ds in self.diag_products.items()}
 
     # Shared helpers
     def _load_forecast(self) -> xr.Dataset:

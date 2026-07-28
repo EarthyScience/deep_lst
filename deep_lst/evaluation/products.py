@@ -277,6 +277,187 @@ def compute_products(
     return out
 
 
+# --- diagnostic products: the single-lead valid_time view ------------------------------
+#
+# At one lead the view is (valid_time, space), small enough to hold the tally at FULL
+# granularity: the per-sample stats field. Every diagnostic table is then one pool_stats
+# call on the same base — over space (per-timestep scores), over time by hour labels
+# (diurnal), over time (per-pixel maps), over space by class labels (class violins),
+# over everything by calendar-day labels (monthly violins).
+
+DIAG_RAW = ("rmse", "mae", "bias", "nse")
+
+
+@dataclass(frozen=True)
+class DiagnosticProduct:
+    """One single-lead product: which pooling of the per-sample stats, which measures."""
+
+    measures: tuple
+    pool: str  # "time" | "space" | "hour" | "class" | "day"
+    anomaly: bool = False  # build from (pred - clim, obs - clim)
+    with_baselines: bool = False  # emit {measure}_{name} and {measure}_skill_{name} columns
+    with_means: bool = False  # emit pred_mean / obs_mean columns (from p_sum / o_sum)
+
+
+DIAG_PRODUCTS: dict[str, DiagnosticProduct] = {
+    # today: EvaluatorDiagnostics.scores (region_space) + plot_score_map / plot_improvement_map
+    "diag_map": DiagnosticProduct(measures=DIAG_RAW, pool="time", with_baselines=True),
+    "diag_anomaly_map": DiagnosticProduct(measures=("acc",), pool="time", anomaly=True),
+    # today: plot_error_overview's region_time scores
+    "diag_scores_by_time": DiagnosticProduct(measures=DIAG_RAW, pool="space", with_baselines=True),
+    "diag_anomaly_by_time": DiagnosticProduct(measures=("acc", "activity"), pool="space", anomaly=True),
+    # today: grouped / climate_grouped (diurnal, region_space) incl. pred_mean/obs_mean
+    "diag_by_hour": DiagnosticProduct(measures=DIAG_RAW, pool="hour", with_baselines=True, with_means=True),
+    "diag_anomaly_by_hour": DiagnosticProduct(measures=("acc", "activity"), pool="hour", anomaly=True, with_means=True),
+    # today: plot_class_score_violin's compute_class_scores (expanded per class coord present)
+    "diag_by_class": DiagnosticProduct(measures=DIAG_RAW, pool="class"),
+    "diag_anomaly_by_class": DiagnosticProduct(measures=("acc", "activity"), pool="class", anomaly=True),
+    # today: daily_pooled / daily_pooled_anom (monthly violins; adds {measure}_total)
+    "diag_by_day": DiagnosticProduct(measures=DIAG_RAW, pool="day"),
+    "diag_anomaly_by_day": DiagnosticProduct(measures=("acc", "activity"), pool="day", anomaly=True),
+}
+
+_MEANS_EXTRAS = ("p_sum", "o_sum")
+
+
+def _sample_stats(pred: xr.DataArray, obs: xr.DataArray, extra: tuple = ()) -> xr.Dataset:
+    """Per-sample sufficient statistics: the unreduced base of every diagnostic table.
+
+    All variables are zero-filled outside the jointly valid samples, so any later
+    pooling is a plain sum (`pool_stats` does not skip NaNs — there are none).
+    """
+    valid = pred.notnull() & obs.notnull()
+    error = (pred - obs).where(valid)
+
+    stats = {
+        "n": valid.astype("int64"),
+        "e_sum": error.fillna(0.0),
+        "se_sum": (error**2).fillna(0.0),
+    }
+    if "ae_sum" in extra:
+        stats["ae_sum"] = np.abs(error).fillna(0.0)
+    obs_valid = obs.where(valid).astype("float64")
+    pred_valid = pred.where(valid).astype("float64")
+    if "o_sum" in extra:
+        stats["o_sum"] = obs_valid.fillna(0.0)
+    if "o2_sum" in extra:
+        stats["o2_sum"] = (obs_valid**2).fillna(0.0)
+    if "p_sum" in extra:
+        stats["p_sum"] = pred_valid.fillna(0.0)
+    if "p2_sum" in extra:
+        stats["p2_sum"] = (pred_valid**2).fillna(0.0)
+    if "po_sum" in extra:
+        stats["po_sum"] = (pred_valid * obs_valid).fillna(0.0)
+    return xr.Dataset(stats)
+
+
+def _diag_extras(product: DiagnosticProduct) -> tuple:
+    extras = {
+        column for measure in product.measures for column in MEASURE_REQUIRES[measure] if column not in _BASE_STATS
+    }
+    if product.with_means:
+        extras.update(_MEANS_EXTRAS)
+    return tuple(sorted(extras))
+
+
+def _pool_diag(base: xr.Dataset, pool: str, time_dim: str, space_dims: list) -> xr.Dataset:
+    from deep_lst.evaluation.conditioning import calendar_day_labels, hour_of_day_labels
+
+    if pool == "time":
+        return pool_stats(base, dim=[time_dim])
+    if pool == "space":
+        return pool_stats(base, dim=space_dims)
+    if pool == "hour":
+        pooled = pool_stats(base, by=hour_of_day_labels(base, time_dim))
+        # keep the full 24-hour axis: absent hours become NaN rows, matching the legacy
+        # grouped output (a 6-hourly-init single lead only populates 4 of 24 bins)
+        return pooled.reindex(hour=np.arange(24))
+    if pool == "day":
+        pooled = pool_stats(base, dim=space_dims, by=calendar_day_labels(base, time_dim))
+        months = pd.DatetimeIndex(pooled["day"].values).month
+        return pooled.assign_coords(month=("day", months))
+    raise ValueError(f"Unknown diagnostic pooling: {pool!r}")
+
+
+def _finish_diag(pooled: xr.Dataset, product: DiagnosticProduct) -> xr.Dataset:
+    finished = measures_from_stats(pooled, product.measures)
+    if product.with_means:
+        finished["pred_mean"] = pooled["p_sum"] / pooled["n"]
+        finished["obs_mean"] = pooled["o_sum"] / pooled["n"]
+    if product.pool == "day":
+        totals = measures_from_stats(pool_stats(pooled, dim=["day"]), product.measures)
+        for measure in product.measures:
+            finished[f"{measure}_total"] = totals[measure]
+        finished = finished.assign_coords(month=pooled["month"])
+    return finished
+
+
+def compute_diagnostic_products(
+    pred: xr.DataArray,
+    obs: xr.DataArray,
+    products: list,
+    baselines: dict[str, xr.DataArray] | None = None,
+    clim: xr.DataArray | None = None,
+    class_coords: tuple = (),
+    tod: str = "all",
+) -> dict[str, xr.Dataset]:
+    """Evaluate DIAG_PRODUCTS on the single-lead (valid_time, space) view.
+
+    `tod` conditions EVERY product on the local-solar day/night window by masking the
+    inputs before the per-sample stats (the window depends on lon, so it must apply
+    while space still exists). "diag_by_class" expands to one output per class coord
+    present on `pred`, keyed ``diag_by_class__{coord}``.
+    """
+    baselines = baselines or {}
+    if tod != "all":
+        window = time_of_day_mask(pred, tod)
+        pred = pred.where(window)
+        obs = obs.where(window)
+        baselines = {name: cube.where(window) for name, cube in baselines.items()}
+        if clim is not None:
+            clim = clim.where(window)
+
+    time_dim = next(d for d in pred.dims if d in ("valid_time", "init_time"))
+    space_dims = [d for d in pred.dims if d in ("lat", "lon", "pixel")]
+
+    requested = [DIAG_PRODUCTS[name] for name in products]
+    raw_extras = tuple(sorted({e for p in requested if not p.anomaly for e in _diag_extras(p)}))
+    anom_extras = tuple(sorted({e for p in requested if p.anomaly for e in _diag_extras(p)}))
+
+    base = _sample_stats(pred, obs, extra=raw_extras)
+    anomaly_base = None
+    if any(p.anomaly for p in requested):
+        if clim is None:
+            raise ValueError("anomaly diagnostic products require a climate baseline cube")
+        anomaly_base = _sample_stats(pred - clim, obs - clim, extra=anom_extras)
+    baseline_bases = {name: _sample_stats(cube, obs, extra=raw_extras) for name, cube in baselines.items()}
+
+    out = {}
+    for name, product in zip(products, requested):
+        source = anomaly_base if product.anomaly else base
+
+        if product.pool == "class":
+            for coord in class_coords:
+                if coord not in pred.coords:
+                    continue
+                pooled = pool_stats(source, by=pred[coord].rename(coord))
+                pooled = pooled.sel({coord: pooled[coord] != -1})  # -1 = no class
+                out[f"{name}__{coord}"] = measures_from_stats(pooled, product.measures)
+            continue
+
+        pooled = _pool_diag(source, product.pool, time_dim, space_dims)
+        finished = _finish_diag(pooled, product)
+        if product.with_baselines:
+            for bl_name, bl_base in baseline_bases.items():
+                bl_pooled = _pool_diag(bl_base, product.pool, time_dim, space_dims)
+                bl_finished = measures_from_stats(bl_pooled, product.measures)
+                for measure in product.measures:
+                    finished[f"{measure}_{bl_name}"] = bl_finished[measure]
+                    finished[f"{measure}_skill_{bl_name}"] = skill_score(finished[measure], bl_finished[measure])
+        out[name] = finished
+    return out
+
+
 def align_baseline(baseline: xr.DataArray, pred: xr.DataArray) -> xr.DataArray:
     """Align a valid_time-indexed baseline to pred's (init_time, lead_time, space) cube.
 

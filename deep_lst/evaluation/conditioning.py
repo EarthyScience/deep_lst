@@ -53,3 +53,15 @@ def valid_day_labels(obj) -> xr.DataArray:
     lead = obj["lead_time"].values[None, :]
     day = (init + lead).astype("datetime64[D]")
     return xr.DataArray(day, dims=("init_time", "lead_time"), name="day")
+
+
+def hour_of_day_labels(obj, time_dim: str = "valid_time") -> xr.DataArray:
+    """UTC hour-of-day (0-23) of each timestamp on a 1-D time dim (the diurnal groupby axis)."""
+    hours = obj[time_dim].dt.hour.values
+    return xr.DataArray(hours, dims=time_dim, name="hour")
+
+
+def calendar_day_labels(obj, time_dim: str = "valid_time") -> xr.DataArray:
+    """Calendar day of each timestamp on a 1-D time dim (for daily pooling of a single-lead view)."""
+    days = obj[time_dim].dt.floor("D").values
+    return xr.DataArray(days, dims=time_dim, name="day")
