@@ -32,7 +32,7 @@ import xarray as xr
 from deep_lst.evaluation.conditioning import mask_time_of_day
 from deep_lst.evaluation.evaluator import Evaluator
 from deep_lst.evaluation.latex import latex_table, write_month_tables
-from deep_lst.evaluation.metrics import pool_metric, skill_score, to_lead_hours
+from deep_lst.evaluation.metrics import measures_from_stats, pool_stats, skill_score, sufficient_stats, to_lead_hours
 from deep_lst.evaluation.plots.month_grid import (
     MONTHS,
     _latitude_labels,
@@ -41,6 +41,7 @@ from deep_lst.evaluation.plots.month_grid import (
     fingerprint_rmse_heatmap,
     monthly_rmse_heatmap,
 )
+from deep_lst.evaluation.products import sample_stats
 from deep_lst.utils import ExperimentPaths
 
 PATHS = ExperimentPaths()
@@ -161,8 +162,9 @@ def _column_fields(pred: xr.DataArray, obs: xr.DataArray, column: str):
 
 
 def pooled_metric(pred: xr.DataArray, obs: xr.DataArray, metric: str) -> float:
-    """Single metric value pooled over every dim (squared-error domain)."""
-    return float(pool_metric(pred, obs, metric, list(pred.dims)))
+    """Single metric value pooled over every dim (squared-error domain), finished from the tally."""
+    stats = sufficient_stats(pred, obs, dim=list(pred.dims))
+    return float(measures_from_stats(stats, (metric,))[metric])
 
 
 def pooled_std(obs: xr.DataArray) -> float:
@@ -541,37 +543,33 @@ def run_monthly(args):
 def _month_hour_suffstats(model, obs, window):
     """Per-pixel-per-cell sufficient stats on the month x hour grid, for one lead window.
 
-    Returns sum_e (S1=Sigma e), sum_e2 (S2=Sigma e^2), count (n) each (288, n_pixel) with
-    cell = (month-1)*24 + hour, plus per-cell n_samples (forecast (init, lead) pairs in the cell) and
-    n_distinct (unique target timestamps) for the pseudo-replication check. error e = pred - obs.
-    Shared by the raw/centered decomposition and the Bessel-corrected one (no model re-evaluation).
+    The (sum_e, sum_e2, count) tally comes from the chain: per-sample stats pooled by the
+    joint (month, hour) cell labels, cell = (month-1)*24 + hour. n_samples (forecast
+    (init, lead) pairs per cell) and n_distinct (unique target timestamps, for the
+    pseudo-replication check) are label bookkeeping, computed from the time structure
+    alone. Shared by the raw/centered decomposition and the Bessel-corrected one.
     """
-    error = _select_window(model - obs, window)
-    space = [dim for dim in error.dims if dim not in ("init_time", "lead_time")]
-    values = error.transpose("init_time", "lead_time", *space).values
-    n_pixel = int(np.prod(values.shape[2:]))
-    flat_error = values.reshape(-1, n_pixel)  # (init*lead, pixel); NaN where obs missing
+    model_w = _select_window(model, window)
+    obs_w = _select_window(obs, window)
+    space = [dim for dim in model_w.dims if dim not in ("init_time", "lead_time")]
 
-    init = pd.DatetimeIndex(error["init_time"].values).values
-    lead = pd.TimedeltaIndex(error["lead_time"].values).values
+    init = pd.DatetimeIndex(model_w["init_time"].values).values
+    lead = pd.TimedeltaIndex(model_w["lead_time"].values).values
     valid = pd.DatetimeIndex((init[:, None] + lead[None, :]).ravel())
-    bucket = (valid.month.values - 1) * 24 + valid.hour.values  # 0..287, per (init, lead) cell
-    valid_i8 = valid.asi8  # int64 ns, for counting distinct target timestamps
+    bucket = (valid.month.values - 1) * 24 + valid.hour.values  # 0..287 per (init, lead) pair
+    cell_labels = xr.DataArray(bucket.reshape(len(init), len(lead)), dims=("init_time", "lead_time"), name="cell")
 
-    finite = np.isfinite(flat_error)
-    filled = np.where(finite, flat_error, 0.0)
-    sum_e = np.zeros((288, n_pixel))
-    sum_e2 = np.zeros((288, n_pixel))
-    count = np.zeros((288, n_pixel))
+    pooled = pool_stats(sample_stats(model_w, obs_w), by=cell_labels)
+    pooled = pooled.reindex(cell=np.arange(288), fill_value=0)
+    sum_e = pooled["e_sum"].transpose("cell", *space).values.reshape(288, -1)
+    sum_e2 = pooled["se_sum"].transpose("cell", *space).values.reshape(288, -1)
+    count = pooled["n"].transpose("cell", *space).values.reshape(288, -1).astype(float)
+
+    valid_i8 = valid.asi8
     n_samples = np.zeros(288)
     n_distinct = np.zeros(288)
-    for cell in range(288):
+    for cell in np.unique(bucket):
         rows = bucket == cell
-        if not rows.any():
-            continue
-        sum_e[cell] = filled[rows].sum(axis=0)
-        sum_e2[cell] = (filled[rows] ** 2).sum(axis=0)
-        count[cell] = finite[rows].sum(axis=0)
         n_samples[cell] = int(rows.sum())
         n_distinct[cell] = np.unique(valid_i8[rows]).size
     return sum_e, sum_e2, count, n_samples, n_distinct
@@ -736,21 +734,19 @@ DECOMP_TODS = ("total", "daytime", "nighttime")
 
 
 def _pooled_rmse_decomp(pred, obs):
-    """(raw, debiased, collapse%) pooled RMSE; debiased removes each pixel's mean error first.
+    """(raw, per-pixel-debiased, %collapse) pooled RMSE from the per-pixel tally.
 
-    Per-pixel bias = mean error over the column's (init, lead) samples for that pixel; debiased RMSE
-    is sqrt of the per-pixel temporal variance pooled over pixels. raw^2 = debiased^2 + spatial-bias^2.
+    raw = sqrt(sum(se)/sum(n)); debiased removes each pixel's mean error before pooling
+    (sqrt(sum(se - e^2/n)/sum(n)), clipped against float cancellation); collapse is the
+    fraction of the raw MSE explained by the per-pixel biases.
     """
-    error = pred - obs
-    reduce = [dim for dim in ("init_time", "lead_time") if dim in error.dims]
-    count = error.notnull().sum(reduce)
-    sum_e = error.sum(reduce, skipna=True)
-    sum_e2 = (error**2).sum(reduce, skipna=True)
-    total = float(count.sum())
+    time_dims = [dim for dim in ("init_time", "lead_time") if dim in pred.dims]
+    stats = sufficient_stats(pred, obs, dim=time_dims)
+    total = float(stats["n"].sum())
     if total == 0:
         return float("nan"), float("nan"), float("nan")
-    raw = float(np.sqrt(float(sum_e2.sum()) / total))
-    per_pixel_ss = (sum_e2 - sum_e**2 / count.where(count > 0)).clip(min=0)  # guard float cancellation
+    raw = float(np.sqrt(float(stats["se_sum"].sum()) / total))
+    per_pixel_ss = (stats["se_sum"] - stats["e_sum"] ** 2 / stats["n"].where(stats["n"] > 0)).clip(min=0)
     debiased = float(np.sqrt(float(per_pixel_ss.sum()) / total))
     collapse = 100.0 * (1.0 - (debiased / raw) ** 2) if raw > 0 else float("nan")
     return raw, debiased, collapse
@@ -813,7 +809,7 @@ def main():
     parser.add_argument("--baselines", nargs="+", default=None)
     parser.add_argument("--temporal", nargs="+", default=["test_period_00"])
     parser.add_argument("--windows", nargs="+", default=["nowcast", "full"])
-    parser.add_argument("--metrics", nargs="+", default=["rmse"], help="any name in metrics.METRIC_REGISTRY")
+    parser.add_argument("--metrics", nargs="+", default=["rmse"], help="any name in metrics.MEASURES")
     parser.add_argument("--sets", nargs="+", default=["raw", "std", "skill"], choices=["raw", "std", "skill"])
     parser.add_argument(
         "--monthly",

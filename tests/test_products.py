@@ -3,15 +3,45 @@ import pandas as pd
 import xarray as xr
 
 from deep_lst.evaluation.conditioning import time_of_day_mask
-from deep_lst.evaluation.metrics import (
-    METRIC_REGISTRY,
-    compute_pooled_by_day,
-    compute_pooled_scores,
-    skill_score,
-)
+from deep_lst.evaluation.metrics import skill_score
 from deep_lst.evaluation.products import align_baseline, compute_products
 
 RAW = ["rmse", "mae", "bias", "nse"]
+
+
+def _ref_rmse(pred, obs, dim=None):
+    """Independent reference: joint-masked pooled RMSE (mirrors the deleted registry formula)."""
+    return np.sqrt(((obs - pred) ** 2).mean(dim=dim, skipna=True))
+
+
+def _ref_bias(pred, obs, dim=None):
+    return (pred - obs).mean(dim=dim, skipna=True)
+
+
+def _ref_acc(anom_pred, anom_obs, dim=None):
+    valid = anom_pred.notnull() & anom_obs.notnull()
+    ap, ao = anom_pred.where(valid), anom_obs.where(valid)
+    num = (ap * ao).sum(dim=dim, skipna=True)
+    return num / np.sqrt((ap**2).sum(dim=dim, skipna=True) * (ao**2).sum(dim=dim, skipna=True))
+
+
+def _ref_activity(anom_pred, anom_obs, dim=None):
+    return anom_pred.where(anom_obs.notnull()).std(dim=dim, skipna=True)
+
+
+def _ref_mae(pred, obs, dim=None):
+    return np.abs(obs - pred).mean(dim=dim, skipna=True)
+
+
+def _ref_nse(pred, obs, dim=None):
+    valid = pred.notnull() & obs.notnull()
+    p, o = pred.where(valid), obs.where(valid)
+    ss_res = ((o - p) ** 2).sum(dim=dim, skipna=True)
+    ss_tot = ((o - o.mean(dim=dim, skipna=True)) ** 2).sum(dim=dim, skipna=True)
+    return 1.0 - ss_res / ss_tot
+
+
+_REFS = {"rmse": _ref_rmse, "bias": _ref_bias, "mae": _ref_mae, "nse": _ref_nse}
 
 
 def _synthetic_cube(seed=7):
@@ -36,11 +66,13 @@ def _baseline_cube(obs, seed=11):
     return obs + rng.normal(0.0, 3.0, size=obs.shape)
 
 
-def test_scores_by_lead_matches_compute_pooled_scores():
+def test_scores_by_lead_matches_inline_references():
     pred, obs = _synthetic_cube()
     out = compute_products(pred, obs, ["scores_by_lead"])["scores_by_lead"]
-    old = compute_pooled_scores(pred, obs, RAW)
-    xr.testing.assert_allclose(out[RAW], old, rtol=1e-5)
+    pooled_dims = ["init_time", "lat", "lon"]
+    for m in RAW:
+        reference = _REFS[m](pred, obs, dim=pooled_dims)
+        np.testing.assert_allclose(out[m].values, reference.values, rtol=1e-4, equal_nan=True)
 
 
 def test_scores_by_forecast_day_matches_and_skill():
@@ -49,13 +81,20 @@ def test_scores_by_forecast_day_matches_and_skill():
     out = compute_products(pred, obs, ["scores_by_forecast_day"], baselines={"pers": baseline})
     product = out["scores_by_forecast_day"]
 
-    old = compute_pooled_by_day(pred, obs, RAW)
-    xr.testing.assert_allclose(product[RAW], old, rtol=1e-5)
-    assert list(product["day_label"].values) == list(old["day_label"].values)
-
-    old_baseline = compute_pooled_by_day(baseline, obs, RAW)
-    expected_skill = skill_score(old["rmse"], old_baseline["rmse"])
-    np.testing.assert_allclose(product["rmse_skill_pers"].values, expected_skill.values, rtol=1e-5)
+    lead_hours = (pred["lead_time"].values / np.timedelta64(1, "h")).astype(int)
+    for i, day in enumerate(product["day"].values):
+        in_bucket = (lead_hours >= (day - 1) * 24 + 1) & (lead_hours <= day * 24)
+        pred_b = pred.isel(lead_time=np.where(in_bucket)[0])
+        obs_b = obs.isel(lead_time=np.where(in_bucket)[0])
+        assert np.isclose(float(product["rmse"].isel(day=i)), float(_ref_rmse(pred_b, obs_b)), rtol=1e-4)
+        assert np.isclose(
+            float(product["rmse_pers"].isel(day=i)),
+            float(_ref_rmse(baseline.isel(lead_time=np.where(in_bucket)[0]), obs_b)),
+            rtol=1e-4,
+        )
+    expected_skill = skill_score(product["rmse"], product["rmse_pers"])
+    np.testing.assert_allclose(product["rmse_skill_pers"].values, expected_skill.values, rtol=1e-6)
+    assert list(product["day_label"].values) == [f"Day {d}" for d in product["day"].values]
 
 
 def test_valid_day_product_matches_registry_per_day():
@@ -69,7 +108,7 @@ def test_valid_day_product_matches_registry_per_day():
     labels = valid_day_labels(pred_win)
     for i, day in enumerate(out["day"].values):
         cell_mask = labels == day
-        ref = float(METRIC_REGISTRY["rmse"](pred_win.where(cell_mask), obs_win.where(cell_mask), dim=None))
+        ref = float(_ref_rmse(pred_win.where(cell_mask), obs_win.where(cell_mask), dim=None))
         assert np.isclose(float(out["rmse"].isel(day=i)), ref, rtol=1e-5), str(day)
 
 
@@ -79,7 +118,9 @@ def test_anomaly_products_match_registry():
     out = compute_products(pred, obs, ["anomaly_by_init_lead"], clim=clim)["anomaly_by_init_lead"]
 
     ap, ao = pred - clim, obs - clim
-    old = xr.Dataset({m: METRIC_REGISTRY[m](ap, ao, dim=["lat", "lon"]) for m in ("acc", "activity")})
+    old = xr.Dataset(
+        {m: {"acc": _ref_acc, "activity": _ref_activity}[m](ap, ao, dim=["lat", "lon"]) for m in ("acc", "activity")}
+    )
     xr.testing.assert_allclose(out, old, rtol=1e-5, atol=1e-6)  # atol: acc crosses zero
 
 
@@ -167,9 +208,9 @@ def test_diag_map_and_by_time_match_registry():
     out = compute_diagnostic_products(pred, obs, ["diag_map", "diag_scores_by_time"])
 
     for m in RAW:
-        ref_map = METRIC_REGISTRY[m](pred, obs, dim=["valid_time"])
+        ref_map = _REFS[m](pred, obs, dim=["valid_time"])
         np.testing.assert_allclose(out["diag_map"][m].values, ref_map.values, rtol=1e-4, equal_nan=True)
-        ref_time = METRIC_REGISTRY[m](pred, obs, dim=["lat", "lon"])
+        ref_time = _REFS[m](pred, obs, dim=["lat", "lon"])
         np.testing.assert_allclose(out["diag_scores_by_time"][m].values, ref_time.values, rtol=1e-4, equal_nan=True)
 
 
@@ -186,7 +227,7 @@ def test_diag_by_hour_matches_registry_per_hour():
         idx = np.where(hours == hour)[0]
         pred_h = pred.isel(valid_time=idx)
         obs_h = obs.isel(valid_time=idx)
-        ref = METRIC_REGISTRY["rmse"](pred_h, obs_h, dim=["valid_time"])
+        ref = _ref_rmse(pred_h, obs_h, dim=["valid_time"])
         np.testing.assert_allclose(out["rmse"].sel(hour=hour).values, ref.values, rtol=1e-4, equal_nan=True)
         ref_mean = pred_h.where(valid.isel(valid_time=idx)).mean("valid_time", skipna=True)
         np.testing.assert_allclose(out["pred_mean"].sel(hour=hour).values, ref_mean.values, rtol=1e-4, equal_nan=True)
@@ -205,7 +246,7 @@ def test_diag_by_class_matches_registry_per_class():
     assert -1 not in product["kg_class"].values  # nodata class excluded
     for class_id in (1, 2):
         mask = pred["kg_class"] == class_id
-        ref = METRIC_REGISTRY["rmse"](pred.where(mask), obs.where(mask), dim=["lat", "lon"])
+        ref = _ref_rmse(pred.where(mask), obs.where(mask), dim=["lat", "lon"])
         np.testing.assert_allclose(product["rmse"].sel(kg_class=class_id).values, ref.values, rtol=1e-4, equal_nan=True)
 
 
@@ -219,9 +260,13 @@ def test_diag_by_day_matches_registry_per_day():
     for metric in ("rmse", "bias"):
         for i, day in enumerate(np.unique(days)):
             idx = np.where(days == day)[0]
-            ref = float(METRIC_REGISTRY[metric](pred.isel(valid_time=idx), obs.isel(valid_time=idx), dim=None))
+            ref = float(
+                {"rmse": _ref_rmse, "bias": _ref_bias}[metric](
+                    pred.isel(valid_time=idx), obs.isel(valid_time=idx), dim=None
+                )
+            )
             assert np.isclose(float(out[metric].isel(day=i)), ref, rtol=1e-4)
-        total = float(METRIC_REGISTRY[metric](pred, obs, dim=None))
+        total = float({"rmse": _ref_rmse, "bias": _ref_bias}[metric](pred, obs, dim=None))
         assert np.isclose(float(out[f"{metric}_total"]), total, rtol=1e-4)
 
 
@@ -234,7 +279,7 @@ def test_diag_baseline_columns_and_tod():
     baseline = _baseline_cube(obs)
 
     out = compute_diagnostic_products(pred, obs, ["diag_map"], baselines={"pers": baseline})["diag_map"]
-    old_bl = METRIC_REGISTRY["rmse"](baseline, obs, dim=["valid_time"])
+    old_bl = _ref_rmse(baseline, obs, dim=["valid_time"])
     np.testing.assert_allclose(out["rmse_pers"].values, old_bl.values, rtol=1e-4, equal_nan=True)
     expected_skill = skill_score(out["rmse"], out["rmse_pers"])
     np.testing.assert_allclose(out["rmse_skill_pers"].values, expected_skill.values, rtol=1e-6, equal_nan=True)
@@ -242,5 +287,5 @@ def test_diag_baseline_columns_and_tod():
     # tod conditioning == masking the inputs up front
     day = compute_diagnostic_products(pred, obs, ["diag_scores_by_time"], tod="day")["diag_scores_by_time"]
     window = time_of_day_mask(pred, "day")
-    old_day = METRIC_REGISTRY["rmse"](pred.where(window), obs.where(window), dim=["lat", "lon"])
+    old_day = _ref_rmse(pred.where(window), obs.where(window), dim=["lat", "lon"])
     np.testing.assert_allclose(day["rmse"].values, old_day.values, rtol=1e-4, equal_nan=True)

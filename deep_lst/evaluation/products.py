@@ -31,7 +31,16 @@ from deep_lst.evaluation.metrics import (
     to_lead_hours,
 )
 
-__all__ = ["PRODUCTS", "ScoreProduct", "align_baseline", "compute_products", "compute_tables"]
+__all__ = [
+    "DIAG_PRODUCTS",
+    "PRODUCTS",
+    "ScoreProduct",
+    "align_baseline",
+    "compute_diagnostic_products",
+    "compute_products",
+    "compute_tables",
+    "sample_stats",
+]
 
 RAW = ("rmse", "mae", "bias", "nse")
 
@@ -310,7 +319,7 @@ DIAG_PRODUCTS: dict[str, DiagnosticProduct] = {
 }
 
 
-def _sample_stats(pred: xr.DataArray, obs: xr.DataArray) -> xr.Dataset:
+def sample_stats(pred: xr.DataArray, obs: xr.DataArray) -> xr.Dataset:
     """Per-sample sufficient statistics (full tally): the unreduced base of every diagnostic table.
 
     All variables are zero-filled outside the jointly valid samples, so any later
@@ -397,13 +406,13 @@ def compute_diagnostic_products(
     space_dims = [d for d in pred.dims if d in ("lat", "lon", "pixel")]
 
     requested = [DIAG_PRODUCTS[name] for name in products]
-    base = _sample_stats(pred, obs)
+    base = sample_stats(pred, obs)
     anomaly_base = None
     if any(p.anomaly for p in requested):
         if clim is None:
             raise ValueError("anomaly diagnostic products require a climate baseline cube")
-        anomaly_base = _sample_stats(pred - clim, obs - clim)
-    baseline_bases = {name: _sample_stats(cube, obs) for name, cube in baselines.items()}
+        anomaly_base = sample_stats(pred - clim, obs - clim)
+    baseline_bases = {name: sample_stats(cube, obs) for name, cube in baselines.items()}
 
     out = {}
     for name, product in zip(products, requested):

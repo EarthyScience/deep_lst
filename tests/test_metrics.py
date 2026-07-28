@@ -132,61 +132,41 @@ def test_pool_stats_multidim_labels():
     assert list(pooled["se_sum"].values) == [13.0, 53.0]  # A = 1+2+10, B = 3+20+30
 
 
-def test_chain_reproduces_compute_pooled_scores():
-    from deep_lst.evaluation.metrics import compute_pooled_scores, measures_from_stats, pool_stats, sufficient_stats
-
-    pred, obs = _synthetic_cube()
-    old = compute_pooled_scores(pred, obs, ["rmse", "bias", "mae"])
-    stats = sufficient_stats(pred, obs, dim=["lat", "lon"])
-    new = measures_from_stats(pool_stats(stats, dim="init_time"), ("rmse", "bias", "mae"))
-    xr.testing.assert_allclose(new, old, rtol=1e-12)
-
-
-def test_chain_reproduces_compute_pooled_by_day():
-    from deep_lst.evaluation.conditioning import forecast_day_labels
-    from deep_lst.evaluation.metrics import compute_pooled_by_day, measures_from_stats, pool_stats, sufficient_stats
-
-    pred, obs = _synthetic_cube()
-    old = compute_pooled_by_day(pred, obs, ["rmse"])
-    stats = sufficient_stats(pred, obs, dim=["lat", "lon"])
-    new = measures_from_stats(pool_stats(stats, dim="init_time", by=forecast_day_labels(pred)), ("rmse",))
-    np.testing.assert_allclose(new["rmse"].values, old["rmse"].values, rtol=1e-12)
-
-
 def test_chain_reproduces_masked_pooling():
     from deep_lst.evaluation.conditioning import time_of_day_mask
-    from deep_lst.evaluation.metrics import measures_from_stats, pool_metric, sufficient_stats
+    from deep_lst.evaluation.metrics import measures_from_stats, sufficient_stats
 
     pred, obs = _synthetic_cube()
     day_mask = time_of_day_mask(pred, "day")
     pred_day = pred.where(day_mask)
     obs_day = obs.where(day_mask)
 
-    old = float(pool_metric(pred_day, obs_day, "rmse", list(pred.dims)))
+    reference = float(np.sqrt(((obs_day - pred_day) ** 2).mean(skipna=True)))
     stats = sufficient_stats(pred_day, obs_day, dim=list(pred.dims))
     new = float(measures_from_stats(stats, ("rmse",))["rmse"])
-    assert np.isclose(new, old, rtol=1e-12)
+    assert np.isclose(new, reference, rtol=1e-6)
 
 
 def test_nse_joint_masking_hand_table():
-    from deep_lst.evaluation.metrics import METRIC_REGISTRY, measures_from_stats, sufficient_stats
+    from deep_lst.evaluation.metrics import measures_from_stats, sufficient_stats
 
     pred = xr.DataArray([1.0, 2.0, 3.0, 4.0, np.nan], dims="time")
     obs = xr.DataArray([1.0, 1.0, np.nan, 2.0, 2.0], dims="time")
     # joint samples 0, 1, 3: o = [1, 1, 2], o_mean = 4/3, ss_res = 5, ss_tot = 2/3 -> nse = -6.5
-    registry_nse = float(METRIC_REGISTRY["nse"](pred, obs, dim="time"))
-    assert np.isclose(registry_nse, -6.5)
-
     stats = sufficient_stats(pred, obs, dim="time")
     chain_nse = float(measures_from_stats(stats, ("nse",))["nse"])
     assert np.isclose(chain_nse, -6.5)
 
 
-def test_nse_chain_matches_registry_on_cube():
-    from deep_lst.evaluation.metrics import METRIC_REGISTRY, measures_from_stats, sufficient_stats
+def test_nse_chain_matches_inline_reference_on_cube():
+    from deep_lst.evaluation.metrics import measures_from_stats, sufficient_stats
 
     pred, obs = _synthetic_cube()
-    registry_nse = float(METRIC_REGISTRY["nse"](pred, obs, dim=list(pred.dims)))
+    valid = pred.notnull() & obs.notnull()
+    p, o = pred.where(valid), obs.where(valid)
+    ss_res = float(((o - p) ** 2).sum(skipna=True))
+    ss_tot = float(((o - o.mean(skipna=True)) ** 2).sum(skipna=True))
+    reference_nse = 1.0 - ss_res / ss_tot
     stats = sufficient_stats(pred, obs, dim=list(pred.dims))
     chain_nse = float(measures_from_stats(stats, ("nse",))["nse"])
-    assert np.isclose(chain_nse, registry_nse, rtol=1e-4)  # float32 registry vs float64 chain sums
+    assert np.isclose(chain_nse, reference_nse, rtol=1e-4)  # float32 reference vs float64 chain sums

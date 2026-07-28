@@ -121,7 +121,7 @@ def activity_plot(
 ) -> None:
     """Anomaly activity (pooled pred std) by forecast-day bucket, one line per reference, no band.
 
-    Each value in ``references`` is a pooled-per-day score dataset (see metrics.compute_pooled_by_day).
+    Each value in ``references`` is a pooled-per-day score dataset (see the "scores_by_forecast_day" product, evaluation/products.py).
     Unlike skill_plot there is no break-even line and no hard upper y-limit, because activity is an
     absolute quantity in Kelvin, not a bounded skill score.
     """

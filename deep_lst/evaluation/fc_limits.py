@@ -14,9 +14,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from deep_lst.evaluation.conditioning import mask_time_of_day
+from deep_lst.evaluation.conditioning import forecast_day_labels, mask_time_of_day
 from deep_lst.evaluation.latex import write_month_tables
-from deep_lst.evaluation.metrics import compute_pooled_by_day, skill_score
+from deep_lst.evaluation.metrics import measures_from_stats, pool_stats, skill_score, sufficient_stats
 from deep_lst.evaluation.table_runner import load_entities
 
 MONTHS = list(range(1, 13))
@@ -48,8 +48,14 @@ def _skill_by_forecast_day(model, baseline, obs, month, kind):
     baseline_month = baseline.isel(init_time=in_month)
     obs_month = mask_time_of_day(obs.isel(init_time=in_month), kind)
 
-    rmse_model = compute_pooled_by_day(model_month, obs_month, ["rmse"])["rmse"]
-    rmse_baseline = compute_pooled_by_day(baseline_month, obs_month, ["rmse"])["rmse"]
+    rmse_by_day = {}
+    for name, pred in (("model", model_month), ("baseline", baseline_month)):
+        pooled_dims = [dim for dim in pred.dims if dim != "lead_time"]
+        stats = sufficient_stats(pred, obs_month, dim=pooled_dims)
+        pooled = pool_stats(stats, by=forecast_day_labels(pred))
+        pooled = pooled.sel(day=pooled["day"] != 0)  # leads outside every 24 h bucket
+        rmse_by_day[name] = measures_from_stats(pooled, ("rmse",))["rmse"]
+    rmse_model, rmse_baseline = rmse_by_day["model"], rmse_by_day["baseline"]
     skill = skill_score(rmse_model, rmse_baseline)
     return skill.where(np.isfinite(rmse_baseline) & (rmse_baseline > 0))
 

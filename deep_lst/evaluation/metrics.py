@@ -18,8 +18,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-METRIC_REGISTRY: dict[str, callable] = {}
-
 # Inclusive lead-hour bounds of each forecast day (24 h blocks). Single source of truth shared by
 # the pooled-by-day scores here and the day/night plots.
 LEAD_DAY_BUCKETS = [
@@ -34,112 +32,6 @@ LEAD_DAY_BUCKETS = [
     (193, 216),
     (217, 240),
 ]
-
-
-def _register(name):
-    def decorator(fn):
-        METRIC_REGISTRY[name] = fn
-        return fn
-
-    return decorator
-
-
-@_register("bias")
-def _bias(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
-    return (pred - obs).mean(dim=dim, skipna=True)
-
-
-@_register("rmse")
-def _rmse(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
-    return np.sqrt(((obs - pred) ** 2).mean(dim=dim, skipna=True))
-
-
-@_register("mae")
-def _mae(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
-    return np.abs(obs - pred).mean(dim=dim, skipna=True)
-
-
-@_register("activity")
-def _activity(anom_pred: xr.DataArray, anom_obs: xr.DataArray, dim) -> xr.DataArray:
-    """Std of pred anomalies over dim, on the obs-valid samples (same masking as ACC, so activity
-    and ACC are computed over the same points). Expects pred_anom, obs_anom as input."""
-    return anom_pred.where(anom_obs.notnull()).std(dim=dim, skipna=True)
-
-
-@_register("acc")
-def _acc(anom_pred: xr.DataArray, anom_obs: xr.DataArray, dim) -> xr.DataArray:
-    """Uncentred correlation for pre-computed anomalies (proper ACC).
-    Expects pred_anom and obs_anom as inputs — does not subtract mean internally.
-
-    Both anomalies are masked to their common valid samples first, so all three sums pool the
-    SAME points; otherwise obs gaps (clouds) drop terms from the obs sum but not the pred sum,
-    inflating the denominator and biasing ACC low."""
-    valid = anom_pred.notnull() & anom_obs.notnull()
-    ap = anom_pred.where(valid)
-    ao = anom_obs.where(valid)
-    num = (ap * ao).sum(dim=dim, skipna=True)
-    denom = np.sqrt((ap**2).sum(dim=dim, skipna=True) * (ao**2).sum(dim=dim, skipna=True))
-    return num / denom
-
-
-@_register("c_acc")
-def c_acc(anom_pred: xr.DataArray, anom_obs: xr.DataArray, dim) -> xr.DataArray:
-    """Pearson r of anomalies of pred and obs (centres internally). Use for raw time series.
-    Both anomalies are masked to their common valid samples first, so the centring means and the
-    sums all pool the same points (obs gaps must not be included in the pred-only terms)."""
-    valid = anom_pred.notnull() & anom_obs.notnull()
-    ap = anom_pred.where(valid)
-    ao = anom_obs.where(valid)
-    p = ap - ap.mean(dim=dim, skipna=True)
-    o = ao - ao.mean(dim=dim, skipna=True)
-    num = (p * o).sum(dim=dim, skipna=True)
-    denom = np.sqrt((p**2).sum(dim=dim, skipna=True) * (o**2).sum(dim=dim, skipna=True))
-    return num / denom
-
-
-@_register("nse")
-def nse(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
-    """Nash-Sutcliffe Efficiency (NSE) = 1 - (SS_res / SS_tot), where:
-    SS_res = sum((obs - pred)²) and SS_tot = sum((obs - obs_mean)²).
-    NSE ranges from -∞ to 1, where 1 indicates a perfect match between pred and obs.
-
-    Both fields are masked to their common valid samples first, so SS_res and SS_tot pool
-    the SAME points; otherwise obs-only samples (e.g. water pixels the writer NaN-masks in
-    pred) enter the variance benchmark but never the error sum, biasing NSE."""
-    valid = pred.notnull() & obs.notnull()
-    p = pred.where(valid)
-    o = obs.where(valid)
-    ss_res = ((o - p) ** 2).sum(dim=dim, skipna=True)
-    obs_mean = o.mean(dim=dim, skipna=True)
-    ss_tot = ((o - obs_mean) ** 2).sum(dim=dim, skipna=True)
-    return 1.0 - ss_res / ss_tot
-
-
-@_register("var_ratio")
-def var_ratio(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
-    """Variability error: ratio of simulated to observed std, sigma_sim / sigma_obs.
-    This is the alpha term of the NSE/KGE (Gupta et al. 2009) decomposition.
-    1 = correct spread, <1 = under-dispersed, >1 = over-dispersed.
-    Both fields are masked to their common valid samples so the two stds pool the same points.
-    """
-    valid = pred.notnull() & obs.notnull()
-    p = pred.where(valid)
-    o = obs.where(valid)
-    return p.std(dim=dim, skipna=True) / o.std(dim=dim, skipna=True)
-
-
-@_register("norm_bias")
-def norm_bias(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.DataArray:
-    """Unconditional (standardised) bias: (mean_sim - mean_obs) / sigma_obs.
-    This is the beta term of the NSE/KGE (Gupta et al. 2009) decomposition.
-    0 = unbiased; sign follows the raw bias.
-    Both fields are masked to their common valid samples so the means and std pool the same points.
-    """
-    valid = pred.notnull() & obs.notnull()
-    p = pred.where(valid)
-    o = obs.where(valid)
-    bias = p.mean(dim=dim, skipna=True) - o.mean(dim=dim, skipna=True)
-    return bias / o.std(dim=dim, skipna=True)
 
 
 def to_valid_time(da: xr.Dataset, lead_time: str | np.timedelta64 | None = None) -> xr.DataArray:
@@ -181,97 +73,6 @@ def local_valid_hour(da: xr.DataArray) -> xr.DataArray:
 def skill_score(model_score, baseline_score):
     """RMSE-type skill, ``1 - model/baseline``. Positive means the model beats the baseline."""
     return 1.0 - model_score / baseline_score
-
-
-def pool_metric(pred: xr.DataArray, obs: xr.DataArray, metric: str, dim) -> xr.DataArray:
-    """Reduce one registered metric over `dim` in the squared-error domain."""
-    return METRIC_REGISTRY[metric](pred, obs, dim=dim)
-
-
-def _pooled_measures(pred: xr.DataArray, obs: xr.DataArray, metrics: list[str], dim) -> dict:
-    """One pooled value per metric over *dim*, in the requested order.
-
-    Chain measures (`MEASURES`) share a single sufficient-statistics pass; every other
-    registered metric reduces directly via `pool_metric`.
-    """
-    stats = None
-    if any(name in MEASURES for name in metrics):
-        stats = sufficient_stats(pred, obs, dim=dim)
-
-    pooled = {}
-    for name in metrics:
-        if name in MEASURES:
-            pooled[name] = MEASURES[name](stats)
-        else:
-            pooled[name] = pool_metric(pred, obs, name, dim)
-    return pooled
-
-
-def compute_pooled_scores(
-    pred: xr.DataArray,
-    obs: xr.DataArray,
-    metrics: list[str],
-) -> xr.Dataset:
-    """Pooled metric per lead time: one reduction over every dim except lead_time (no nesting).
-
-    This is the climpred/xskillscore-style by-lead score -- init and space are pooled together in
-    the squared-error domain, never space-RMSE-then-init-mean.
-    """
-    pooled_dims = [d for d in pred.dims if d != "lead_time"]
-    return xr.Dataset(_pooled_measures(pred, obs, metrics, pooled_dims))
-
-
-def compute_pooled_by_day(
-    pred: xr.DataArray,
-    obs: xr.DataArray,
-    metrics: list[str],
-) -> xr.Dataset:
-    """Pooled metric per forecast-day bucket (24 lead-h), one reduction over init + bucket-leads + space.
-
-    Pooling over the whole bucket (not an average of per-lead scores) keeps these consistent with
-    the table_runner columns. Returns a dataset on a 'day' dim with a 'day_label' coord; empty
-    buckets (beyond the horizon) are dropped. Chain measures pool via one sufficient-statistics
-    pass grouped by forecast-day labels; other registered metrics reduce per bucket.
-    """
-    from deep_lst.evaluation.conditioning import forecast_day_labels
-
-    chain_measures = tuple(name for name in metrics if name in MEASURES)
-    registry_metrics = [name for name in metrics if name not in MEASURES]
-
-    chain_ds = None
-    if chain_measures:
-        pooled_dims = [d for d in pred.dims if d != "lead_time"]
-        stats = sufficient_stats(pred, obs, dim=pooled_dims)
-        pooled = pool_stats(stats, by=forecast_day_labels(pred))
-        pooled = pooled.sel(day=pooled["day"] != 0)  # leads outside every bucket
-        chain_ds = measures_from_stats(pooled, chain_measures)
-
-    registry_ds = None
-    if registry_metrics:
-        lead_hours = to_lead_hours(pred)
-        day_indices, slices = [], []
-        for day_idx, (low, high) in enumerate(LEAD_DAY_BUCKETS, start=1):
-            lead_idx = np.where((lead_hours >= low) & (lead_hours <= high))[0]
-            if lead_idx.size == 0:
-                continue
-            pred_bucket = pred.isel(lead_time=lead_idx)
-            obs_bucket = obs.isel(lead_time=lead_idx)
-            reduce_dims = list(pred_bucket.dims)
-            bucket_scores = {name: pool_metric(pred_bucket, obs_bucket, name, reduce_dims) for name in registry_metrics}
-            slices.append(xr.Dataset(bucket_scores))
-            day_indices.append(day_idx)
-        if slices:
-            registry_ds = xr.concat(slices, dim=pd.Index(day_indices, name="day"))
-
-    parts = {}
-    for name in metrics:
-        source = chain_ds if name in MEASURES else registry_ds
-        if source is not None and name in source:
-            parts[name] = source[name]
-    if not parts:
-        return xr.Dataset()
-    ds = xr.Dataset(parts)
-    return ds.assign_coords(day_label=("day", [f"Day {d}" for d in ds["day"].values]))
 
 
 def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.Dataset:
@@ -336,8 +137,39 @@ def _measure_mae(stats: xr.Dataset) -> xr.DataArray:
 
 
 def _measure_nse(stats: xr.Dataset) -> xr.DataArray:
+    # ss_tot on the SAME jointly valid samples as ss_res -- obs-only samples (e.g. water
+    # pixels NaN-masked in pred) must not enter the variance benchmark.
     ss_tot = stats["o2_sum"] - stats["o_sum"] ** 2 / stats["n"]
     return 1.0 - stats["se_sum"] / ss_tot
+
+
+def _measure_rmse_debiased(stats: xr.Dataset) -> xr.DataArray:
+    # per-cell mean error removed before pooling: sqrt((se - e^2/n) / n), clipped for
+    # float cancellation; the granularity of the debiasing is the tally's granularity
+    ss_debiased = (stats["se_sum"] - stats["e_sum"] ** 2 / stats["n"]).clip(min=0.0)
+    return np.sqrt(ss_debiased / stats["n"])
+
+
+def _measure_var_ratio(stats: xr.Dataset) -> xr.DataArray:
+    # sigma_sim / sigma_obs (population stds, jointly valid samples) -- KGE alpha term
+    var_pred = stats["p2_sum"] / stats["n"] - (stats["p_sum"] / stats["n"]) ** 2
+    var_obs = stats["o2_sum"] / stats["n"] - (stats["o_sum"] / stats["n"]) ** 2
+    return np.sqrt(var_pred / var_obs)
+
+
+def _measure_norm_bias(stats: xr.Dataset) -> xr.DataArray:
+    # (mean_sim - mean_obs) / sigma_obs -- KGE beta term
+    var_obs = stats["o2_sum"] / stats["n"] - (stats["o_sum"] / stats["n"]) ** 2
+    return (stats["p_sum"] / stats["n"] - stats["o_sum"] / stats["n"]) / np.sqrt(var_obs)
+
+
+def _measure_c_acc(stats: xr.Dataset) -> xr.DataArray:
+    # Pearson r (centred correlation) from the cross-moments, jointly valid samples
+    n = stats["n"]
+    cov = stats["po_sum"] - stats["p_sum"] * stats["o_sum"] / n
+    var_pred = stats["p2_sum"] - stats["p_sum"] ** 2 / n
+    var_obs = stats["o2_sum"] - stats["o_sum"] ** 2 / n
+    return cov / np.sqrt(var_pred * var_obs)
 
 
 MEASURES: dict[str, callable] = {
@@ -345,6 +177,10 @@ MEASURES: dict[str, callable] = {
     "bias": _measure_bias,
     "mae": _measure_mae,
     "nse": _measure_nse,
+    "rmse_debiased": _measure_rmse_debiased,
+    "var_ratio": _measure_var_ratio,
+    "norm_bias": _measure_norm_bias,
+    "c_acc": _measure_c_acc,
 }
 
 
@@ -357,9 +193,8 @@ def _measure_activity(stats: xr.Dataset) -> xr.DataArray:
 
 
 # Anomaly-input measures: same finish machinery, but the stats must have been built
-# from anomaly fields (pred - clim, obs - clim). Kept separate from MEASURES so the
-# legacy pooled entry points keep routing acc/activity through METRIC_REGISTRY
-# bit-identically; the products engine consults both dicts.
+# from anomaly fields (pred - clim, obs - clim). Kept separate from MEASURES so a raw
+# product cannot silently request an anomaly measure; the engines consult both dicts.
 ANOMALY_MEASURES: dict[str, callable] = {"acc": _measure_acc, "activity": _measure_activity}
 
 # Documentation only since the all-columns tally: which columns each measure's finish
@@ -371,6 +206,10 @@ MEASURE_REQUIRES = {
     "nse": ("se_sum", "o_sum", "o2_sum", "n"),
     "acc": ("po_sum", "p2_sum", "o2_sum", "n"),
     "activity": ("p_sum", "p2_sum", "n"),
+    "rmse_debiased": ("se_sum", "e_sum", "n"),
+    "var_ratio": ("p_sum", "p2_sum", "o_sum", "o2_sum", "n"),
+    "norm_bias": ("p_sum", "o_sum", "o2_sum", "n"),
+    "c_acc": ("po_sum", "p_sum", "p2_sum", "o_sum", "o2_sum", "n"),
 }
 
 

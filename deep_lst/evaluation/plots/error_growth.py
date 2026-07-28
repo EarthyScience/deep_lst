@@ -31,7 +31,7 @@ def error_growth_plot(
     """Pooled metric vs lead time — single model line, no band.
 
     ``scores_by_lead`` is a pooled-per-lead score dataset (init + space pooled per lead in the
-    squared-error domain); see metrics.compute_pooled_scores.
+    squared-error domain); see the "scores_by_lead" product (evaluation/products.py).
     """
     plt.rcParams.update(RC)
     lead_td = pd.TimedeltaIndex(scores_by_lead["lead_time"].values)
@@ -67,7 +67,7 @@ def error_growth_daily_plot(
     """Pooled metric per forecast-day bucket — single model line, no band.
 
     ``scores_by_day`` is a pooled-per-day score dataset (init + the bucket's leads + space pooled
-    per forecast day); see metrics.compute_pooled_by_day.
+    per forecast day); see the "scores_by_forecast_day" product (evaluation/products.py).
     """
     if scores_by_day.sizes.get("day", 0) == 0:
         return
@@ -104,7 +104,7 @@ def skill_plot(
     """Skill score vs forecast day, one line per reference, no band.
 
     Each value in ``references`` is a pooled-per-day skill dataset (1 - pooled_model / pooled_ref;
-    see metrics.compute_pooled_by_day). 0 is marked as the break-even line.
+    see the "scores_by_forecast_day" product). 0 is marked as the break-even line.
     """
     plt.rcParams.update(RC)
     first = next(iter(references.values()))

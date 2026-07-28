@@ -1,3 +1,11 @@
+"""PARKED ANALYSIS SCRIPT (moved out of the package 2026-07-28).
+
+One-off WeatherGenerator comparison; runs its whole pipeline at import time against
+hardcoded paths. Its imports reference the deleted legacy metrics layer
+(compute_pooled_by_day / pool_metric) -- port to the sufficient-statistics chain
+(metrics.sufficient_stats / pool_stats / measures_from_stats) before reuse.
+"""
+
 from pathlib import Path
 
 import cartopy.crs as ccrs
