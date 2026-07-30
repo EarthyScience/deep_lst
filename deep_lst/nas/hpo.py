@@ -137,8 +137,6 @@ def main():
             overrides=[
                 "model=mlp_rollout",
                 "loss=smoothl1",
-                "stratification=mtg",
-                "size=L",
                 "horizon=h24",
                 "model.warmup_steps=300",
             ],

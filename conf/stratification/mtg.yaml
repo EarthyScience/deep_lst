@@ -1,4 +1,0 @@
-# @package _global_
-# MajorTom 5 km land grid — Africa subset (3000 sites, colleague's indices).
-# The only spatial selection; anchors are MTG cell ids (assets/spatial/indices_mtg.npz).
-_spatial: mtg

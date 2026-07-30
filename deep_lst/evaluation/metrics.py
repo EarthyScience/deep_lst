@@ -1,19 +1,3 @@
-"""Metric computation for forecast evaluation.
-
-Two orthogonal axes organise the measures here. Axis 1, aggregation structure:
-per-case-average scores (proper scoring rules / consistent scoring functions --
-MAE, MSE, CRPS; Gneiting & Raftery 2007, Gneiting 2011) vs composite measures
-(nonlinear functions of several averages -- RMSE, NSE, ACC, skill; Murphy &
-Winkler 1987). Axis 2, forecast object: point forecasts vs distributional ones
-(a probabilistic stats builder will mirror `sufficient_stats` when needed).
-
-The evaluation chain: conditioning (masks/labels, evaluation/conditioning.py)
--> `sufficient_stats` (additive sums over the jointly valid samples)
--> `pool_stats` (regroup by summing -- the only place data is combined)
--> `measures_from_stats` (pure algebra on sums). Which tally columns a measure
-needs is declared in MEASURE_REQUIRES; its tuple length tells you its family.
-"""
-
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -32,6 +16,20 @@ LEAD_DAY_BUCKETS = [
     (193, 216),
     (217, 240),
 ]
+
+
+MEASURE_REQUIRES = {
+    "rmse": ("se_sum", "n"),
+    "bias": ("e_sum", "n"),
+    "mae": ("ae_sum", "n"),
+    "nse": ("se_sum", "o_sum", "o2_sum", "n"),
+    "acc": ("po_sum", "p2_sum", "o2_sum", "n"),
+    "activity": ("p_sum", "p2_sum", "n"),
+    "rmse_debiased": ("se_sum", "e_sum", "n"),
+    "var_ratio": ("p_sum", "p2_sum", "o_sum", "o2_sum", "n"),
+    "norm_bias": ("p_sum", "o_sum", "o2_sum", "n"),
+    "c_acc": ("po_sum", "p_sum", "p2_sum", "o_sum", "o2_sum", "n"),
+}
 
 
 def to_valid_time(da: xr.Dataset, lead_time: str | np.timedelta64 | None = None) -> xr.DataArray:
@@ -54,13 +52,6 @@ def to_lead_hours(da: xr.DataArray) -> np.ndarray:
 
 
 def local_valid_hour(da: xr.DataArray) -> xr.DataArray:
-    """Local-solar hour-of-day of each valid time, per longitude.
-
-    Local solar time = UTC valid time (init_time + lead_time) + lon/15 h. Returned as a float
-    DataArray broadcasting over init_time, lead_time and whatever dim carries `lon` (the 1-D `lon`
-    grid axis, or `pixel` for sparse sites). Day/night windows built on this track the diurnal
-    cycle by longitude instead of a fixed UTC clock, so they stay comparable across regions.
-    """
     if "valid_time" in da.coords:
         utc_hour = da["valid_time"].dt.hour  # single-lead view: the axis IS the valid time
     else:
@@ -76,16 +67,6 @@ def skill_score(model_score, baseline_score):
 
 
 def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.Dataset:
-    """Additive sufficient statistics of the forecast-observation pairs, reduced over *dim*.
-
-    Always returns the FULL tally -- ``n, e_sum, se_sum, ae_sum, o_sum, o2_sum, p_sum,
-    p2_sum, po_sum`` (error convention ``e = pred - obs``; obs/pred moments in float64,
-    the NSE/ACC finishes cancel large sums). Computing every column always costs ~1.7x
-    the minimal pass but keeps the API and the engines free of column bookkeeping.
-    All variables are sums/counts over the jointly valid samples, so any later
-    regrouping (`pool_stats`) is exact. Choose *dim* as the dims that will never be
-    conditioned on downstream -- reducing a dim is the one irreversible act in the chain.
-    """
     valid = pred.notnull() & obs.notnull()
     signed_error = pred - obs  # joint-NaN by construction
     obs_valid = obs.where(valid).astype("float64")
@@ -107,13 +88,6 @@ def sufficient_stats(pred: xr.DataArray, obs: xr.DataArray, dim) -> xr.Dataset:
 
 
 def pool_stats(stats: xr.Dataset, dim=None, by: xr.DataArray | None = None) -> xr.Dataset:
-    """Sum additive statistics over *dim*; then, if *by* is given, group-by-sum over its labels.
-
-    *by* is a label DataArray on one or more of the remaining dims; the output gains one
-    dim named after ``by.name`` with one entry per unique label. Multi-dim labels (e.g.
-    valid calendar day on ``(init_time, lead_time)``) are handled by stacking the label
-    dims first, with the labels riding along as a coordinate so alignment is exact.
-    """
     if dim is not None:
         stats = stats.sum(dim=dim)
     if by is None:
@@ -172,6 +146,14 @@ def _measure_c_acc(stats: xr.Dataset) -> xr.DataArray:
     return cov / np.sqrt(var_pred * var_obs)
 
 
+def _measure_acc(stats: xr.Dataset) -> xr.DataArray:
+    return stats["po_sum"] / np.sqrt(stats["p2_sum"] * stats["o2_sum"])
+
+
+def _measure_activity(stats: xr.Dataset) -> xr.DataArray:
+    return np.sqrt(stats["p2_sum"] / stats["n"] - (stats["p_sum"] / stats["n"]) ** 2)
+
+
 MEASURES: dict[str, callable] = {
     "rmse": _measure_rmse,
     "bias": _measure_bias,
@@ -183,43 +165,10 @@ MEASURES: dict[str, callable] = {
     "c_acc": _measure_c_acc,
 }
 
-
-def _measure_acc(stats: xr.Dataset) -> xr.DataArray:
-    return stats["po_sum"] / np.sqrt(stats["p2_sum"] * stats["o2_sum"])
-
-
-def _measure_activity(stats: xr.Dataset) -> xr.DataArray:
-    return np.sqrt(stats["p2_sum"] / stats["n"] - (stats["p_sum"] / stats["n"]) ** 2)
-
-
-# Anomaly-input measures: same finish machinery, but the stats must have been built
-# from anomaly fields (pred - clim, obs - clim). Kept separate from MEASURES so a raw
-# product cannot silently request an anomaly measure; the engines consult both dicts.
 ANOMALY_MEASURES: dict[str, callable] = {"acc": _measure_acc, "activity": _measure_activity}
-
-# Documentation only since the all-columns tally: which columns each measure's finish
-# touches (tuple length reveals its family: 2 = per-case average, more = composite).
-MEASURE_REQUIRES = {
-    "rmse": ("se_sum", "n"),
-    "bias": ("e_sum", "n"),
-    "mae": ("ae_sum", "n"),
-    "nse": ("se_sum", "o_sum", "o2_sum", "n"),
-    "acc": ("po_sum", "p2_sum", "o2_sum", "n"),
-    "activity": ("p_sum", "p2_sum", "n"),
-    "rmse_debiased": ("se_sum", "e_sum", "n"),
-    "var_ratio": ("p_sum", "p2_sum", "o_sum", "o2_sum", "n"),
-    "norm_bias": ("p_sum", "o_sum", "o2_sum", "n"),
-    "c_acc": ("po_sum", "p_sum", "p2_sum", "o_sum", "o2_sum", "n"),
-}
 
 
 def measures_from_stats(stats: xr.Dataset, measures: tuple) -> xr.Dataset:
-    """Evaluate verification measures from pooled sufficient statistics.
-
-    Pure algebra on sums -- no reductions happen here. An all-masked subset yields
-    ``n = 0`` and therefore NaN, which is the intended "no data" signal. Anomaly
-    measures (acc, activity) resolve too, but expect anomaly-built stats.
-    """
     finished = {}
     for name in measures:
         finisher = MEASURES.get(name) or ANOMALY_MEASURES.get(name)

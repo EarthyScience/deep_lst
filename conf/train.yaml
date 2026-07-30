@@ -2,24 +2,18 @@ defaults:
   - _self_          # base applies first; groups below have higher priority
   - model: mlp_rollout
   - loss: smoothl1
-  - size: L
-  - stratification: mtg
   - horizon: h24
+  - data: full
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new
-_experiment: ${_loss}_${_horizon}_v10
+_experiment: ${_loss}_${_horizon}_${_data}_v10
 
 # eodata-main .eozarr store names (data version)
 _seviri_store:   seviri_2016_2024
 _era5_store:     era5_2014_2025
 _era5land_store: era5_land_2016_2025
 
-# schematic load specs (which vars from which store leaf) — split-invariant.
-# Names come from here (not the reader schema); they drive the reader's per-leaf
-# *_variables kwargs and the named channels the collator packs. Model roles
-# (prognostics / inputs / context_vars) live in the model group and reference these
-# names plus the computed features (solar_zenith, doy_*, hod_*).
 _seviri_load:
   data: [LST, MLE, MH]
   data_daily: [FVC]
@@ -27,8 +21,6 @@ _seviri_load:
   data_static_categorical: [LWMASK, LANDCOV]
   metadata: [quality_flag, standard_error]   # cached raw; standard_error drives the quality mask
 
-# Quality mask: NaN the target where the retrieval error exceeds se_max (absolute Kelvin, stable
-# across the 2021 flag-encoding change). Referenced by train/val seviri; test stays unmasked.
 _quality_mask:
   field: standard_error
   se_max: 1.8
@@ -46,22 +38,16 @@ train_dataset:
   anchor: mtg
   temporal: train_4x3
   era5:
-    modality_id: era5
     store: ${_era5_store}
     load: ${_era5_load}
-    normalization: zscore
     lookback: 24
   era5_land:
-    modality_id: era5_land
     store: ${_era5land_store}
     load: ${_era5land_load}
-    normalization: zscore
     lookback: 24
   seviri:
-    modality_id: seviri
     store: ${_seviri_store}
     load: ${_seviri_load}
-    normalization: zscore
     lookback: 24
     quality_mask: ${_quality_mask}
 
@@ -70,22 +56,16 @@ val_dataset:
   anchor: mtg
   temporal: val
   era5:
-    modality_id: era5
     store: ${_era5_store}
     load: ${_era5_load}
-    normalization: zscore
     lookback: 24
   era5_land:
-    modality_id: era5_land
     store: ${_era5land_store}
     load: ${_era5land_load}
-    normalization: zscore
     lookback: 24
   seviri:
-    modality_id: seviri
     store: ${_seviri_store}
     load: ${_seviri_load}
-    normalization: zscore
     lookback: 24
     quality_mask: ${_quality_mask}
 
@@ -94,22 +74,16 @@ test_dataset:
   anchor: mtg
   temporal: test_period_00
   era5:
-    modality_id: era5
     store: ${_era5_store}
     load: ${_era5_load}
-    normalization: zscore
     lookback: 24
   era5_land:
-    modality_id: era5_land
     store: ${_era5land_store}
     load: ${_era5land_load}
-    normalization: zscore
     lookback: 24
   seviri:
-    modality_id: seviri
     store: ${_seviri_store}
     load: ${_seviri_load}
-    normalization: zscore
     lookback: 24
 
 training:
