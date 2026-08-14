@@ -12,12 +12,13 @@ from tqdm import tqdm
 
 from deep_lst.evaluation.spatial import pixel_grid
 from deep_lst.utils import ExperimentPaths, StatsZarrNormalizer
+from deep_lst.utils.io import stats_spatial
 
 PATHS = ExperimentPaths()
 
 # Pixels below this fill fraction of the bounding-box grid use sparse output.
 # Avoids allocating a mostly-NaN (H x W) grid for scattered training-site pixels.
-_SPARSE_FILL_THRESHOLD = 0.01
+_SPARSE_FILL_THRESHOLD = 1.1
 
 
 class Forecast:
@@ -44,7 +45,7 @@ class Forecast:
         self.prediction_mode = prediction_mode
         self.apply_lw_mask = apply_lw_mask
 
-        self.normaliser = StatsZarrNormalizer(PATHS.stats_zarr_path("seviri"))
+        self.normaliser = StatsZarrNormalizer(PATHS.stats_zarr_path("seviri", stats_spatial(self.config)))
 
         self.prognostic_vars = [key[1] for key in td_keys.get("prognostic_keys", [])]
         self.diagnostic_vars = [key[1] for key in td_keys.get("diagnostic_keys", [])]

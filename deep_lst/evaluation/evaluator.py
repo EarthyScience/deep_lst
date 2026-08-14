@@ -56,7 +56,7 @@ class Evaluator:
         if name not in _BASELINE_REGISTRY:
             raise ValueError(f"Unknown baseline: {name!r}. Available: {list(_BASELINE_REGISTRY)}")
         path_fn, var_name = _BASELINE_REGISTRY[name]
-        path = path_fn(self.paths, self.eval_name)
+        path = path_fn(self.paths, self.paths.baseline_spatial(self.eval_name))
         if not path.exists():
             raise FileNotFoundError(f"Baseline '{name}' not found: {path}")
         baseline = xr.open_dataset(path, chunks={})[var_name]
@@ -211,7 +211,7 @@ class Evaluator:
             if coord in baseline.coords and baseline[coord].dtype != np.float64:
                 raise ValueError(
                     f"Baseline {name!r} has {baseline[coord].dtype} {coord} coords — stale "
-                    "pre-2026-07 extraction. Re-extract with scripts/baselines/run_baselines.py "
+                    "pre-2026-07 extraction. Re-extract with scripts/assets/run_baselines.py "
                     "(era5 itself is not extractable: the era5 store carries no skt)"
                 )
 

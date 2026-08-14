@@ -5,7 +5,7 @@ tables
 
 wandb/
 nas/hpo.db
-
+.md/
 
 scripts/out
 scripts/bin

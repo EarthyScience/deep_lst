@@ -13,8 +13,8 @@ import numpy as np
 from eodata.registry import get_data_reader_class
 
 from deep_lst.dataset.dataset import (
-    _LEAF_ARRAY,
-    _LEAF_ENABLE_FLAGS,
+    DATA_TYPES,
+    DATA_TYPES_ENABLE,
     PATHS,
     _load_anchor_ids,
     _preload_columns,
@@ -27,15 +27,15 @@ ERA5_STORE = "era5_2014_2025"
 ERA5_LAND_STORE = "era5_land_2016_2025"
 
 
-def open_store_reader(modality, store, leaves):
-    """Full-store reader with exactly the `leaves` enabled (data is always read).
+def open_store_reader(modality, store, data_types):
+    """Full-store reader with exactly the `data_types` enabled (data is always read).
 
-    Enable-flags for leaves this modality's reader doesn't accept (ERA5 has no
+    Enable-flags for data types this modality's reader doesn't accept (ERA5 has no
     metadata/data_daily) are filtered out by the reader's __init__ signature.
     """
     reader_kwargs = {"average_hourly": False}
-    for leaf, flag in _LEAF_ENABLE_FLAGS.items():
-        reader_kwargs[flag] = leaf in leaves
+    for data_type, flag in DATA_TYPES_ENABLE.items():
+        reader_kwargs[flag] = data_type in data_types
     accepted = inspect.signature(get_data_reader_class(modality)).parameters
     reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
     return eodata.get_data_reader(modality, store=str(PATHS.eozarr_store_path(store)), **reader_kwargs)
@@ -45,14 +45,14 @@ def load_store_columns(modality, store, spatial, load, anchor="mtg", day_range=N
     """Raw full-store columns for one spatial selection.
 
     Anchor ids from indices_{spatial}.npz are mapped to the modality's native store
-    rows (deduped). load maps each leaf to its variable names, e.g. {"data": ["LST"]};
+    rows (deduped). load maps each data type to its variable names, e.g. {"data": ["LST"]};
     day_range restricts the read to (start_day, end_day) store days (default: the
     full preload axis).
 
-    Returns (columns, unique_rows, inverse, anchor_ids): hourly/daily leaves ->
-    (n_unique, n_days * 24, C), static leaves -> (n_unique, C), NaN where missing.
+    Returns (columns, unique_rows, inverse, anchor_ids): hourly/daily data types ->
+    (n_unique, n_days * 24, C), static data types -> (n_unique, C), NaN where missing.
     inverse maps each anchor position to its row in the columns, so
-    columns[leaf][inverse] expands back to per-anchor order. Cell lon/lat:
+    columns[data_type][inverse] expands back to per-anchor order. Cell lon/lat:
     store_grid(modality).centers[unique_rows].
     """
     anchor_ids = _load_anchor_ids(spatial)
@@ -60,8 +60,8 @@ def load_store_columns(modality, store, spatial, load, anchor="mtg", day_range=N
     unique_rows, inverse = np.unique(rows, return_inverse=True)
     reader = open_store_reader(modality, store, load)
     select = {
-        leaf: [list(getattr(reader, _LEAF_ARRAY[leaf]).dtype.fields).index(var) for var in names]
-        for leaf, names in load.items()
+        data_type: [list(getattr(reader, DATA_TYPES[data_type]).dtype.fields).index(var) for var in names]
+        for data_type, names in load.items()
     }
     columns = _preload_columns(reader, None, unique_rows, select, num_workers=num_workers, day_range=day_range)
     return columns, unique_rows, inverse, anchor_ids

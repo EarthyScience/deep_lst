@@ -33,7 +33,7 @@ from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config, get_packing_keys
-from deep_lst.utils.io import load_inc_variances
+from deep_lst.utils.io import load_inc_variances, stats_spatial
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
 print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS"))
@@ -177,8 +177,9 @@ def main(cfg: DictConfig) -> None:
     lookback = config["train_dataset"]["seviri"]["lookback"]
 
     inc_variances: dict[str, float] = {}
+    stats_tag = stats_spatial(config["train_dataset"])
     for modality in config["modality_ids"]:
-        inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality)))
+        inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality, stats_tag)))
 
     model = MultiModalMLP(
         n_prognostic=packing["n_prognostic"],

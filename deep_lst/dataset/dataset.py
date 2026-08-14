@@ -15,20 +15,20 @@ from tensordict import TensorDict
 from torch.utils.data import Dataset
 
 from deep_lst.utils import features
-from deep_lst.utils.io import ExperimentPaths, load_computed_stats
+from deep_lst.utils.io import ExperimentPaths, load_computed_stats, stats_spatial
 from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
 
 # Modality carrying the global time features (doy/hod); the finest / target grid.
 _ANCHOR_MODALITY = "seviri"
-# non-"data" leaves -> the reader flag that enables reading them (data is always returned)
-_LEAF_ENABLE_FLAGS = {
+# non-"data" data types -> the reader flag that enables reading them (data is always returned)
+DATA_TYPES_ENABLE = {
     "metadata": "get_metadata",
     "data_daily": "get_data_daily",
     "data_static": "get_data_static",
     "data_static_categorical": "get_data_static_categorical",
 }
-# leaf -> the reader's underlying zarr array attribute (its dtype fields give the full var order)
-_LEAF_ARRAY = {
+# data type -> the reader's underlying zarr array attribute (its dtype fields give the full var order)
+DATA_TYPES = {
     "data": "data_arr",
     "metadata": "metadata_arr",
     "data_daily": "data_daily_arr",
@@ -379,6 +379,7 @@ class MultimodalDataset(Dataset):
         once — a full-axis cache per split would not fit in RAM.
         """
         spatial_name = kwargs["spatial"]
+        stats_tag = stats_spatial(kwargs)
         anchor_ids = _load_anchor_ids(spatial_name)
         src_grid = anchor_grid(kwargs.get("anchor", "mtg"))
         num_workers = kwargs.get("preload_workers", 8)
@@ -393,7 +394,7 @@ class MultimodalDataset(Dataset):
                 modality: {
                     "store": kwargs[modality]["store"],
                     "load": kwargs[modality]["load"],
-                    "stats_mtime": os.path.getmtime(PATHS.stats_zarr_path(modality) / "zarr.json"),
+                    "stats_mtime": os.path.getmtime(PATHS.stats_zarr_path(modality, stats_tag) / "zarr.json"),
                     "axis": [PRELOAD_START_DAY, PRELOAD_END_DAY],
                 }
                 for modality in modality_ids
@@ -413,24 +414,26 @@ class MultimodalDataset(Dataset):
 
             # Enable exactly the leaves the config `load` names; read them FULL (no variable
             # subset) so the positional full-set statistics align, then select the config
-            # variables after normalization (see _preload_pixel). Enable-flags for leaves this
-            # modality's reader doesn't accept (ERA5 has no metadata/data_daily) are filtered
-            # out by the reader's __init__ signature.
+            # variables after normalization (see _preload_pixel). Enable-flags for data types
+            # this modality's reader doesn't accept (ERA5 has no metadata/data_daily) are
+            # filtered out by the reader's __init__ signature.
             load = kwargs[modality]["load"]
             reader_kwargs = {"average_hourly": False}
-            for leaf, flag in _LEAF_ENABLE_FLAGS.items():
-                reader_kwargs[flag] = leaf in load
+            for data_type, flag in DATA_TYPES_ENABLE.items():
+                reader_kwargs[flag] = data_type in load
             accepted = inspect.signature(get_data_reader_class(modality)).parameters
             reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
             reader = eodata.get_data_reader(
                 modality, store=str(PATHS.eozarr_store_path(kwargs[modality]["store"])), **reader_kwargs
             )
 
-            normalizer = ModalityNormalizer.from_spec(f"zscore:{PATHS.stats_zarr_path(modality)}", reader.schema)
-            # Channel indices of the config variables within each leaf's full store variable order.
+            normalizer = ModalityNormalizer.from_spec(
+                f"zscore:{PATHS.stats_zarr_path(modality, stats_tag)}", reader.schema
+            )
+            # Channel indices of the config variables within each data type's full store variable order.
             select = {
-                leaf: [list(getattr(reader, _LEAF_ARRAY[leaf]).dtype.fields).index(var) for var in names]
-                for leaf, names in load.items()
+                data_type: [list(getattr(reader, DATA_TYPES[data_type]).dtype.fields).index(var) for var in names]
+                for data_type, names in load.items()
             }
             columns[modality] = _preload_columns(reader, normalizer, unique_rows, select, num_workers=num_workers)
             inverse[modality] = inv
@@ -453,7 +456,8 @@ class MultimodalDataset(Dataset):
     @classmethod
     def from_modalities(cls, modality_ids, shared, **kwargs):
         """Build one split's dataset from the shared preloaded columns + this split's anchors."""
-        computed_stats = {m: load_computed_stats(PATHS.stats_zarr_path(m)) for m in modality_ids}
+        stats_tag = stats_spatial(kwargs)
+        computed_stats = {m: load_computed_stats(PATHS.stats_zarr_path(m, stats_tag)) for m in modality_ids}
 
         if kwargs["spatial"] != shared["spatial"]:
             raise ValueError(f"Shared cache built for spatial={shared['spatial']!r}, got {kwargs['spatial']!r}")

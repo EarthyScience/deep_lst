@@ -5,8 +5,11 @@ Continental area proxy = 5 km MajorTomGrid cells within Africa, sampled from KG 
 
 import json
 
+import matplotlib
 import numpy as np
 import pandas as pd
+
+matplotlib.use("Agg")  # headless cluster script
 from eodata.grids.majortom import MajorTomGrid
 from eodata.util.raster import sample_raster_on_grid
 from eodata.util.spatial import get_admin_geometry

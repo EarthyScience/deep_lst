@@ -7,7 +7,7 @@ defaults:
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new
-_experiment: ${_loss}_${_horizon}_${_data}_v10
+_experiment: ${_loss}_${_horizon}_${_data}_v13
 
 # eodata-main .eozarr store names (data version)
 _seviri_store:   seviri_2016_2024
@@ -21,10 +21,10 @@ _seviri_load:
   data_static_categorical: [LWMASK, LANDCOV]
   metadata: [quality_flag, standard_error]   # cached raw; standard_error drives the quality mask
 
-_quality_mask:
-  field: standard_error
-  se_max: 1.8
-  target: LST
+#_quality_mask:
+#  field: standard_error
+#  se_max: 1.8
+#  target: LST
 _era5_load:
   data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
   data_static_categorical: [tvh, tvl, lsm, slt]
@@ -35,8 +35,9 @@ modality_ids: [era5, era5_land, seviri]
 
 train_dataset:
   spatial: ${_spatial}
+  stats_spatial: ${_spatial}   # selection the stats zarrs were computed on (stays fixed for eval regions)
   anchor: mtg
-  temporal: train_4x3
+  temporal: train_full
   era5:
     store: ${_era5_store}
     load: ${_era5_load}
@@ -49,10 +50,11 @@ train_dataset:
     store: ${_seviri_store}
     load: ${_seviri_load}
     lookback: 24
-    quality_mask: ${_quality_mask}
+#    quality_mask: ${_quality_mask}
 
 val_dataset:
   spatial: ${_spatial}
+  stats_spatial: ${_spatial}
   anchor: mtg
   temporal: val
   era5:
@@ -67,10 +69,11 @@ val_dataset:
     store: ${_seviri_store}
     load: ${_seviri_load}
     lookback: 24
-    quality_mask: ${_quality_mask}
+ #   quality_mask: ${_quality_mask}
 
 test_dataset:
   spatial: ${_spatial}
+  stats_spatial: ${_spatial}
   anchor: mtg
   temporal: test_period_00
   era5:
@@ -87,7 +90,7 @@ test_dataset:
     lookback: 24
 
 training:
-  max_epochs: 75
+  max_epochs: 100
   batch_size: 512
   num_workers: 24
   pin_memory: true

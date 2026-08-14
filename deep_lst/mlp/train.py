@@ -19,7 +19,7 @@ from pytorch_lightning.profilers import AdvancedProfiler  # noqa: F401
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.mlp.model import LitModelModule, MultiModalMLP
 from deep_lst.utils.config import get_keys_from_config, get_packing_keys
-from deep_lst.utils.io import ExperimentPaths, load_inc_variances
+from deep_lst.utils.io import ExperimentPaths, load_inc_variances, stats_spatial
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
 print("SLURM_NNODES:", os.environ.get("SLURM_NNODES"))
@@ -136,7 +136,7 @@ def main(cfg: DictConfig) -> None:
                 monitor=config["model"].get("checkpoint_monitor", "val_loss_step_epoch_log"),
                 mode="min",
                 patience=7,
-                min_delta=1e-3,
+                min_delta=1e-4,
                 verbose=True,
             )
         )
@@ -155,8 +155,9 @@ def main(cfg: DictConfig) -> None:
     print(f"packing: {packing}")
 
     inc_variances: dict[str, float] = {}
+    stats_tag = stats_spatial(config["train_dataset"])
     for modality in config["modality_ids"]:
-        inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality)))
+        inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality, stats_tag)))
 
     model = MultiModalMLP(
         n_prognostic=packing["n_prognostic"],

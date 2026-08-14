@@ -74,10 +74,10 @@ The full pipeline runs data → statistics → training → inference → evalua
 has a SLURM launcher under `scripts/`; the underlying commands are shown below.
 
 1. **Data.** Produce the sampled zarr stores with `eodata_slim` (see its README).
-2. **Statistics.** Compute normalization statistics (submits one SLURM job per modality × spatial
-   database; edit the `SPATIALS` list inside the script first):
+2. **Statistics + baselines.** Regenerate the derived assets (one statistics SLURM job per
+   modality, then one baseline-extraction job per eval region chained on their completion):
    ```
-   bash scripts/statistics/launch_statistics.sh
+   bash scripts/assets/launch_assets.sh
    ```
 3. **Train.**
    ```

@@ -21,16 +21,18 @@ from eodata.grids import T1H
 from deep_lst.dataset.dataset import PRELOAD_END_DAY, PRELOAD_START_DAY, STORE_EPOCH_OFFSET
 from deep_lst.evaluation.spatial import pixel_grid
 from deep_lst.utils import ExperimentPaths, StatsZarrNormalizer
+from deep_lst.utils.io import stats_spatial
 
 _SPARSE_FILL_THRESHOLD = 0.01
 _ANCHOR_MODALITY = "seviri"
 
 
 class BaselineExtractor(ABC):
-    def __init__(self, var_name: str, test_year: int, overwrite: bool = False):
+    def __init__(self, var_name: str, test_year: int, overwrite: bool = False, force_sparse: bool = False):
         self.var_name = var_name
         self.test_year = test_year
         self.overwrite = overwrite
+        self.force_sparse = force_sparse
         self.paths = ExperimentPaths()
 
     @abstractmethod
@@ -47,6 +49,7 @@ class BaselineExtractor(ABC):
 
     def run(self, shared: dict, config: dict, store_key: str) -> None:
         self.store_key = store_key
+        self.config = config
         if self.output_path().exists() and not self.overwrite:
             print(f"Output already exists for '{store_key}'. Pass overwrite=True to refresh.")
             return
@@ -68,7 +71,9 @@ class BaselineExtractor(ABC):
         inverse = shared["inverse"][modality]
         column = shared["columns"][modality]["data"][:, :, channel].numpy()  # (n_unique, n_hours), normalised
 
-        normaliser = StatsZarrNormalizer(self.paths.stats_zarr_path(modality))
+        normaliser = StatsZarrNormalizer(
+            self.paths.stats_zarr_path(modality, stats_spatial(self.config["test_dataset"]))
+        )
         var = normaliser.denormalise(column[inverse], var_name)  # (n_pixels, n_hours), physical, NaN kept
 
         n_hours = (PRELOAD_END_DAY - PRELOAD_START_DAY) * 24
@@ -97,7 +102,9 @@ class BaselineExtractor(ABC):
             self.pixel_lonlat[:, 0], self.pixel_lonlat[:, 1]
         )
         fill = self.n_pixels / (self.grid_shape[0] * self.grid_shape[1])
-        self.sparse = fill < _SPARSE_FILL_THRESHOLD
+        # force_sparse must mirror the inference flag: baselines and forecast.zarr have to
+        # share one layout, and baseline_cube refuses to mix them.
+        self.sparse = self.force_sparse or fill < _SPARSE_FILL_THRESHOLD
         print(f"Spatial: {self.n_pixels} pixels, fill={fill:.4f} → {'sparse' if self.sparse else 'dense'} output")
 
     def _make_dataset(self, baseline: np.ndarray, test_timestamps: pd.DatetimeIndex, attrs: dict) -> xr.Dataset:

@@ -1,5 +1,5 @@
 # Statistics computation configuration.
-# Used exclusively by scripts/statistics/compute_statistics.py.
+# Used exclusively by scripts/assets/compute_statistics.py.
 #
 # One modality per run (submit per-modality jobs in parallel via modality=... on the CLI).
 # Base statistics (mean/std/min/max) are computed on the RAW full store leaves; only

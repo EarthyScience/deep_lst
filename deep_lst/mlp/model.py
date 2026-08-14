@@ -8,32 +8,25 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from deep_lst.utils.config import get_packing_keys
 from deep_lst.utils.io import ExperimentPaths
 
+ACTIVATIONS = {
+    "relu": nn.ReLU,
+    "gelu": nn.GELU,
+}
+
 
 class MultiModalMLP(nn.Module):
-    """Pointwise MLP over packed tensors.
-
-    forward(state_window, X_dyn_window, step_X_dyn) -> (..., nP + nD)
-
-    state_window : (N, L, H, W, nP)     prognostic state over the lookback (ends at t0)
-    X_dyn_window : (N, L, H, W, nF_ctx) forcing-context vars over the lookback
-    step_X_dyn   : (N, H, W, nF_all)    all `inputs` at the step being predicted
-
-    Each lookback window is imputed (NaN->0) and concatenated with a per-element validity
-    mask, then flattened over (lookback, channel) — reproducing the old `_ctx` features.
-    Output is prog-first: [:nP] = prognostic increments, [nP:] = diagnostic absolutes.
-    """
-
     def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config):
         super().__init__()
 
         self.n_prognostic = n_prognostic
         self.lookback = lookback
-        # step inputs + value-and-mask flattenings of the state and forcing windows
-        self.input_size = n_input + 2 * lookback * (n_prognostic + n_forcing_context)
+        self.input_size = n_input + 2 * lookback * n_prognostic + lookback * n_forcing_context
         self.target_size = n_prognostic + n_diagnostic
         self.hidden_sizes = config["hidden_sizes"]
         self.dropout_p = config["dropout"]
         self.use_residual = config.get("use_residual", False)
+        self.use_layer_norm = config.get("use_layer_norm", False)
+        self.activation_cls = ACTIVATIONS[config.get("activation", "relu")]
 
         self.pre, self.res_block, self.post, self.out_layer = self._build()
 
@@ -41,11 +34,12 @@ class MultiModalMLP(nn.Module):
         return "mlp"
 
     def _layer(self, in_dim, out_dim):
-        return nn.Sequential(
-            nn.Linear(in_dim, out_dim),
-            nn.ReLU(),
-            nn.Dropout(self.dropout_p),
-        )
+        layers = [nn.Linear(in_dim, out_dim)]
+        if self.use_layer_norm:
+            layers.append(nn.LayerNorm(out_dim))
+        layers.append(self.activation_cls())
+        layers.append(nn.Dropout(self.dropout_p))
+        return nn.Sequential(*layers)
 
     def _build(self):
         sizes = [self.input_size] + self.hidden_sizes
@@ -75,19 +69,18 @@ class MultiModalMLP(nn.Module):
             nn.Linear(self.hidden_sizes[-1], self.target_size),
         )
 
-    def _flatten_window(self, window):
-        """(N, L, H, W, C) -> (N, H, W, 2*L*C): impute NaNs, append a validity mask, and
-        flatten the lookback and channel axes (oldest-first, value-then-mask per step)."""
-        mask = torch.isfinite(window).to(window.dtype)
+    def _flatten_window(self, window, with_mask=True):
         values = torch.nan_to_num(window, nan=0.0)
-        combined = torch.cat([values, mask], dim=-1)  # (N, L, H, W, 2C)
-        N, L, H, W, twoC = combined.shape
-        combined = combined.permute(0, 2, 3, 1, 4)  # (N, H, W, L, 2C)
-        return combined.reshape(N, H, W, L * twoC)
+        if with_mask:
+            mask = torch.isfinite(window).to(window.dtype)
+            values = torch.cat([values, mask], dim=-1)  # (N, L, H, W, 2C)
+        N, L, H, W, twoC = values.shape
+        values = values.permute(0, 2, 3, 1, 4)  # (N, H, W, L, 2C)
+        return values.reshape(N, H, W, L * twoC)
 
     def forward(self, state_window, X_dyn_window, step_X_dyn):
         state_flat = self._flatten_window(state_window)  # (N, H, W, 2*L*nP)
-        dyn_flat = self._flatten_window(X_dyn_window)  # (N, H, W, 2*L*nF_ctx)
+        dyn_flat = self._flatten_window(X_dyn_window, with_mask=False)  # (N, H, W, 2*L*nF_ctx)
         x = torch.cat([step_X_dyn, dyn_flat, state_flat], dim=-1)
         x[torch.isnan(x)] = 0.0  # safety check for any remaining NaNs
 
@@ -150,7 +143,6 @@ class LitModelModule(LightningModule):
         }
 
     def on_train_epoch_end(self):
-        """Clear any accumulated state at epoch end"""
         torch.cuda.empty_cache()
 
     def on_validation_epoch_end(self):
@@ -166,18 +158,6 @@ def load_model(
     version: str,
     prefer_best: bool = False,
 ):
-    """Instantiate the packed model and load from checkpoint.
-
-    Args:
-        config:     Full experiment config dict.
-        td_keys:    TensorDict keys from get_keys_from_config (the loss reads prognostic_keys).
-        experiment: Experiment name (matches folder under experiments/).
-        version:    Version/run name (subfolder containing checkpoints/).
-
-    Returns:
-        lit_module: LitModelModule in eval mode, moved to GPU if available.
-        device:     The torch.device the model is on.
-    """
     lookback = config.get("train_dataset", {}).get("seviri", {}).get("lookback", 0)
     packing = get_packing_keys(config["train_dataset"])
 

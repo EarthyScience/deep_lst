@@ -1,0 +1,7 @@
+# @package _global_
+eval_name: zambia_drought
+
+test_dataset:
+  spatial: eval_zambia_drought
+  temporal: test
+  anchor: seviri

@@ -9,7 +9,10 @@
 
 import warnings
 
+import matplotlib
 import numpy as np
+
+matplotlib.use("Agg")  # headless cluster script
 
 from deep_lst.dataset.dataset import STORE_EPOCH_OFFSET
 from deep_lst.exploration.full_store import SEVIRI_STORE, load_store_columns

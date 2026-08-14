@@ -1,4 +1,4 @@
-"""Tests for load_indices from scripts/statistics/compute_statistics.py.
+"""Tests for load_indices from scripts/assets/compute_statistics.py.
 
 Skipped automatically when eodata is not installed (CI without local zarr deps).
 """
@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("eodata", reason="eodata not installed — skipping compute_statistics tests")
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts" / "statistics"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts" / "assets"))
 
 
 def _write_spatial(tmp_path, mapping, src_indices):

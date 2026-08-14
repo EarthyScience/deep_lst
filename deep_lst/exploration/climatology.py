@@ -13,7 +13,7 @@ from eodata.grids import T1H
 
 from deep_lst.exploration.full_store import SEVIRI_STORE, load_store_columns
 
-CLIM_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/climatology_hourly/eval_mtg.nc"
+CLIM_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/climatology_hourly/mtg.nc"
 OUT_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/results/exploration/climatology.png"
 
 PERIOD_START, PERIOD_END = "2024-11-04", "2024-11-17"  # test_period_22, inclusive
