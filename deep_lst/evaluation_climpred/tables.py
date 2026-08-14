@@ -1,8 +1,9 @@
 """Score tables from the derived per-day scores. Reads scores/, writes tables/.
 
-No arithmetic here -- everything is already pooled in derive.py. Each table is built
-once as raw values and emitted twice, as .csv (full precision, for downstream use)
-and .tex (rounded, for the paper), so the two can never disagree.
+Everything is already pooled in derive.py; the only arithmetic here is the
+medium-vs-nowcast change in the skill table. Each table is built once as raw values
+and emitted twice, as .csv (full precision, for downstream use) and .tex (rounded,
+for the paper), so the two can never disagree.
 """
 
 import csv
@@ -10,6 +11,8 @@ import csv
 from .masks import WINDOW_LABELS
 
 MISSING = "--"  # window registered in MASKS but never verified
+
+SHORT_BASELINE_LABELS = {"clim_smooth": "Clim.", "persistence": "Persis.", "era5land": "SKT"}
 
 PLAIN_WINDOWS = ("all", "day", "night", "diurnal")  # time-of-day only, no row group
 
@@ -57,27 +60,29 @@ def _score_rows(pooled, days):
     return rows
 
 
-def _skill_rows(pooled, bootstrap_daily, days, baselines):
-    """(group, label, values) with skill and its CI bounds, three floats per cell."""
+def _skill_rows(pooled, days, baselines):
+    """(group, label, values): skill per baseline at both days, then the change [%].
+
+    The change is the medium-range skill relative to the nowcast skill."""
+    nowcast, medium = days
     available = _available(pooled)
     rows = []
     for group, members in _row_groups(pooled).items():
         for label, window in members.items():
-            values = []
-            for day in days:
-                for baseline in baselines:
-                    if window not in available:
-                        values.extend([None, None, None])
-                        continue
-                    selection = dict(window=window, day=day, baseline=baseline)
-                    values.extend(
-                        [
-                            float(pooled["rmse_ss"].sel(**selection)),
-                            float(bootstrap_daily.sel(quantile=0.025, **selection)),
-                            float(bootstrap_daily.sel(quantile=0.975, **selection)),
-                        ]
-                    )
-            rows.append((group, label, values))
+            if window not in available:
+                rows.append((group, label, [None] * 3 * len(baselines)))
+                continue
+            skill_nowcast = [
+                float(pooled["rmse_ss"].sel(window=window, day=nowcast, baseline=baseline)) for baseline in baselines
+            ]
+            skill_medium = [
+                float(pooled["rmse_ss"].sel(window=window, day=medium, baseline=baseline)) for baseline in baselines
+            ]
+            change = [
+                100.0 * (at_medium - at_nowcast) / at_nowcast
+                for at_nowcast, at_medium in zip(skill_nowcast, skill_medium)
+            ]
+            rows.append((group, label, skill_nowcast + skill_medium + change))
     return rows
 
 
@@ -90,14 +95,20 @@ def _emit_csv(path, columns, rows):
             writer.writerow([group, label] + ["" if v is None else v for v in values])
 
 
-def _emit_latex(path, colspec, header, rows, caption, cells):
-    """booktabs tabular -- needs \\usepackage{booktabs}. `cells` formats one row."""
+def _emit_latex(path, colspec, header, rows, caption, cells, highlight=False):
+    """booktabs tabular -- needs \\usepackage{booktabs}. `cells` formats one row.
+
+    `highlight` bolds the group headers and shades each group's first (total) row;
+    the shading needs \\usepackage[table]{xcolor}."""
     lines = [r"\begin{table}[t]", r"\centering", rf"\begin{{tabular}}{{{colspec}}}", r"\toprule", header, r"\midrule"]
     span = len(colspec.replace("|", ""))
+    group_style = r"\textbf" if highlight else r"\textit"
     current = None
     for group, label, values in rows:
         if group != current:
-            lines.append(rf"\multicolumn{{{span}}}{{l}}{{\textit{{{group}}}}} \\")
+            lines.append(rf"\multicolumn{{{span}}}{{l}}{{{group_style}{{{group}}}}} \\")
+            if highlight:
+                lines.append(r"\rowcolor[gray]{0.9}")
             current = group
         lines.append(rf"\quad {label} & " + " & ".join(cells(values)) + r" \\")
     lines += [r"\bottomrule", r"\end{tabular}", rf"\caption{{{caption}}}", r"\end{table}", ""]
@@ -112,11 +123,13 @@ def _score_cells(values):
 
 
 def _skill_cells(values):
-    cells = []
-    for start in range(0, len(values), 3):
-        skill, low, high = values[start : start + 3]
-        cells.append(MISSING if skill is None else f"{skill:.2f} ({low:.2f}--{high:.2f})")
-    return cells
+    """Two-decimal skill scores, then the one-decimal changes."""
+    if values[0] is None:
+        return [MISSING] * len(values)
+    n_scores = 2 * len(values) // 3
+    scores = [f"{value:.2f}" for value in values[:n_scores]]
+    changes = [f"{value:.1f}" for value in values[n_scores:]]
+    return scores + changes
 
 
 def write_score_table(pooled, days, tables_dir):
@@ -140,29 +153,39 @@ def write_score_table(pooled, days, tables_dir):
     )
 
 
-def write_skill_table(pooled, bootstrap_daily, days, tables_dir, baselines, labels):
-    """RMSE-SS against every baseline, with its bootstrap CI."""
+def write_skill_table(pooled, days, tables_dir, baselines):
+    """RMSE-SS against every baseline at both lead windows, and the change between them."""
     nowcast, medium = days
-    columns = [f"{name}_d{day}_{part}" for day in days for name in baselines for part in ("ss", "lo", "hi")]
-    rows = _skill_rows(pooled, bootstrap_daily, days, baselines)
+    columns = [f"{name}_d{day}" for day in days for name in baselines]
+    columns += [f"{name}_diff_pct" for name in baselines]
+    rows = _skill_rows(pooled, days, baselines)
     _emit_csv(tables_dir / "skill.csv", columns, rows)
-    per_day = " & ".join(labels[name] for name in baselines)
+    per_group = " & ".join(SHORT_BASELINE_LABELS[name] for name in baselines)
     n_baselines = len(baselines)
     header = (
-        f"& \\multicolumn{{{n_baselines}}}{{c}}{{Nowcast (day {nowcast})}}"
-        f" & \\multicolumn{{{n_baselines}}}{{c}}{{Medium range (day {medium})}} \\\\\n"
-        f"& {per_day} & {per_day} \\\\"
+        f"& \\multicolumn{{{n_baselines}}}{{c}}{{Nowcast range}}"
+        f" & \\multicolumn{{{n_baselines}}}{{c}}{{Medium range}}"
+        f" & \\multicolumn{{{n_baselines}}}{{c}}{{Difference [\\%]}} \\\\\n"
+        f"& {per_group} & {per_group} & {per_group} \\\\"
+    )
+    caption = (
+        "RMSE skill score against one of three baselines that is the diurnal smooth climatology, "
+        "diurnal persistence and Era5Land skin temperature (SKT) in a nowcasting "
+        f"(day {nowcast}, lead hours {24 * nowcast - 23}-{24 * nowcast}) and medium-range "
+        f"(day {medium}, lead hours {24 * medium - 23}-{24 * medium}) window. "
+        "The percentage difference is computed relative to the nowcast."
     )
     _emit_latex(
         tables_dir / "skill.tex",
-        "l" + "r" * (2 * len(baselines)),
+        "l" + "|".join(["r" * n_baselines] * 3),
         header,
         rows,
-        "RMSE skill score against each baseline, with 95\\% bootstrap confidence intervals over init days.",
+        caption,
         _skill_cells,
+        highlight=True,
     )
 
 
-def write_verif_tables(pooled, bootstrap_daily, days, tables_dir, baselines, labels):
+def write_verif_tables(pooled, days, tables_dir, baselines):
     write_score_table(pooled, days, tables_dir)
-    write_skill_table(pooled, bootstrap_daily, days, tables_dir, baselines, labels)
+    write_skill_table(pooled, days, tables_dir, baselines)

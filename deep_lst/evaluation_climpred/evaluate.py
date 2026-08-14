@@ -11,7 +11,6 @@ from .common import build_parser, nearest_pixel, verification_dir
 from .derive import derive_verif_products
 from .masks import register_month_windows
 from .plots import (
-    BASELINE_LABELS,
     COLORS,
     REGION_STYLES,
     SITE_STYLES,
@@ -102,7 +101,7 @@ def main():
         )
         plot_bias_maps(pixel_daily["bias_model"].sel(window=window), days, plots_dir, f"_{window}")
 
-    write_verif_tables(pooled, bootstrap_daily, days, verification_dir(args, "tables"), list(COLORS), BASELINE_LABELS)
+    write_verif_tables(pooled, days, verification_dir(args, "tables"), list(COLORS))
     plot_site_forecasts(args, plots_dir)
 
 
