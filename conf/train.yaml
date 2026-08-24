@@ -7,6 +7,7 @@ defaults:
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new
+_lookback:   24
 _experiment: ${_loss}_${_horizon}_${_data}_v13
 
 # eodata-main .eozarr store names (data version)
@@ -41,15 +42,15 @@ train_dataset:
   era5:
     store: ${_era5_store}
     load: ${_era5_load}
-    lookback: 24
+    lookback: ${_lookback}
   era5_land:
     store: ${_era5land_store}
     load: ${_era5land_load}
-    lookback: 24
+    lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
     load: ${_seviri_load}
-    lookback: 24
+    lookback: ${_lookback}
 #    quality_mask: ${_quality_mask}
 
 val_dataset:
@@ -60,15 +61,15 @@ val_dataset:
   era5:
     store: ${_era5_store}
     load: ${_era5_load}
-    lookback: 24
+    lookback: ${_lookback}
   era5_land:
     store: ${_era5land_store}
     load: ${_era5land_load}
-    lookback: 24
+    lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
     load: ${_seviri_load}
-    lookback: 24
+    lookback: ${_lookback}
  #   quality_mask: ${_quality_mask}
 
 test_dataset:
@@ -79,15 +80,15 @@ test_dataset:
   era5:
     store: ${_era5_store}
     load: ${_era5_load}
-    lookback: 24
+    lookback: ${_lookback}
   era5_land:
     store: ${_era5land_store}
     load: ${_era5land_load}
-    lookback: 24
+    lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
     load: ${_seviri_load}
-    lookback: 24
+    lookback: ${_lookback}
 
 training:
   max_epochs: 100

@@ -7,7 +7,7 @@ import yaml
 
 from deep_lst.utils.io import ExperimentPaths
 
-from .cubes import anomaly_ensemble, attach_classes, baseline_cube, obs_series, prepare_initialised
+from .cubes import anomaly_ensemble, attach_classes, attach_coverage, baseline_cube, obs_series, prepare_initialised
 from .masks import MASKS, register_month_windows, stack_windows
 
 VERIFY_KWARGS = {"metric": "mse", "comparison": "e2o", "alignment": "maximize", "skipna": True}
@@ -25,11 +25,15 @@ EVAL_CENTERS = {
 }
 
 
-def nearest_pixel(field, name):
-    """Index of the pixel closest to a named evaluation centre."""
+def nearest_pixel(field, name, max_offset_deg=None):
+    """Index of the pixel closest to a named evaluation centre; None if the centre
+    lies farther than max_offset_deg from every pixel (centre outside the region)."""
     lon, lat = EVAL_CENTERS[name]
     distance = (field["lon"].values - lon) ** 2 + (field["lat"].values - lat) ** 2
-    return int(np.argmin(distance))
+    index = int(np.argmin(distance))
+    if max_offset_deg is not None and distance[index] > max_offset_deg**2:
+        return None
+    return index
 
 
 def lookback_hours(paths, experiment, version):
@@ -98,6 +102,8 @@ def setup_verif():
     initilised = prepare_initialised(forecast)
     initilised = attach_classes(initilised, args.paths.spatial_indices_path(args.spatial))
     obs = obs_series(forecast)
+    lookback = lookback_hours(args.paths, args.experiment, args.version)
+    initilised = attach_coverage(initilised, obs, lookback)
     return args, initilised, obs
 
 

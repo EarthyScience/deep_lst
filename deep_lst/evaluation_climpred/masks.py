@@ -11,7 +11,14 @@ LC_GROUPS = {
     "lc_grass_crop": (10, 12, 14),
     "lc_shrub_barren": (6, 7, 16),
 }
-
+COV_BINS = {
+    "cov_lt10": (0.0, 0.10),
+    "cov_10_25": (0.10, 0.25),
+    "cov_25_50": (0.25, 0.50),
+    "cov_50_75": (0.50, 0.75),
+    "cov_75_90": (0.75, 0.90),
+    "cov_gt90": (0.90, 1.0),
+}
 # Display names for the class-group windows; tables and plots fall back to the
 # raw window string for anything not listed here.
 WINDOW_LABELS = {
@@ -22,6 +29,12 @@ WINDOW_LABELS = {
     "lc_savanna": "Savanna",
     "lc_grass_crop": "Grass/Crop",
     "lc_shrub_barren": "Shrub/Barren",
+    "cov_lt10": "Coverage < 10%",
+    "cov_10_25": "Coverage 10-25%",
+    "cov_25_50": "Coverage 25-50%",
+    "cov_50_75": "Coverage 50-75%",
+    "cov_75_90": "Coverage 75-90%",
+    "cov_gt90": "Coverage > 90%",
 }
 
 DAY_HOURS = (10, 15)
@@ -55,6 +68,21 @@ def class_mask(coord, class_ids):
 
     def mask(df):
         return df[coord].isin(list(class_ids))
+
+    return mask
+
+
+def coverage_mask(coord, bounds):
+    """MASKS-style function keeping samples whose lookback coverage is in [lo, hi).
+    The top bin (hi >= 1) is closed above so full coverage is kept; NaN coverage
+    (inits with truncated lookback) fails every bin by construction."""
+    lo, hi = bounds
+    top_bin = hi >= 1.0
+
+    def mask(df):
+        cov = df[coord]
+        upper = cov <= hi if top_bin else cov < hi
+        return (cov >= lo) & upper
 
     return mask
 
@@ -104,6 +132,8 @@ for group_name, group_ids in LC_GROUPS.items():
 for group_name in list(KG_GROUPS) + list(LC_GROUPS):
     for tod_name, tod_mask in (("day", day_mask), ("night", night_mask)):
         MASKS[f"{group_name}_{tod_name}"] = combined_mask(MASKS[group_name], tod_mask)
+for bin_name, bounds in COV_BINS.items():
+    MASKS[bin_name] = coverage_mask("lookback_coverage", bounds)
 
 
 def register_month_windows(months):

@@ -30,7 +30,8 @@ from pytorch_lightning import loggers as lgrs
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 from deep_lst.dataset.data_module import LitDataModule
-from deep_lst.mlp.model import LitModelModule, MultiModalMLP
+from deep_lst.lit_module import LitModelModule
+from deep_lst.mlp.model import MultiModalMLP
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config, get_packing_keys
 from deep_lst.utils.io import load_inc_variances, stats_spatial

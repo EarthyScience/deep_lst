@@ -86,3 +86,24 @@ def attach_classes(initilised, npz_path):
     initilised = initilised.assign_coords(kg_class=("pixel", npz["kg_classes"][order]))
     initilised = initilised.assign_coords(lc_class=("pixel", npz["modis_lc_classes"][order]))
     return initilised
+
+
+def attach_coverage(initilised, obs, lookback):
+    """Fraction of valid obs hours in the lookback window before each init, as an
+    (init, pixel) coord. Inits whose window starts before the obs series are set to
+    NaN so they drop out of every coverage window (but stay in all/day/night)."""
+    init_times = initilised["init"].values
+    lookback_times = init_times[:, None] + np.arange(-lookback, 0)[None, :] * np.timedelta64(1, "h")
+
+    observed = payload(obs).values
+    times = obs["valid_time"].values if "valid_time" in obs.coords else obs["time"].values
+
+    gathered = hourly_gather(times, observed, lookback_times)
+
+    coverage = np.isfinite(gathered).mean(axis=1)
+    truncated = init_times < times[0] + lookback * np.timedelta64(1, "h")
+    coverage[truncated] = np.nan
+
+    initilised = initilised.assign_coords(lookback_coverage=(("init", "pixel"), coverage))
+
+    return initilised

@@ -1,22 +1,59 @@
-"""
-Transformer model placeholder for deep_lst.
-
-This module will contain the transformer implementation for land surface temperature estimation.
-"""
-
-import torch
 import torch.nn as nn
+
+from deep_lst.transformer.encodings import PositionalEncoding
+from deep_lst.transformer.tokenizer import Tokenizer
 
 
 class Transformer(nn.Module):
-    """Vision Transformer model placeholder."""
-
-    def __init__(self, in_size, out_size, **kwargs):
+    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config):
         super().__init__()
-        raise NotImplementedError("ViT model is not yet implemented.")
+
+        self.n_prognostic = n_prognostic
+        self.lookback = lookback
+        self.target_size = n_prognostic + n_diagnostic
+
+        self.d_model = config["d_model"]
+        self.n_heads = config["n_heads"]
+        self.n_layers = config["n_layers"]
+        self.dim_feedforward = config["dim_feedforward"]
+
+        self.dropout_p = config["dropout"]
+
+        self.tokenizer = Tokenizer(n_forcing_context, n_prognostic, n_input, self.d_model)
+        self.positional_encoding = PositionalEncoding(lookback + 1, self.d_model)
+
+        # local template only: nn.TransformerEncoder deep-copies it n_layers times,
+        # registering it as an attribute would add a third, unused parameter set (breaks DDP)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=self.n_heads,
+            dim_feedforward=self.dim_feedforward,
+            dropout=self.dropout_p,
+            activation=config.get("activation", "relu"),
+            norm_first=config.get("norm_first", False),
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.n_layers)
+        self.head = nn.Linear(self.d_model, n_prognostic + n_diagnostic)
+
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(lookback + 1)
+        self.register_buffer("causal_mask", causal_mask)
 
     def name(self):
-        return "vit"
+        return "transformer"
 
-    def forward(self, *inputs) -> torch.Tensor:
-        raise NotImplementedError("ViT model is not yet implemented.")
+    def forward(self, state_window, X_dyn_window, step_X_dyn):
+        N, L, H, W, C = state_window.shape
+
+        # Tokenize the input
+        tokens = self.tokenizer(state_window, X_dyn_window, step_X_dyn)
+        tokens = tokens + self.positional_encoding(tokens)
+
+        hidden = self.encoder(tokens, mask=self.causal_mask)
+
+        # Take the last token (corresponding to the current step) for prediction
+        last_token = hidden[:, -1]
+
+        output = self.head(last_token)
+
+        return output.reshape(N, H, W, -1)

@@ -15,7 +15,8 @@ from omegaconf import OmegaConf
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from deep_lst.dataset.data_module import LitDataModule
-from deep_lst.mlp.model import LitModelModule, MultiModalMLP
+from deep_lst.lit_module import LitModelModule
+from deep_lst.mlp.model import MultiModalMLP
 from deep_lst.utils.config import get_keys_from_config, get_packing_keys
 from deep_lst.utils.io import ExperimentPaths, load_inc_variances
 

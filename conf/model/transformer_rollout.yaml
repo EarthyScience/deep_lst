@@ -8,14 +8,13 @@ _sigma_diagnostics: []
 model:
   name: transformer
   d_model: 256
-  n_nheads: 4
+  n_heads: 4
   n_layers: 4
   dim_feedforward: 512
+  encoder_weights: None # Not active.
   learning_rate: 3.7e-4
   dropout: 0.005
   activation: gelu
-  use_residual: true
-  use_layer_norm: true
   step_loss: RolloutLoss
   loss_fn: smooth_l1
   checkpoint_monitor: val_loss_step_epoch_log
@@ -25,3 +24,4 @@ model:
   scheduler_T0: 80000
   weight_decay: 0.0001
   warmup_steps: 20000
+  norm_first: false # not active

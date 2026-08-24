@@ -32,7 +32,9 @@ def plot_site_forecasts(args, plots_dir):
     lookback_times = init_times[:, None] + np.arange(-lookback, 0)[None, :] * np.timedelta64(1, "h")
 
     for site in SITE_STYLES:
-        pixel = nearest_pixel(initilised, site)
+        pixel = nearest_pixel(initilised, site, max_offset_deg=0.1)
+        if pixel is None:
+            continue
         pred = initilised["LST"].isel(pixel=pixel).values
         observed = series_at_pixel(obs, valid_times, pixel)
         climatology = series_at_pixel(climatology_series, valid_times, pixel)

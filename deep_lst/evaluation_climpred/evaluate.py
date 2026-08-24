@@ -58,7 +58,11 @@ def main():
     if skipped:
         print(f"Skipping unverified windows: {skipped}")
 
-    site_pixels = {name: nearest_pixel(pixel_daily, name) for name in SITE_STYLES}
+    site_pixels = {}
+    for name in SITE_STYLES:
+        pixel = nearest_pixel(pixel_daily, name, max_offset_deg=0.1)
+        if pixel is not None:
+            site_pixels[name] = pixel
     for window in skill_windows:
         plot_acc_r2(
             out["lead"],

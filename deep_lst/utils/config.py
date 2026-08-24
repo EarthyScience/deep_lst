@@ -1,3 +1,16 @@
+import importlib
+
+import torch
+
+from deep_lst.lit_module import LitModelModule
+from deep_lst.utils.io import ExperimentPaths
+
+MODEL_CLASSES = {
+    "mlp": "MultiModalMLP",
+    "transformer": "Transformer",
+}
+
+
 def get_keys_from_config(dataset_config):
     in_keys = []
     prognostic_keys = []
@@ -64,3 +77,46 @@ def get_packing_keys(dataset_config: dict) -> dict:
         "n_prognostic": len(prognostic_keys),
         "n_diagnostic": len(base["diagnostic_keys"]),
     }
+
+
+def get_model_class(model_id: str):
+    """Resolve the model class for a config `model.name`, mirroring LitModelModule._get_loss.
+
+    Imported lazily via importlib because the model modules import this module.
+    """
+    module = importlib.import_module(f"deep_lst.{model_id}.model")
+    return getattr(module, MODEL_CLASSES[model_id])
+
+
+def load_model(
+    config: dict,
+    td_keys: dict,
+    experiment: str,
+    version: str,
+    prefer_best: bool = False,
+):
+    lookback = config.get("train_dataset", {}).get("seviri", {}).get("lookback", 0)
+    packing = get_packing_keys(config["train_dataset"])
+
+    model_cls = get_model_class(config["model"]["name"])
+    model = model_cls(
+        n_prognostic=packing["n_prognostic"],
+        n_diagnostic=packing["n_diagnostic"],
+        n_input=len(packing["input_keys"]),
+        n_forcing_context=len(packing["forcing_context_keys"]),
+        lookback=lookback,
+        config=config["model"],
+    )
+
+    paths = ExperimentPaths()
+    ckpt_path = (
+        paths.best_checkpoint(experiment, version) if prefer_best else paths.latest_checkpoint(experiment, version)
+    )
+
+    lit_module = LitModelModule.load_from_checkpoint(ckpt_path, model=model, config=config, **td_keys)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    lit_module.eval()
+    lit_module.to(device)
+
+    return lit_module, device
