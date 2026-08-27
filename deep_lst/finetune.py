@@ -8,12 +8,12 @@ fields are ignored to keep the state_dict loadable.
 
 Usage
 -----
-uv run deep_lst/mlp/finetune.py \\
+uv run deep_lst/finetune.py \\
     model=mlp_rollout loss=smoothl1 horizon=h72 \\
     from_run=mlp_rollout_smoothl1_h24_v9/version_0
 
 Override any single value on the CLI:
-    uv run deep_lst/mlp/finetune.py ... training.max_epochs=40 checkpoint=last
+    uv run deep_lst/finetune.py ... training.max_epochs=40 checkpoint=last
 """
 
 import json
@@ -31,9 +31,8 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.lit_module import LitModelModule
-from deep_lst.mlp.model import MultiModalMLP
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.config import get_keys_from_config, get_packing_keys
+from deep_lst.utils.config import build_model, get_keys_from_config
 from deep_lst.utils.io import load_inc_variances, stats_spatial
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
@@ -49,7 +48,7 @@ def _git_hash() -> str:
         return "unknown"
 
 
-@hydra.main(config_path="../../conf", config_name="finetune", version_base="1.3")
+@hydra.main(config_path="../conf", config_name="finetune", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     config = OmegaConf.to_container(cfg, resolve=True)
 
@@ -174,7 +173,6 @@ def main(cfg: DictConfig) -> None:
     # inside losses/rollout.py if anomaly training returns.
 
     td_keys = get_keys_from_config(config["train_dataset"])
-    packing = get_packing_keys(config["train_dataset"])
     lookback = config["train_dataset"]["seviri"]["lookback"]
 
     inc_variances: dict[str, float] = {}
@@ -182,14 +180,7 @@ def main(cfg: DictConfig) -> None:
     for modality in config["modality_ids"]:
         inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality, stats_tag)))
 
-    model = MultiModalMLP(
-        n_prognostic=packing["n_prognostic"],
-        n_diagnostic=packing["n_diagnostic"],
-        n_input=len(packing["input_keys"]),
-        n_forcing_context=len(packing["forcing_context_keys"]),
-        lookback=lookback,
-        config=config["model"],
-    )
+    model = build_model(config, config["train_dataset"], lookback, paths)
     lit_module = LitModelModule(
         model,
         config,

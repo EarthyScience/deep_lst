@@ -13,6 +13,8 @@ model:
   activation: gelu
   use_residual: true
   use_layer_norm: true
+  # integer = raw class codes (v13 reference); embedding = learnable static embeddings
+  static_encoding: embedding
   step_loss: RolloutLoss
   loss_fn: smooth_l1
   checkpoint_monitor: val_loss_step_epoch_log

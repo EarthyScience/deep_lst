@@ -1,16 +1,22 @@
 import torch.nn as nn
 
-from deep_lst.transformer.encodings import PositionalEncoding
-from deep_lst.transformer.tokenizer import Tokenizer
+from deep_lst.models.static_embeddings import build_embedder
+from deep_lst.models.transformer.encodings import PositionalEncoding
+from deep_lst.models.transformer.tokenizer import Tokenizer
 
 
 class Transformer(nn.Module):
-    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config):
+    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config, static_spec=None):
         super().__init__()
 
         self.n_prognostic = n_prognostic
         self.lookback = lookback
         self.target_size = n_prognostic + n_diagnostic
+
+        # Same static block as the MLP, applied to the query token's forcing vector, so both
+        # backbones see an identical feature vector (models/static_embeddings.py).
+        self.static_embedder = build_embedder(n_input, config, static_spec)
+        self.input_size = n_input if self.static_embedder is None else self.static_embedder.out_dim
 
         self.d_model = config["d_model"]
         self.n_heads = config["n_heads"]
@@ -19,7 +25,7 @@ class Transformer(nn.Module):
 
         self.dropout_p = config["dropout"]
 
-        self.tokenizer = Tokenizer(n_forcing_context, n_prognostic, n_input, self.d_model)
+        self.tokenizer = Tokenizer(n_forcing_context, n_prognostic, self.input_size, self.d_model)
         self.positional_encoding = PositionalEncoding(lookback + 1, self.d_model)
 
         # local template only: nn.TransformerEncoder deep-copies it n_layers times,
@@ -44,6 +50,9 @@ class Transformer(nn.Module):
 
     def forward(self, state_window, X_dyn_window, step_X_dyn):
         N, L, H, W, C = state_window.shape
+
+        if self.static_embedder is not None:
+            step_X_dyn = self.static_embedder(step_X_dyn)
 
         # Tokenize the input
         tokens = self.tokenizer(state_window, X_dyn_window, step_X_dyn)

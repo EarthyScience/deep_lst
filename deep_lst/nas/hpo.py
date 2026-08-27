@@ -16,8 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.lit_module import LitModelModule
-from deep_lst.mlp.model import MultiModalMLP
-from deep_lst.utils.config import get_keys_from_config, get_packing_keys
+from deep_lst.utils.config import build_model, get_keys_from_config, get_packing_keys
 from deep_lst.utils.io import ExperimentPaths, load_inc_variances
 
 HPO_EPOCHS = 20
@@ -88,14 +87,7 @@ def objective(
     config["csv_logger"] = False
     config["wandb_logger"] = False
 
-    model = MultiModalMLP(
-        n_prognostic=packing["n_prognostic"],
-        n_diagnostic=packing["n_diagnostic"],
-        n_input=len(packing["input_keys"]),
-        n_forcing_context=len(packing["forcing_context_keys"]),
-        lookback=config["train_dataset"]["seviri"]["lookback"],
-        config=config["model"],
-    )
+    model = build_model(config, config["train_dataset"], config["train_dataset"]["seviri"]["lookback"])
     model_module = LitModelModule(
         model,
         config,

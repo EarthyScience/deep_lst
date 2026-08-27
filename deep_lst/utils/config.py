@@ -79,12 +79,37 @@ def get_packing_keys(dataset_config: dict) -> dict:
     }
 
 
+def build_model(config: dict, dataset_config: dict, lookback: int, paths=None):
+    """Construct the configured backbone with its static-embedding spec attached.
+
+    One place builds models for training and inference so both agree on input_size and on
+    the vocabulary the embeddings were trained with.
+    """
+    from deep_lst.preprocessing.static_vocab import build_static_spec
+
+    packing = get_packing_keys(dataset_config)
+    static_spec = None
+    if config["model"].get("static_encoding", "embedding") == "embedding":
+        static_spec = build_static_spec(dataset_config, paths or ExperimentPaths(), packing["input_keys"])
+
+    model_cls = get_model_class(config["model"]["name"])
+    return model_cls(
+        n_prognostic=packing["n_prognostic"],
+        n_diagnostic=packing["n_diagnostic"],
+        n_input=len(packing["input_keys"]),
+        n_forcing_context=len(packing["forcing_context_keys"]),
+        lookback=lookback,
+        config=config["model"],
+        static_spec=static_spec,
+    )
+
+
 def get_model_class(model_id: str):
     """Resolve the model class for a config `model.name`, mirroring LitModelModule._get_loss.
 
     Imported lazily via importlib because the model modules import this module.
     """
-    module = importlib.import_module(f"deep_lst.{model_id}.model")
+    module = importlib.import_module(f"deep_lst.models.{model_id}.model")
     return getattr(module, MODEL_CLASSES[model_id])
 
 
@@ -96,19 +121,9 @@ def load_model(
     prefer_best: bool = False,
 ):
     lookback = config.get("train_dataset", {}).get("seviri", {}).get("lookback", 0)
-    packing = get_packing_keys(config["train_dataset"])
-
-    model_cls = get_model_class(config["model"]["name"])
-    model = model_cls(
-        n_prognostic=packing["n_prognostic"],
-        n_diagnostic=packing["n_diagnostic"],
-        n_input=len(packing["input_keys"]),
-        n_forcing_context=len(packing["forcing_context_keys"]),
-        lookback=lookback,
-        config=config["model"],
-    )
-
     paths = ExperimentPaths()
+    model = build_model(config, config["train_dataset"], lookback, paths)
+
     ckpt_path = (
         paths.best_checkpoint(experiment, version) if prefer_best else paths.latest_checkpoint(experiment, version)
     )

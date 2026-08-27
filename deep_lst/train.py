@@ -18,7 +18,7 @@ from pytorch_lightning.profilers import AdvancedProfiler  # noqa: F401
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.lit_module import LitModelModule
-from deep_lst.utils.config import get_keys_from_config, get_model_class, get_packing_keys
+from deep_lst.utils.config import build_model, get_keys_from_config, get_packing_keys
 from deep_lst.utils.io import ExperimentPaths, load_inc_variances, stats_spatial
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
@@ -159,15 +159,11 @@ def main(cfg: DictConfig) -> None:
     for modality in config["modality_ids"]:
         inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality, stats_tag)))
 
-    model_cls = get_model_class(config["model"]["name"])
-    model = model_cls(
-        n_prognostic=packing["n_prognostic"],
-        n_diagnostic=packing["n_diagnostic"],
-        n_input=len(packing["input_keys"]),
-        n_forcing_context=len(packing["forcing_context_keys"]),
-        lookback=lookback,
-        config=config["model"],
-    )
+    model = build_model(config, config["train_dataset"], lookback, paths)
+    n_parameters = sum(p.numel() for p in model.parameters())
+    print(f"static_encoding={config['model'].get('static_encoding', 'embedding')} parameters={n_parameters:,}")
+    if getattr(model, "static_embedder", None) is not None:
+        print(f"  {model.static_embedder}")
     model_module = LitModelModule(
         model,
         config,

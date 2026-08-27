@@ -17,6 +17,9 @@ num_workers: 8         # threads for the raw preload
 
 seviri:
   store: seviri_2016_2024
+  # `prognostics` here only selects which variables get increment statistics; it does not
+  # make them model prognostics. In v13 LST is the model's only prognostic, so the MLE/MH
+  # increment stats are written and never read.
   prognostics: [LST, MLE, MH]
 
 era5:

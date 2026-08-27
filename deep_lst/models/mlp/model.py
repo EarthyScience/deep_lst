@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from deep_lst.models.static_embeddings import build_embedder
+
 ACTIVATIONS = {
     "relu": nn.ReLU,
     "gelu": nn.GELU,
@@ -8,12 +10,16 @@ ACTIVATIONS = {
 
 
 class MultiModalMLP(nn.Module):
-    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config):
+    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config, static_spec=None):
         super().__init__()
 
         self.n_prognostic = n_prognostic
         self.lookback = lookback
-        self.input_size = n_input + 2 * lookback * n_prognostic + lookback * n_forcing_context
+        # Categorical statics sit in the step-forcing block; with embeddings their n raw code
+        # channels are replaced by sum(dim) embedded channels (models/static_embeddings.py).
+        self.static_embedder = build_embedder(n_input, config, static_spec)
+        n_step_input = n_input if self.static_embedder is None else self.static_embedder.out_dim
+        self.input_size = n_step_input + 2 * lookback * n_prognostic + lookback * n_forcing_context
         self.target_size = n_prognostic + n_diagnostic
         self.hidden_sizes = config["hidden_sizes"]
         self.dropout_p = config["dropout"]
@@ -72,6 +78,8 @@ class MultiModalMLP(nn.Module):
         return values.reshape(N, H, W, L * twoC)
 
     def forward(self, state_window, X_dyn_window, step_X_dyn):
+        if self.static_embedder is not None:
+            step_X_dyn = self.static_embedder(step_X_dyn)
         state_flat = self._flatten_window(state_window)  # (N, H, W, 2*L*nP)
         dyn_flat = self._flatten_window(X_dyn_window, with_mask=False)  # (N, H, W, 2*L*nF_ctx)
         x = torch.cat([step_X_dyn, dyn_flat, state_flat], dim=-1)

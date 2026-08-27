@@ -18,7 +18,8 @@ class LitModelModule(LightningModule):
         )
 
     def _get_loss(self, model_id: str, loss_name: str):
-        module = importlib.import_module(f"deep_lst.{model_id}")
+        """Losses are shared across backbones; model_id is kept for the config contract."""
+        module = importlib.import_module("deep_lst.losses")
         return getattr(module, loss_name)
 
     def training_step(self, batch, batch_idx):

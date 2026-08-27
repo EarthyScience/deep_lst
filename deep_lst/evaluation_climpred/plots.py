@@ -173,7 +173,7 @@ def plot_skill_score(x, skill, out_dir, suffix, xlabel="Lead [h]", ci=None, disp
             median_px = dispersion.sel(baseline=kind, quantile=0.5)
             (median,) = ax.plot(x, median_px, color=color, ls="--", lw=0.9, alpha=0.6)
             if kind == SPATIAL_BASELINE:
-                band.set_label("95% pixel CI")
+                band.set_label("5–95 % pixel spread")
                 median.set_label("pixel median")
                 spread = [band, median]
     site_lines = []

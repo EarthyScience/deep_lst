@@ -52,8 +52,18 @@ class ExperimentPaths:
         return self.assets_root / modality / "statistics" / f"statistics_{name}.npz"
 
     def eozarr_store_path(self, store_name: str) -> Path:
-        """Resolve a full eodata .eozarr store from its config-provided name."""
-        return self.eozarr_root / f"{store_name}.eozarr"
+        """Resolve a full eodata .eozarr store from its config-provided name.
+
+        Falls back to the .zip sibling when the directory store is unusable. On 2026-08-22 the
+        per-group zarr.json files were removed from era5_2014_2025.eozarr (8 of 9 groups), which
+        makes every read fail with ArrayNotFoundError while the chunks themselves are also gone.
+        The zip mirrors are intact, so prefer them rather than failing."""
+        directory = self.eozarr_root / f"{store_name}.eozarr"
+        archive = self.eozarr_root / f"{store_name}.eozarr.zip"
+        directory_is_readable = (directory / "data" / "zarr.json").exists()
+        if not directory_is_readable and archive.exists():
+            return archive
+        return directory
 
     def stats_zarr_path(self, modality: str, spatial: str) -> Path:
         """Zscore statistics zarr for *modality* (eodata ModalityNormalizer format),

@@ -40,9 +40,26 @@ def prepare_initialised(fc_data):
     return initilised
 
 
+def init_spacing_hours(fc_data):
+    """Hours between consecutive initialisations; requires a uniform cadence.
+
+    obs_series tiles the first `spacing` leads of every init into one continuous hourly series,
+    which only works if the inits are evenly spaced (6 h for the deep_lst stores, 24 h for the
+    daily wgl ones)."""
+    init_times = fc_data["init_time"].values
+    if len(init_times) < 2:
+        raise ValueError("need at least two initialisations to infer the init cadence")
+    steps = np.unique(np.diff(init_times) / np.timedelta64(1, "h")).astype(int)
+    if len(steps) != 1:
+        raise ValueError(f"initialisations are not evenly spaced, found steps {steps} h")
+    return int(steps[0])
+
+
 def obs_series(fc_data):
-    block = fc_data["LST_obs"].isel(lead_time=slice(1, 7)).values
-    tail = fc_data["LST_obs"].isel(init_time=-1, lead_time=slice(7, 30)).values
+    spacing = init_spacing_hours(fc_data)
+    n_leads = fc_data.sizes["lead_time"]
+    block = fc_data["LST_obs"].isel(lead_time=slice(1, spacing + 1)).values
+    tail = fc_data["LST_obs"].isel(init_time=-1, lead_time=slice(spacing + 1, n_leads)).values
     values = np.concatenate([block.reshape(-1, block.shape[2]), tail], axis=0)
     start = fc_data["init_time"].values[0] + np.timedelta64(1, "h")
     hours = start + np.arange(values.shape[0]) * np.timedelta64(1, "h")

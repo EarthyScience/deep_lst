@@ -61,8 +61,12 @@ def main():
     site_pixels = {}
     for name in SITE_STYLES:
         pixel = nearest_pixel(pixel_daily, name, max_offset_deg=0.1)
-        if pixel is not None:
-            site_pixels[name] = pixel
+        if pixel is None:
+            # Announced rather than silently dropped: a missing site line is a caption
+            # claim the figure no longer supports.
+            print(f"Skipping site {name}: no evaluated pixel within 0.1 deg of its centre")
+            continue
+        site_pixels[name] = pixel
     for window in skill_windows:
         plot_acc_r2(
             out["lead"],
