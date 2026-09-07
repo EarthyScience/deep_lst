@@ -40,6 +40,7 @@ def parse_args():
         action="store_true",
         help="Write (valid_time, pixel) even for dense boxes; must mirror the inference force_sparse flag.",
     )
+    p.add_argument("--out_key", default=None, help="Baseline filename key; defaults to the spatial name.")
     return p.parse_args()
 
 
@@ -56,7 +57,7 @@ def build_config(region: str):
 def main():
     args = parse_args()
     config = build_config(args.region)
-    store_key = config["test_dataset"]["spatial"]
+    store_key = args.out_key or config["test_dataset"]["spatial"]
 
     shared = MultimodalDataset.preload_shared(config["modality_ids"], **config["test_dataset"])
 

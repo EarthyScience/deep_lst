@@ -10,8 +10,10 @@ nas/hpo.db
 scripts/out
 scripts/bin
 scripts/**/*.sh
+scripts/resubmit
 
 experiments/
+experiments_archived/
 notebooks/
 
 configs/
@@ -23,6 +25,7 @@ run_inference.log
 run_inference_setup.log
 run_inference_finalize.log
 finetune.log
+train.log
 
 # Python-generated files
 __pycache__/

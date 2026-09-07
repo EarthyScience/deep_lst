@@ -151,7 +151,12 @@ def _preload_pixel(reader, normalizer, pixel, select=None, day_range=None):
         elif key in daily_keys:
             columns[key] = _daily_column(leaf, mask)
         elif key in hourly_keys:
-            columns[key] = _hourly_column(leaf, mask)
+            # Dispatch on shape, not name: T1H stores carry an hour axis (days, C, 24, 1, 1),
+            # daily stores (e.g. glofas_v4) name their leaf `data` too but omit it (days, C, 1, 1).
+            if leaf.ndim == 5:
+                columns[key] = _hourly_column(leaf, mask)
+            else:
+                columns[key] = _daily_column(leaf, mask)
         else:
             raise ValueError(f"Unclassified preload leaf {key!r}")
     return columns

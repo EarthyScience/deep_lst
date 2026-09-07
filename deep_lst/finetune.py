@@ -187,7 +187,9 @@ def main(cfg: DictConfig) -> None:
         **td_keys,
         inc_variances=inc_variances,
         detach_rollout=config["model"].get("detach_rollout", True),
+        teacher_forcing_loss=config["model"].get("teacher_forcing_loss", True),
         incremental_loss=config["model"].get("incremental_loss", False),
+        rollout_loss=config["model"].get("rollout_loss", True),
     )
 
     state = torch.load(ckpt_path, map_location="cpu")

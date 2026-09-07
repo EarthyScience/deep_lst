@@ -19,7 +19,9 @@ model:
   loss_fn: smooth_l1
   checkpoint_monitor: val_loss_step_epoch_log
   detach_rollout: false
+  teacher_forcing_loss: true
   incremental_loss: true
+  rollout_loss: true
   probabilistic: false
   scheduler_T0: 80000
   weight_decay: 0.0001

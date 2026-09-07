@@ -104,7 +104,7 @@ def _plot_pixel_day_maps(field, days, out_dir, suffix, label, cmap, norm, extend
         ax.set_title(f"Forecast day {int(day)} (leads {24 * (int(day) - 1) + 1}-{24 * int(day)} h)")
         axes_list.append(ax)
     fig.colorbar(sc, ax=axes_list, label=label, shrink=0.7, extend=extend, format="%.2f")
-    fig.savefig(out_dir / f"pixel_map{suffix}.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out_dir / f"pixel_map{suffix}.pdf", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -140,7 +140,7 @@ def plot_forecast_limit_map(limit_days, horizon, out_dir, suffix):
     legend = ax.legend(loc="lower left", frameon=False)
     for handle in legend.legend_handles:
         handle.set_sizes([40.0])
-    fig.savefig(out_dir / f"forecast_limit_map{suffix}.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out_dir / f"forecast_limit_map{suffix}.pdf", dpi=150, bbox_inches="tight")
 
 
 def plot_skill_score(x, skill, out_dir, suffix, xlabel="Lead [h]", ci=None, dispersion=None, sites=None):
@@ -194,7 +194,7 @@ def plot_skill_score(x, skill, out_dir, suffix, xlabel="Lead [h]", ci=None, disp
     left = left + [blank] * (rows - len(left))
     right = right + [blank] * (rows - len(right))
     ax.legend(handles=left + right, frameon=False, ncol=2, loc="upper right")
-    fig.savefig(out_dir / f"skill_score_by_lead{suffix}.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out_dir / f"skill_score_by_lead{suffix}.pdf", dpi=150, bbox_inches="tight")
 
 
 def _share_limits(axes, symmetric=False):
@@ -268,7 +268,7 @@ def plot_site(site, chosen, pred, observed, climatology, lookback_obs, lead, loo
         ax.set_ylabel("anomaly [K]", fontsize=9)
     axes[0, 0].legend(frameon=False, fontsize=8, loc="upper right")
     fig.suptitle(site, fontweight="bold")
-    fig.savefig(out_dir / f"site_forecast_{site.lower()}.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out_dir / f"site_forecast_{site.lower()}.pdf", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -284,7 +284,7 @@ def plot_acc_r2(x, acc, r2, out_dir, suffix):
     ax.set_ylabel("Score", fontweight="bold")
     ax.set_ylim(bottom=0.0, top=1.0)
     ax.legend(frameon=False)
-    fig.savefig(out_dir / f"acc_r2_by_lead{suffix}.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out_dir / f"acc_r2_by_lead{suffix}.pdf", dpi=150, bbox_inches="tight")
 
 
 def plot_acc_r2_regions(out, out_dir, regions):
@@ -320,4 +320,4 @@ def plot_acc_r2_regions(out, out_dir, regions):
         legend.get_title().set_fontweight("bold")
         ax.add_artist(legend)
         legends.append(legend)
-    fig.savefig(out_dir / "acc_r2_by_lead_regions.png", dpi=150, bbox_inches="tight", bbox_extra_artists=legends)
+    fig.savefig(out_dir / "acc_r2_by_lead_regions.pdf", dpi=150, bbox_inches="tight", bbox_extra_artists=legends)

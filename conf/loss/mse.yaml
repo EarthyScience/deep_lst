@@ -1,6 +1,5 @@
 # @package _global_
 
-# MSE on the absolute state. Selects the loss_fn switch of the single RolloutLoss.
 _loss: mse
 
 model:

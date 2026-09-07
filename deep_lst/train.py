@@ -70,7 +70,6 @@ def main(cfg: DictConfig) -> None:
                 print(f"WARNING: hpo_best was tuned for horizon={expected}, running with {actual}")
         print(f">>> HPO params loaded from {hpo_path} (val_loss={hpo.get('val_loss', '?'):.4f})")
 
-    # Build run name from model + experiment keys set by config groups
     name = f"{config['_model_name']}_{config['_experiment']}"
     if tag:
         name = f"{name}_{tag}"
@@ -144,10 +143,6 @@ def main(cfg: DictConfig) -> None:
     data_module = LitDataModule(**config)
     data_module.setup()
 
-    # NOTE: the anomaly mode (predict_anomaly + ClimatologyLookup) was stripped — it did not
-    # survive the packed-RolloutLoss migration (no loss consumed the climatology). Re-implement
-    # inside losses/rollout.py if anomaly training returns.
-
     td_keys = get_keys_from_config(config["train_dataset"])
     packing = get_packing_keys(config["train_dataset"])
     lookback = config["train_dataset"]["seviri"]["lookback"]
@@ -170,7 +165,9 @@ def main(cfg: DictConfig) -> None:
         **td_keys,
         inc_variances=inc_variances,
         detach_rollout=config["model"].get("detach_rollout", True),
+        teacher_forcing_loss=config["model"].get("teacher_forcing_loss", True),
         incremental_loss=config["model"].get("incremental_loss", False),
+        rollout_loss=config["model"].get("rollout_loss", True),
     )
 
     ngpu = torch.cuda.device_count()
@@ -202,7 +199,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     start_time = time.time()
-    trainer.fit(model_module, datamodule=data_module)
+    trainer.fit(model_module, datamodule=data_module, ckpt_path=config.get("resume_ckpt"))
     print("Time required for fitting ... minutes ...:", (time.time() - start_time) / 60)
 
     start_time = time.time()

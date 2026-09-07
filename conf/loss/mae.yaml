@@ -1,0 +1,6 @@
+# @package _global_
+
+_loss: mae
+
+model:
+  loss_fn: mae

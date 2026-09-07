@@ -29,3 +29,7 @@ era5:
 era5_land:
   store: era5_land_2016_2025
   prognostics: [swvl1, swvl2, stl1, stl2]
+
+glofas_v4:
+  store: glofas_v4_2014_2025
+  prognostics: []

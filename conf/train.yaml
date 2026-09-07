@@ -27,6 +27,7 @@ _temporal_val:   val_2023b10
 _seviri_store:   seviri_2016_2024
 _era5_store:     era5_2014_2025
 _era5land_store: era5_land_2016_2025
+_glofas_store:   glofas_v4_2014_2025
 
 # `load:` lists what is READ from each store, not what the model sees. The model's
 # input/context/prognostic lists live in conf/data/<data>.yaml; anything below that is
@@ -47,6 +48,11 @@ _era5_load:
   data_static_categorical: [tvh, tvl, lsm, slt]
 _era5land_load:
   data: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]   # skt: baseline reference only, not a model input
+# T1D store (daily, unix-epoch day axis — same indexing as the T1H stores' day axis).
+# All four variables loaded so input toggles stay config-only; model inputs live in
+# conf/data/full_glofas.yaml. The modality is active only when modality_ids includes it.
+_glofas_load:
+  data: [rowe, sd, swir, dis24]
 
 modality_ids: [era5, era5_land, seviri]
 
@@ -62,6 +68,10 @@ train_dataset:
   era5_land:
     store: ${_era5land_store}
     load: ${_era5land_load}
+    lookback: ${_lookback}
+  glofas_v4:
+    store: ${_glofas_store}
+    load: ${_glofas_load}
     lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
@@ -82,6 +92,10 @@ val_dataset:
     store: ${_era5land_store}
     load: ${_era5land_load}
     lookback: ${_lookback}
+  glofas_v4:
+    store: ${_glofas_store}
+    load: ${_glofas_load}
+    lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
     load: ${_seviri_load}
@@ -100,6 +114,10 @@ test_dataset:
   era5_land:
     store: ${_era5land_store}
     load: ${_era5land_load}
+    lookback: ${_lookback}
+  glofas_v4:
+    store: ${_glofas_store}
+    load: ${_glofas_load}
     lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
@@ -131,6 +149,7 @@ smoke: false
 tag: null
 hpo_path: nas/hpo_best.json   # set hpo=true to load; override with hpo_path=<other.json>
 hpo: false
+resume_ckpt: null   # path to a last.ckpt to resume a walltime-killed run (restores epoch/optimizer/scheduler; logs to the next version_ dir)
 
 hydra:
   run:
