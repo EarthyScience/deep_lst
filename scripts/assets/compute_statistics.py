@@ -71,7 +71,7 @@ def computed_feature_statistics(rows, stat_days, modality) -> ArrayStatistics:
     """
     centers = store_grid(modality).centers[np.asarray(rows)]  # (n_rows, 2) lon/lat
     hours = (np.asarray(stat_days)[:, None] * 24 + np.arange(24)).ravel()
-    zenith = np.stack([features.solar_zenith(float(lat), float(lon), hours) for lon, lat in centers])
+    zenith = np.stack([features.solar_features(float(lat), float(lon), hours)["solar_zenith"] for lon, lat in centers])
     values = zenith.astype(np.float64)
     stats = {
         "mean": np.atleast_1d(values.mean()),

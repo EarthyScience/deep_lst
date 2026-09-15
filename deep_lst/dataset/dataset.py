@@ -314,12 +314,16 @@ class MultimodalDataset(Dataset):
         return self.samples
 
     def _add_computed(self, channels, modality, lonlat, hour, lookback, horizon):
-        """Attach computed features: solar_zenith per grid; doy/hod only on the anchor modality."""
+        """Attach computed features: solar_zenith + hod per grid; doy only on the anchor modality.
+
+        Only solar_zenith is standardised; the cyclic cos/sin encodings stay raw in [-1, 1].
+        """
         hours = np.arange(hour - lookback, hour + horizon + 1)
-        zenith = features.solar_zenith(float(lonlat[1]), float(lonlat[0]), hours)
+        solar = features.solar_features(float(lonlat[1]), float(lonlat[0]), hours)
         mean, std = self.computed_stats[modality]["solar_zenith"]
-        zenith = (zenith - mean) / std
-        channels["solar_zenith"] = torch.as_tensor(zenith, dtype=torch.float32).reshape(-1, 1, 1, 1)
+        solar["solar_zenith"] = (solar["solar_zenith"] - mean) / std
+        for name, values in solar.items():
+            channels[name] = torch.as_tensor(values, dtype=torch.float32).reshape(-1, 1, 1, 1)
         if modality == _ANCHOR_MODALITY:
             for name, values in features.time_features(hours).items():
                 channels[name] = torch.as_tensor(values, dtype=torch.float32).reshape(-1, 1, 1, 1)
