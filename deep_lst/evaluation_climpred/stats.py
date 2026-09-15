@@ -78,6 +78,37 @@ def anomaly_obs_variance(initilised, anomaly_obs, windows, masks=None):
     return xr.concat(variances, dim="window").assign_coords(window=windows)
 
 
+def anomaly_moments(initilised, anomaly_forecast, anomaly_obs, windows, masks=None):
+    """Sufficient statistics of the (forecast, obs) anomaly pairs per (window, lead):
+    count and the sums of f, o, f^2, o^2 and f*o over the jointly valid samples.
+    Any anomaly correlation, variance or mse pooled over any set of leads follows
+    from these -- unlike a per-lead correlation, which cannot be re-pooled.
+
+    The cubes stay float32 (the dense evals are 16k pixels); only the accumulation
+    is float64."""
+    obs_anomaly = obs_cube(anomaly_obs, initilised)
+    valid = anomaly_forecast.notnull() & obs_anomaly.notnull()
+    masks = MASKS if masks is None else masks
+    per_window = []
+    for window in windows:
+        mask_fn = masks[window]
+        window_valid = valid if mask_fn is None else valid & mask_fn(initilised)
+        f = anomaly_forecast.where(window_valid)
+        o = obs_anomaly.where(window_valid)
+        moments = xr.Dataset(
+            {
+                "n": window_valid.sum(["init", "pixel"]),
+                "sum_f": f.sum(["init", "pixel"], dtype="float64"),
+                "sum_o": o.sum(["init", "pixel"], dtype="float64"),
+                "sum_ff": (f * f).sum(["init", "pixel"], dtype="float64"),
+                "sum_oo": (o * o).sum(["init", "pixel"], dtype="float64"),
+                "sum_fo": (f * o).sum(["init", "pixel"], dtype="float64"),
+            }
+        )
+        per_window.append(moments)
+    return xr.concat(per_window, dim="window").assign_coords(window=windows)
+
+
 def per_init_counts(initilised, obs, windows, masks=None):
     """Jointly valid samples per (window, init, lead) -- weights for the paired bootstrap."""
     valid = initilised["LST"].notnull() & obs_cube(obs, initilised).notnull()

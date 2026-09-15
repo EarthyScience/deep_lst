@@ -106,6 +106,27 @@ def _skill_rows(pooled, days, baselines, groups):
     return rows
 
 
+def _anomaly_rows(pooled, days, groups):
+    """(group, label, values): centered ACC and anomaly R2 at both days, then the absolute change."""
+    nowcast, medium = days
+    available = _available(pooled)
+    rows = []
+    for group, members in groups.items():
+        for label, window in members.items():
+            if window not in available:
+                rows.append((group, label, [None] * 6))
+                continue
+            acc_nowcast = float(pooled["acc"].sel(window=window, day=nowcast))
+            r2_nowcast = float(pooled["r2"].sel(window=window, day=nowcast))
+            acc_medium = float(pooled["acc"].sel(window=window, day=medium))
+            r2_medium = float(pooled["r2"].sel(window=window, day=medium))
+            acc_change = acc_medium - acc_nowcast
+            r2_change = r2_medium - r2_nowcast
+            values = [acc_nowcast, r2_nowcast, acc_medium, r2_medium, acc_change, r2_change]
+            rows.append((group, label, values))
+    return rows
+
+
 def _emit_csv(path, columns, rows):
     """One flat file: group, row, then the raw values at full precision."""
     with open(path, "w", newline="") as handle:
@@ -163,6 +184,15 @@ def _skill_cells(values):
     n_scores = 2 * len(values) // 3
     scores = [f"{value:.2f}" for value in values[:n_scores]]
     changes = [f"{value:.1f}" for value in values[n_scores:]]
+    return scores + changes
+
+
+def _anomaly_cells(values):
+    """Two-decimal ACC and R2, then the signed absolute changes."""
+    if values[0] is None:
+        return [MISSING] * 6
+    scores = [f"{value:.2f}" for value in values[:4]]
+    changes = [f"{value:+.2f}" for value in values[4:]]
     return scores + changes
 
 
@@ -277,7 +307,32 @@ def write_coverage_tables(pooled, days, tables_dir, baselines):
     )
 
 
+def write_anomaly_table(pooled, days, tables_dir):
+    """Centered ACC and anomaly R2 per region x time of day at both lead windows;
+    skipped when the verif predates the anomaly moment sums."""
+    if "acc" not in pooled:
+        return
+    nowcast, medium = days
+    columns = [f"acc_d{nowcast}", f"r2_d{nowcast}", f"acc_d{medium}", f"r2_d{medium}", "acc_diff", "r2_diff"]
+    rows = _anomaly_rows(pooled, days, _row_groups(pooled))
+    _emit_csv(tables_dir / "anomaly.csv", columns, rows)
+    header = (
+        "& \\multicolumn{2}{c}{Nowcast range} & \\multicolumn{2}{c}{Medium range}"
+        " & \\multicolumn{2}{c}{Difference} \\\\\n"
+        "& ACC & $R^2$ & ACC & $R^2$ & ACC & $R^2$ \\\\"
+    )
+    caption = (
+        "Centered anomaly correlation (ACC) and anomaly $R^2$ by "
+        "Koeppen-Geiger group and time of day, pooled over the same nowcasting "
+        f"(day {nowcast}) and medium-range (day {medium}) windows as the score table; anomalies "
+        "are departures from the smoothed diurnal climatology on both sides. The difference "
+        "displays medium range $-$ nowcast range."
+    )
+    _emit_latex(tables_dir / "anomaly.tex", "lrrrr|rr", header, rows, caption, _anomaly_cells, highlight=True)
+
+
 def write_verif_tables(pooled, days, tables_dir, baselines):
     write_score_table(pooled, days, tables_dir)
     write_skill_table(pooled, days, tables_dir, baselines)
     write_coverage_tables(pooled, days, tables_dir, baselines)
+    write_anomaly_table(pooled, days, tables_dir)

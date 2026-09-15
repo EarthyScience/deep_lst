@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -98,7 +99,10 @@ class ExperimentPaths:
     @staticmethod
     def baseline_spatial(eval_name: str) -> str:
         """Spatial-selection name (indices_<name>.npz) whose baselines an eval name refers to:
-        train_<sel> -> <sel>; bare region labels -> eval_<region>; eval_* passes through."""
+        train_<sel> -> <sel>; bare region labels -> eval_<region>; eval_* passes through.
+        A trailing init-stride token (_s3, _s7) names a thinned rerun of the same region
+        and shares its baselines."""
+        eval_name = re.sub(r"_s\d+$", "", eval_name)
         if eval_name.startswith("train_"):
             return eval_name.removeprefix("train_")
         return eval_name if eval_name.startswith("eval_") else f"eval_{eval_name}"

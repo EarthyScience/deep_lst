@@ -24,7 +24,8 @@ def _timestamps(hours):
 def time_features(hours):
     """{doy_cos, doy_sin, hod_cos, hod_sin} for T1H global hour indices (each shape == hours)."""
     timestamps = _timestamps(hours)
-    doy_angle = 2.0 * np.pi * (timestamps.dayofyear.to_numpy() - 1) / 365.25
+    year_length = 365.0 + timestamps.is_leap_year.to_numpy()
+    doy_angle = 2.0 * np.pi * (timestamps.dayofyear.to_numpy() - 1) / year_length
     hod_angle = 2.0 * np.pi * timestamps.hour.to_numpy() / 24.0
     return {
         "doy_cos": np.cos(doy_angle),
@@ -37,10 +38,11 @@ def time_features(hours):
 def solar_zenith(lat, lon, hours):
     """Solar zenith angle in degrees at (lat, lon) for T1H global hour indices (NOAA formulas)."""
     timestamps = _timestamps(hours)
+    year_length = 365.0 + timestamps.is_leap_year.to_numpy()
     day = timestamps.dayofyear.to_numpy()
     frac_hour = timestamps.hour.to_numpy() + timestamps.minute.to_numpy() / 60.0
     # Fractional year (radians), then equation of time (minutes) and solar declination (radians).
-    gamma = 2.0 * np.pi / 365.0 * (day - 1 + (frac_hour - 12.0) / 24.0)
+    gamma = 2.0 * np.pi / year_length * (day - 1 + (frac_hour - 12.0) / 24.0)
     eqtime = 229.18 * (
         0.000075
         + 0.001868 * np.cos(gamma)

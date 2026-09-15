@@ -5,26 +5,40 @@ jobs, or any time a derivation convention or plot changes.
 Run: python -m deep_lst.evaluation_climpred.evaluate --experiment <exp> --eval_name <name>
 """
 
+import re
+
+import xarray as xr
+
 from deep_lst.utils.io import ExperimentPaths
 
-from .common import build_parser, nearest_pixel, verification_dir
+from .common import build_parser, verification_dir
 from .derive import derive_verif_products
 from .masks import register_month_windows
 from .plots import (
     COLORS,
     REGION_STYLES,
-    SITE_STYLES,
-    SPATIAL_BASELINE,
     plot_acc_r2,
     plot_acc_r2_regions,
     plot_bias_maps,
+    plot_error_and_skill,
+    plot_error_skill_anomaly,
     plot_forecast_limit_map,
+    plot_pixel_bias_planes,
     plot_rmse_maps,
+    plot_score_bars,
+    plot_skill_bars,
+    plot_skill_limit_maps,
     plot_skill_maps,
-    plot_skill_score,
 )
-from .tables import write_verif_tables
+from .tables import _row_groups, write_verif_tables
 from .timeseries import plot_site_forecasts
+
+# The dense case studies share one colour range per map kind so their maps compare
+# across regions (set by hand: 98th percentiles of |bias| span 0.7-2.5 K and of
+# |skill| 0.35-0.8 across the three at stride 7). The continental evaluation keeps
+# its data-driven range. Stride suffixes (_s7) name reruns of the same region.
+CASE_STUDIES = ("sahel_niger", "yangambi", "zambia_drought")
+CASE_STUDY_LIMITS = {"bias": 2.0, "skill": 0.8}
 
 
 def main():
@@ -40,6 +54,14 @@ def main():
         nargs="+",
         default=["all", "day", "night"],
         help="Windows for the pixel maps; reduced to the verified ones.",
+    )
+    parser.add_argument(
+        "--bias_plane_days",
+        nargs=2,
+        type=int,
+        default=[1, 10],
+        metavar=("FIRST", "SECOND"),
+        help="The two forecast days overlaid in the per-pixel bias planes (need the day and night windows).",
     )
     args = parser.parse_args()
     month_windows = register_month_windows(args.months)
@@ -58,15 +80,6 @@ def main():
     if skipped:
         print(f"Skipping unverified windows: {skipped}")
 
-    site_pixels = {}
-    for name in SITE_STYLES:
-        pixel = nearest_pixel(pixel_daily, name, max_offset_deg=0.1)
-        if pixel is None:
-            # Announced rather than silently dropped: a missing site line is a caption
-            # claim the figure no longer supports.
-            print(f"Skipping site {name}: no evaluated pixel within 0.1 deg of its centre")
-            continue
-        site_pixels[name] = pixel
     for window in skill_windows:
         plot_acc_r2(
             out["lead"],
@@ -75,20 +88,24 @@ def main():
             plots_dir,
             f"_{window}",
         )
-        site_skill = pixel_daily["rmse_ss"].sel(window=window, baseline=SPATIAL_BASELINE)
-        plot_skill_score(
+        plot_error_and_skill(
             pooled["day"],
+            pooled["rmse_model"].sel(window=window),
+            pooled["rmse_baseline"].sel(window=window),
             pooled["rmse_ss"].sel(window=window),
             plots_dir,
             f"_daily_ci_{window}",
-            xlabel="forecast day",
+            xlabel="Lead time [day]",
             ci=bootstrap_daily.sel(window=window),
             dispersion=pooled["rmse_ss_dispersion"].sel(window=window),
-            sites={name: site_skill.isel(pixel=pixel) for name, pixel in site_pixels.items()},
+            rmse_dispersion_model=pooled["rmse_model_dispersion"].sel(window=window),
+            rmse_dispersion_baseline=pooled["rmse_baseline_dispersion"].sel(window=window),
         )
     regions = [w for w in REGION_STYLES if w in windows]
     if regions:
         plot_acc_r2_regions(out, plots_dir, regions)
+    if regions and "acc" in pooled and "all" in windows:
+        plot_error_skill_anomaly(pooled, "all", regions, bootstrap_daily, plots_dir)
 
     horizon = int(pooled["day"].values[-1])
     if horizon >= 2:  # a single forecast day leaves no gradient to map
@@ -98,18 +115,52 @@ def main():
             )
 
     days = [1, horizon]  # nowcast and medium range
+    region = re.sub(r"_s\d+$", "", args.eval_name)
+    limits = CASE_STUDY_LIMITS if region in CASE_STUDIES else {}
     for window in map_windows:
+        per_day = window == "all"  # one map per forecast day for the total skill and bias only
         plot_rmse_maps(pixel_daily["rmse_model"].sel(window=window), days, plots_dir, f"_{window}")
         plot_skill_maps(
             pixel_daily["rmse_ss"].sel(window=window, baseline="clim_smooth"),
             days,
             plots_dir,
             f"_{window}_clim_smooth",
-            "RMSE-SS vs Climatology",
+            "Skill improvement (RMSE)",
+            per_day=per_day,
+            limit=limits.get("skill"),
         )
-        plot_bias_maps(pixel_daily["bias_model"].sel(window=window), days, plots_dir, f"_{window}")
+        plot_bias_maps(
+            pixel_daily["bias_model"].sel(window=window),
+            days,
+            plots_dir,
+            f"_{window}",
+            per_day=per_day,
+            limit=limits.get("bias"),
+        )
+        if horizon >= 2:
+            plot_skill_limit_maps(
+                pixel_daily["rmse_ss"].sel(window=window, baseline="clim_smooth"),
+                fc_limit.sel(window=window, baseline="clim_smooth"),
+                days,
+                horizon,
+                plots_dir,
+                f"_{window}_clim_smooth",
+                limit=limits.get("skill"),
+            )
+
+    if "day" in map_windows and "night" in map_windows:
+        by_pixel = xr.open_dataset(verification_dir(args, "verif") / "by_pixel.nc", decode_timedelta=False)
+        if max(args.bias_plane_days) > horizon:
+            print(f"Skipping the bias planes: days {args.bias_plane_days} exceed the {horizon}-day horizon")
+        else:
+            plot_pixel_bias_planes(pixel_daily, by_pixel["n"], args.bias_plane_days, plots_dir)
+    else:
+        print("Skipping the pixel bias planes: both the 'day' and 'night' windows must be verified and mapped")
 
     write_verif_tables(pooled, days, verification_dir(args, "tables"), list(COLORS))
+    groups = _row_groups(pooled)
+    plot_score_bars(pooled, days, groups, plots_dir)
+    plot_skill_bars(pooled, days, groups, plots_dir)
     plot_site_forecasts(args, plots_dir)
 
 
