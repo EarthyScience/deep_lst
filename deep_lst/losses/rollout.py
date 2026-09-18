@@ -129,7 +129,7 @@ class RolloutLoss:
             if self.incremental_loss:
                 inc_preds = torch.stack(inc_preds, dim=1)
                 loss_rollout += state_loss(inc_preds / inc_std, target_inc / inc_std)
-            loss_rollout = loss_rollout / horizon
+            loss_rollout = loss_rollout
         else:
             loss_rollout = y_prog.new_zeros(())
 
