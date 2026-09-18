@@ -17,6 +17,7 @@ from .masks import register_month_windows
 from .plots import (
     COLORS,
     REGION_STYLES,
+    apply_print_style,
     plot_acc_r2,
     plot_acc_r2_regions,
     plot_bias_maps,
@@ -24,14 +25,16 @@ from .plots import (
     plot_error_skill_anomaly,
     plot_forecast_limit_map,
     plot_pixel_bias_planes,
+    plot_regime_summary,
     plot_rmse_maps,
     plot_score_bars,
     plot_skill_bars,
     plot_skill_limit_maps,
     plot_skill_maps,
+    plot_skill_summary,
 )
 from .tables import _row_groups, write_verif_tables
-from .timeseries import plot_site_forecasts
+from .timeseries import plot_regime_forecasts, plot_site_forecasts
 
 # The dense case studies share one colour range per map kind so their maps compare
 # across regions (set by hand: 98th percentiles of |bias| span 0.7-2.5 K and of
@@ -42,6 +45,7 @@ CASE_STUDY_LIMITS = {"bias": 2.0, "skill": 0.8}
 
 
 def main():
+    apply_print_style()
     parser = build_parser()
     parser.add_argument(
         "--skill_windows",
@@ -161,7 +165,12 @@ def main():
     groups = _row_groups(pooled)
     plot_score_bars(pooled, days, groups, plots_dir)
     plot_skill_bars(pooled, days, groups, plots_dir)
+    if regions:
+        plot_regime_summary(out, pooled, groups, plots_dir, days=days)
+    if regions and "day" in windows and "night" in windows:
+        plot_skill_summary(out, pooled, bootstrap_hourly, bootstrap_daily, groups, plots_dir, days=days)
     plot_site_forecasts(args, plots_dir)
+    plot_regime_forecasts(args, plots_dir)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # @package _global_
-eval_name: eval_mtg_val
+eval_name: eval_mtg_new
 
 test_dataset:
-  spatial: eval_mtg
+  spatial: mtg_new
   temporal: val_2023b10
   anchor: mtg

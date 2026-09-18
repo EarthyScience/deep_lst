@@ -2,12 +2,92 @@
 observations that match t's day-of-year and hour-of-day. The smoothed mode averages over a
 circular day-of-year window instead of the exact day."""
 
+import warnings
 from pathlib import Path
 
 import numpy as np
 
 from deep_lst.baselines.base import _ANCHOR_MODALITY, BaselineExtractor
 from deep_lst.evaluation_climpred.masks import DAY_HOURS, NIGHT_HOURS
+
+# Reference-period anomaly statistics written next to the climatology (see
+# anomaly_statistics): empirical quantiles of the dekad means, the valid daily values a
+# dekad mean needs, the valid pixels an area-mean day needs.
+QUANTILES = (0.05, 0.5, 0.95, 0.98)
+MIN_DEKAD_DAYS = 2
+MIN_PIXEL_FRACTION = 0.0  # no coverage guard on the area mean for now (any valid pixel counts)
+
+
+def dekad_means(daily, day_dates, min_days=MIN_DEKAD_DAYS):
+    """Calendar-dekad means (days 1-10, 11-20, 21-end) of `daily` (n_days, ...) along the
+    first axis; NaN where a dekad has fewer than min_days valid values.
+    Returns (means (n_dekads, ...), the calendar month of each dekad)."""
+    dekad_index = np.minimum((day_dates.day.values - 1) // 10, 2)
+    group = day_dates.year.values * 300 + day_dates.month.values * 3 + dekad_index
+    groups, inverse = np.unique(group, return_inverse=True)
+    means = np.full((len(groups), *daily.shape[1:]), np.nan, dtype=np.float32)
+    months = np.zeros(len(groups), dtype=int)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN dekads
+        for position in range(len(groups)):
+            rows = daily[inverse == position]
+            valid = np.isfinite(rows).sum(axis=0)
+            mean = np.nanmean(rows, axis=0)
+            means[position] = np.where(valid >= min_days, mean, np.nan)
+            months[position] = (groups[position] // 3) % 100
+    return means, months
+
+
+def _skewness(rows):
+    """Fisher-Pearson skewness over the first axis, NaN-aware."""
+    centred = rows - np.nanmean(rows, axis=0)
+    second = np.nanmean(centred**2, axis=0)
+    third = np.nanmean(centred**3, axis=0)
+    return third / second**1.5
+
+
+def anomaly_statistics(daily_anom, day_dates):
+    """Reference-period statistics of daily-mean anomalies (n_days, n_pixels), per calendar
+    month: per pixel the std and skewness of the daily values and the std and empirical
+    QUANTILES of the calendar-dekad means; for the area mean over the pixels the std of the
+    daily and of the dekad values. All stds ddof=1. A quantity shown at one of these
+    aggregations must be standardized by the spread of the same aggregation, so the
+    ±1 / ±2 sigma classes keep their meaning.
+    Returns {name: (dims, array)}; names are the suffixes after '<var>_anom_'."""
+    months = day_dates.month.values
+    n_pixels = daily_anom.shape[1]
+    dekad, dekad_months = dekad_means(daily_anom, day_dates)
+    valid_fraction = np.isfinite(daily_anom).mean(axis=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        area_daily = np.where(valid_fraction >= MIN_PIXEL_FRACTION, np.nanmean(daily_anom, axis=1), np.nan)
+    area_dekad, _ = dekad_means(area_daily[:, None], day_dates)
+
+    daily_std = np.full((12, n_pixels), np.nan, dtype=np.float32)
+    daily_skew = np.full((12, n_pixels), np.nan, dtype=np.float32)
+    dekad_std = np.full((12, n_pixels), np.nan, dtype=np.float32)
+    dekad_quantile = np.full((len(QUANTILES), 12, n_pixels), np.nan, dtype=np.float32)
+    daily_std_area = np.full(12, np.nan, dtype=np.float32)
+    dekad_std_area = np.full(12, np.nan, dtype=np.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN pixels, single-sample stds
+        for month in range(1, 13):
+            in_month = months == month
+            in_dekad_month = dekad_months == month
+            daily_std[month - 1] = np.nanstd(daily_anom[in_month], axis=0, ddof=1)
+            daily_skew[month - 1] = _skewness(daily_anom[in_month])
+            dekad_std[month - 1] = np.nanstd(dekad[in_dekad_month], axis=0, ddof=1)
+            dekad_quantile[:, month - 1] = np.nanquantile(dekad[in_dekad_month], QUANTILES, axis=0)
+            daily_std_area[month - 1] = np.nanstd(area_daily[in_month], ddof=1)
+            dekad_std_area[month - 1] = np.nanstd(area_dekad[in_dekad_month, 0], ddof=1)
+    return {
+        "daily_std": (("month", "pixel"), daily_std),
+        "daily_skew": (("month", "pixel"), daily_skew),
+        "dekad_std": (("month", "pixel"), dekad_std),
+        "dekad_quantile": (("quantile", "month", "pixel"), dekad_quantile),
+        "daily_std_area": (("month",), daily_std_area),
+        "dekad_std_area": (("month",), dekad_std_area),
+    }
 
 
 class ClimatologyExtractor(BaselineExtractor):
@@ -59,8 +139,8 @@ class ClimatologyExtractor(BaselineExtractor):
             ),
         )
         self.result = self._make_dataset(baseline, test_ts, attrs)
-        monthly_stds = self._monthly_anomaly_std(train_lst, self.timestamps[train_mask])
-        self._attach_monthly_std(monthly_stds)
+        monthly_stats = self._monthly_anomaly_stats(train_lst, self.timestamps[train_mask])
+        self._attach_monthly_stats(monthly_stats)
 
     def output_path(self) -> Path:
         return self.paths.climatology_path(self.store_key, self.mode)
@@ -98,15 +178,16 @@ class ClimatologyExtractor(BaselineExtractor):
             result[i] = self.clim[doy, hour, :]
         return result
 
-    def _monthly_anomaly_std(self, train_lst, train_ts):
-        """Per-pixel std (ddof=1) of daily-mean anomalies vs this climatology, per calendar
-        month: all hours, plus the solar day/night windows of the verification masks.
-        Night hours are binned onto the calendar day they fall on."""
+    def _monthly_anomaly_stats(self, train_lst, train_ts):
+        """Reference-period statistics of the daily-mean anomalies vs this climatology
+        (anomaly_statistics), per calendar month: all hours, plus the solar day/night
+        windows of the verification masks. Night hours are binned onto the calendar day
+        they fall on. Variable names: <var>_anom_<statistic><window suffix>."""
         train_clim = self._lookup_climatology(train_ts)
         hourly_anom = train_lst.T.astype(np.float32) - train_clim
         assert train_ts[0].hour == 0 and len(train_ts) % 24 == 0
         n_days = len(train_ts) // 24
-        day_months = train_ts[::24].month.values
+        day_dates = train_ts[::24]
 
         lons = self.pixel_lonlat[:, 0]
         solar = (train_ts.hour.values[:, None] + lons[None, :] / 15.0) % 24.0
@@ -117,24 +198,20 @@ class ClimatologyExtractor(BaselineExtractor):
         }
         del solar
 
-        monthly_stds = {}
+        stats = {}
         for suffix, hour_mask in hour_masks.items():
             masked = hourly_anom if hour_mask is None else np.where(hour_mask, hourly_anom, np.float32(np.nan))
             daily_anom = np.nanmean(masked.reshape(n_days, 24, self.n_pixels), axis=1)
-            monthly_std = np.full((12, self.n_pixels), np.nan, dtype=np.float32)
-            for month in range(1, 13):
-                in_month = day_months == month
-                monthly_std[month - 1] = np.nanstd(daily_anom[in_month], axis=0, ddof=1)
-            monthly_stds[suffix] = monthly_std
-        return monthly_stds
+            for statistic, (dims, values) in anomaly_statistics(daily_anom, day_dates).items():
+                stats[f"{self.var_name}_anom_{statistic}{suffix}"] = (dims, values)
+        return stats
 
-    def _attach_monthly_std(self, monthly_stds):
-        for suffix, monthly_std in monthly_stds.items():
-            std_name = f"{self.var_name}_anom_daily_std{suffix}"
-            if self.sparse:
-                self.result[std_name] = (("month", "pixel"), monthly_std)
+    def _attach_monthly_stats(self, stats):
+        for name, (dims, values) in stats.items():
+            if "pixel" in dims and not self.sparse:
+                dense = np.full((*values.shape[:-1], *self.grid_shape), np.nan, dtype=np.float32)
+                dense[..., self.local_rows, self.local_cols] = values
+                self.result[name] = (dims[:-1] + ("lat", "lon"), dense)
             else:
-                dense = np.full((12, *self.grid_shape), np.nan, dtype=np.float32)
-                dense[:, self.local_rows, self.local_cols] = monthly_std
-                self.result[std_name] = (("month", "lat", "lon"), dense)
-        self.result = self.result.assign_coords(month=np.arange(1, 13))
+                self.result[name] = (dims, values)
+        self.result = self.result.assign_coords(month=np.arange(1, 13), quantile=np.array(QUANTILES))
