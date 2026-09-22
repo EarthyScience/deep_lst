@@ -1,5 +1,5 @@
 # @package _global_
-eval_name: zambia_drought
+eval_name: zambia
 
 test_dataset:
   spatial: eval_zambia_drought
