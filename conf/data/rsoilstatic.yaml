@@ -1,0 +1,41 @@
+# @package _global_
+_data: rsoilstatic
+
+train_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc,  solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [ t2m, d2m, solar_zenith]
+    context_vars: [ t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]
+
+val_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [ t2m, d2m, solar_zenith]
+    context_vars: [ t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]
+
+test_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc,  solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [ t2m, d2m, solar_zenith]
+    context_vars: [ t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]

@@ -21,7 +21,7 @@ import numpy as np
 from matplotlib.colors import LinearSegmentedColormap, to_rgb
 from matplotlib.lines import Line2D
 
-from deep_lst.evaluation.plots._design import RC
+from deep_lst.exploration.plots._design import RC
 
 # MODIS IGBP Land Cover Type 1 class colours and names
 IGBP_COLORS = {

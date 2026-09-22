@@ -1,7 +1,0 @@
-# @package _global_
-eval_name: dahra
-
-test_dataset:
-  spatial: eval_dahra
-  temporal: test
-  anchor: seviri

@@ -1,7 +1,0 @@
-# @package _global_
-eval_name: bouamir
-
-test_dataset:
-  spatial: eval_bouamir
-  temporal: test
-  anchor: seviri

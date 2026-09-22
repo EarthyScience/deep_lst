@@ -1,8 +1,0 @@
-# @package _global_
-eval_name: zambia_seasonal
-
-test_dataset:
-  spatial: eval_zambia_drought
-  temporal: test_zambia_seasonal
-  anchor: seviri
-  init_hours: [0]

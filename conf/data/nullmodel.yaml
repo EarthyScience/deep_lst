@@ -1,0 +1,41 @@
+# @package _global_
+_data: nullmodel
+
+train_dataset:
+  era5:
+    inputs: [ tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [solar_zenith]
+  era5_land:
+    inputs: [ ]
+    context_vars: [ ]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]
+
+val_dataset:
+  era5:
+    inputs: [ tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [solar_zenith]
+  era5_land:
+    inputs: [ ]
+    context_vars: [ ]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]
+
+test_dataset:
+  era5:
+    inputs: [tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [solar_zenith]
+  era5_land:
+    inputs: [ ]
+    context_vars: [ ]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]

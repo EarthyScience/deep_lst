@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 
 from deep_lst.dataset.collator import Collator
 from deep_lst.dataset.dataset import MultimodalDataset
-from deep_lst.evaluation.inference import Forecast
+from deep_lst.inference import Forecast
 from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import get_keys_from_config, get_packing_keys, load_model
 from deep_lst.utils.inference import load_run_config

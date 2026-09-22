@@ -1,7 +1,0 @@
-# @package _global_
-eval_name: train_mtg
-
-test_dataset:
-  spatial: mtg
-  temporal: test
-  anchor: mtg

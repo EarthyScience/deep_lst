@@ -1,0 +1,54 @@
+# @package _global_
+# Data ablation: full_glofas minus the era5_land modality inputs.
+# Same modality_ids/load as full_glofas -> reuses its preload cache; only inputs shrink.
+_data: noera5land
+
+modality_ids: [era5, era5_land, seviri, glofas_v4]
+
+train_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: []
+    context_vars: []
+  glofas_v4:
+    inputs: [swir, rowe]
+    context_vars: [swir, rowe]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]
+
+val_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: []
+    context_vars: []
+  glofas_v4:
+    inputs: [swir, rowe]
+    context_vars: [swir, rowe]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]
+
+test_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: []
+    context_vars: []
+  glofas_v4:
+    inputs: [swir, rowe]
+    context_vars: [swir, rowe]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST] #, MLE, MH]
+    diagnostics: []
+    context_vars: [LST] #, MLE, MH]
