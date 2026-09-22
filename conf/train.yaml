@@ -8,7 +8,7 @@ defaults:
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new
 _lookback:   24
-_experiment: ${_loss}_${_horizon}_${_data}_v14
+_experiment: ${_loss}_${_horizon}_${_data}_v16
 
 # Temporal split, chronological: train <= 2022, validate 2023, test 2024. Training is
 # every hour of 2016-01-01..2022-12-31; validation is days 11-20 of every month of 2023
