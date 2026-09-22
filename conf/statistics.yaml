@@ -1,14 +1,3 @@
-# Statistics computation configuration.
-# Used exclusively by scripts/assets/compute_statistics.py.
-#
-# One modality per run (submit per-modality jobs in parallel via modality=... on the CLI).
-# Base statistics (mean/std/min/max) are computed on the RAW full store leaves; only
-# CONTINUOUS variables get statistics (categoricals are filtered by the reader schema).
-# `prognostics` per modality drive the temporal increment statistics (std of the 1-hour
-# raw increment Y_{t+1} - Y_t), stored as normalised increment variances in an `increments`
-# group alongside the base stats. Pixels come from the MTG selection (indices_<spatial>.npz),
-# timesteps from time_indices_<temporal>.npz.
-
 modality: ???          # CLI: modality=seviri | era5 | era5_land  — required
 spatial: mtg_new           # MTG index selection: assets/spatial/indices_<spatial>.npz
 temporal: statistics   # timestep subset:     assets/temporal/time_indices_<temporal>.npz
@@ -17,9 +6,7 @@ num_workers: 8         # threads for the raw preload
 
 seviri:
   store: seviri_2016_2024
-  # `prognostics` here only selects which variables get increment statistics; it does not
-  # make them model prognostics. In v13 LST is the model's only prognostic, so the MLE/MH
-  # increment stats are written and never read.
+  # `prognostics` here only selects which variables get increment statistics;
   prognostics: [LST, MLE, MH]
 
 era5:
@@ -29,7 +16,3 @@ era5:
 era5_land:
   store: era5_land_2016_2025
   prognostics: [swvl1, swvl2, stl1, stl2]
-
-glofas_v4:
-  store: glofas_v4_2014_2025
-  prognostics: []

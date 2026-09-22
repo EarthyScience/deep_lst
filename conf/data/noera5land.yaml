@@ -1,9 +1,7 @@
 # @package _global_
-# Data ablation: full_glofas minus the era5_land modality inputs.
-# Same modality_ids/load as full_glofas -> reuses its preload cache; only inputs shrink.
+# Data ablation: full minus the era5_land modality inputs.
+# Same modality_ids/load as full -> reuses its preload cache; only inputs shrink.
 _data: noera5land
-
-modality_ids: [era5, era5_land, seviri, glofas_v4]
 
 train_dataset:
   era5:
@@ -12,9 +10,6 @@ train_dataset:
   era5_land:
     inputs: []
     context_vars: []
-  glofas_v4:
-    inputs: [swir, rowe]
-    context_vars: [swir, rowe]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
     prognostics: [LST]
@@ -28,9 +23,6 @@ val_dataset:
   era5_land:
     inputs: []
     context_vars: []
-  glofas_v4:
-    inputs: [swir, rowe]
-    context_vars: [swir, rowe]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
     prognostics: [LST]
@@ -44,9 +36,6 @@ test_dataset:
   era5_land:
     inputs: []
     context_vars: []
-  glofas_v4:
-    inputs: [swir, rowe]
-    context_vars: [swir, rowe]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
     prognostics: [LST]

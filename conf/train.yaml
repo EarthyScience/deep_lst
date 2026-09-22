@@ -5,21 +5,10 @@ defaults:
   - horizon: h24
   - data: full
 
-# --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new
 _lookback:   24
 _experiment: ${_loss}_${_horizon}_${_data}_v14
 
-# Temporal split, chronological: train <= 2022, validate 2023, test 2024. Training is
-# every hour of 2016-01-01..2022-12-31; validation is days 11-20 of every month of 2023
-# (12 blocks, 2880 h), so the validation year is sampled in all twelve seasons. Train and
-# validation are separated by calendar year, so no lookback/horizon guard is needed and
-# the files do not depend on _lookback. Regenerate with:
-#   python ../eodata_slim/scripts/time_selection/seviri/temporal_midmonth.py \
-#       --out_dir assets/temporal
-# The v13 reference run used the superseded whole-month split: train_full / val
-# (validation = Feb/May/Aug/Nov 2023, and the same months of 2022 in neither split).
-# Those files are untouched; set the two keys below back to reproduce it.
 _temporal_train: train_full_2023b10
 _temporal_val:   val_2023b10
 
@@ -27,11 +16,8 @@ _temporal_val:   val_2023b10
 _seviri_store:   seviri_2016_2024
 _era5_store:     era5_2014_2025
 _era5land_store: era5_land_2016_2025
-_glofas_store:   glofas_v4_2014_2025
 
-# `load:` lists what is READ from each store, not what the model sees. The model's
-# input/context/prognostic lists live in conf/data/<data>.yaml; anything below that is
-# absent from those lists reaches RAM and stops there.
+
 _seviri_load:
   data: [LST, MLE, MH]   # MLE, MH: loaded but unused in v13 — not model inputs (see conf/data/full.yaml)
   data_daily: [FVC]
@@ -43,12 +29,7 @@ _era5_load:
   data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
   data_static_categorical: [tvh, tvl, lsm, slt]
 _era5land_load:
-  data: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]   # skt: baseline reference only, not a model input
-# T1D store (daily, unix-epoch day axis — same indexing as the T1H stores' day axis).
-# All four variables loaded so input toggles stay config-only; model inputs live in
-# conf/data/full_glofas.yaml. The modality is active only when modality_ids includes it.
-_glofas_load:
-  data: [rowe, sd, swir, dis24]
+  data: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]
 
 modality_ids: [era5, era5_land, seviri]
 
@@ -64,10 +45,6 @@ train_dataset:
   era5_land:
     store: ${_era5land_store}
     load: ${_era5land_load}
-    lookback: ${_lookback}
-  glofas_v4:
-    store: ${_glofas_store}
-    load: ${_glofas_load}
     lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
@@ -87,10 +64,6 @@ val_dataset:
     store: ${_era5land_store}
     load: ${_era5land_load}
     lookback: ${_lookback}
-  glofas_v4:
-    store: ${_glofas_store}
-    load: ${_glofas_load}
-    lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
     load: ${_seviri_load}
@@ -108,10 +81,6 @@ test_dataset:
   era5_land:
     store: ${_era5land_store}
     load: ${_era5land_load}
-    lookback: ${_lookback}
-  glofas_v4:
-    store: ${_glofas_store}
-    load: ${_glofas_load}
     lookback: ${_lookback}
   seviri:
     store: ${_seviri_store}
@@ -133,12 +102,9 @@ training:
 wandb_logger: true
 csv_logger: true
 profiler: false
-# Off by default: the cosine schedule is sized to max_epochs, and every tuned run's best
-# epoch landed in its last few (38-41/40, 49/50), so patience-based stopping cut runs off
-# mid-decay. ModelCheckpoint still keeps the best epoch by checkpoint_monitor.
 early_stopping: false
 
-# --- runtime flags (CLI overrides) ---
+
 smoke: false
 tag: null
 hpo_path: nas/hpo_best.json   # set hpo=true to load; override with hpo_path=<other.json>

@@ -53,7 +53,7 @@ Nothing under `assets/`, `experiments/` and `results/` is tracked. Reproducing t
 
 | Item | Content | Source |
 |---|---|---|
-| data stores | `.eozarr` stores `seviri_2016_2024`, `era5_2014_2025`, `era5_land_2016_2025` (optional `glofas_v4_2014_2025`), hourly, one per modality | built with eodata from LSA SAF SEVIRI LST, ERA5, ERA5-Land and GloFAS; `<DATA_ARCHIVE or "available from the authors on request">` |
+| data stores | `.eozarr` stores `seviri_2016_2024`, `era5_2014_2025`, `era5_land_2016_2025`, hourly, one per modality | built with eodata from LSA SAF SEVIRI LST, ERA5 and ERA5-Land; `<DATA_ARCHIVE or "available from the authors on request">` |
 | `assets/spatial/indices_<name>.npz` | pixel selections: training selection `mtg_new` (3000 sites) and the evaluation sets | `<ASSET_ARCHIVE>` |
 | `assets/temporal/time_indices_<split>.npz` | hour sets of the train, validation, test and statistics splits | `<ASSET_ARCHIVE>` |
 | `assets/statistics/<modality>_stats_<name>.zarr` | normalisation statistics per training selection | `<ASSET_ARCHIVE>`, or computed (3.1) |
@@ -165,7 +165,7 @@ python -m deep_lst.evaluation_climpred.tables_ablation --eval_name eval_mtg_new 
 | `model` | `mlp_rollout`, `transformer_rollout`, `mlp_diag` | backbone, hyper-parameters, loss terms |
 | `loss` | `smoothl1`, `mse`, `mae` | the step loss |
 | `horizon` | `h4` ... `h72` | training horizon in hours |
-| `data` | `full`, `full_glofas`, `noera5`, `noera5land`, `nosevaux`, ... | which variables the model sees |
+| `data` | `full`, `noera5`, `noera5land`, `nosevaux`, ... | which variables the model sees |
 
 Scalar keys to override: `_spatial` (training selection, resolves to
 `assets/spatial/indices_<_spatial>.npz`; its statistics must exist), `_lookback` (hours of input
