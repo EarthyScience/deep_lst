@@ -10,9 +10,9 @@ train_dataset:
     context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
-    prognostics: [LST] #, MLE, MH]
+    prognostics: [LST]
     diagnostics: []
-    context_vars: [LST] #, MLE, MH]
+    context_vars: [LST]
 
 val_dataset:
   era5:
@@ -23,9 +23,9 @@ val_dataset:
     context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
-    prognostics: [LST] #, MLE, MH]
+    prognostics: [LST]
     diagnostics: []
-    context_vars: [LST] #, MLE, MH]
+    context_vars: [LST]
 
 test_dataset:
   era5:
@@ -36,6 +36,6 @@ test_dataset:
     context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
-    prognostics: [LST] #, MLE, MH]
+    prognostics: [LST]
     diagnostics: []
-    context_vars: [LST] #, MLE, MH]
+    context_vars: [LST]

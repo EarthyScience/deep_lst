@@ -99,6 +99,3 @@ def test_latest_checkpoint_empty_dir_raises(paths):
 def test_latest_checkpoint_missing_dir_raises(paths):
     with pytest.raises(FileNotFoundError):
         paths.latest_checkpoint("nonexistent", "v0")
-
-
-# ── dir-creating methods ──────────────────────────────────────────────────────

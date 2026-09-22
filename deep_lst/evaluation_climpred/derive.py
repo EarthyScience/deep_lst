@@ -73,7 +73,7 @@ def derive_verif_products(args):
     # -> pixel_daily.nc (day, window, pixel[, baseline])  = the maps
     # -> forecast_limit_map.nc (window, pixel, baseline)
 
-    day = xr.DataArray((by_pixel["lead"].values - 1) // 24 + 1, dims="lead", name="day")  # create day labels
+    day = xr.DataArray((by_pixel["lead"].values - 1) // 24 + 1, dims="lead", name="day")
 
     # Day-level ACC and anomaly R2 from the moment sums (exact pooling); absent on
     # verifs that predate the sums, in which case the anomaly table is skipped.

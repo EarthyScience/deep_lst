@@ -93,7 +93,6 @@ def main(cfg: DictConfig) -> None:
         wandb_logger = lgrs.WandbLogger(project="deep_lst", name=config["name"])
         loggers.append(wandb_logger)
 
-    # --- snapshot config + metadata into the experiment run directory ---
     if config["csv_logger"]:
         run_dir = Path(csv_logger.log_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -113,7 +112,6 @@ def main(cfg: DictConfig) -> None:
 
     torch.set_float32_matmul_precision("medium")
 
-    # --- checkpointing: best (by val metric) + last ---
     callbacks = []
     if not smoke and config["csv_logger"]:
         monitor = config["model"].get("checkpoint_monitor", "val_loss_step_epoch")

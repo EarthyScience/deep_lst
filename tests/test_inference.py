@@ -156,7 +156,7 @@ class _MockNormaliser:
 
     def denormalise(self, arr, var):
         self.calls += 1
-        return arr  # identity
+        return arr
 
 
 def _collect(gen):

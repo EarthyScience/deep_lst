@@ -1,6 +1,6 @@
 defaults:
-  - train         # pull in everything from train.yaml
-  - _self_          # base applies first; groups below have higher priority
+  - train
+  - _self_
 
 # --- finetune-specific keys ---
 from_run: ???
@@ -18,7 +18,6 @@ model:
       prognostics: [LST]
   learning_rate: 5e-5
   warmup_steps: 0
-  # detach_rollout: false
 
 training:
   max_epochs: 25

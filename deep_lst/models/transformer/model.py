@@ -54,7 +54,6 @@ class Transformer(nn.Module):
         if self.static_embedder is not None:
             step_X_dyn = self.static_embedder(step_X_dyn)
 
-        # Tokenize the input
         tokens = self.tokenizer(state_window, X_dyn_window, step_X_dyn)
         tokens = tokens + self.positional_encoding(tokens)
 
