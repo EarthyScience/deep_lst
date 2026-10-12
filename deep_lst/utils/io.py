@@ -11,7 +11,10 @@ class ExperimentPaths:
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
     plots_root: Path = field(default_factory=lambda: Path("./plots"))
-    eozarr_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/weathergenerator/"))
+    # Full eodata stores. Moved off tscratch (90-day purge) in October 2026.
+    eozarr_root: Path = field(
+        default_factory=lambda: Path("/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old")
+    )
     preload_cache_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/tmp"))
     # --- directories ---
 
@@ -55,10 +58,9 @@ class ExperimentPaths:
     def eozarr_store_path(self, store_name: str) -> Path:
         """Resolve a full eodata .eozarr store from its config-provided name.
 
-        Falls back to the .zip sibling when the directory store is unusable. On 2026-08-22 the
-        per-group zarr.json files were removed from era5_2014_2025.eozarr (8 of 9 groups), which
-        makes every read fail with ArrayNotFoundError while the chunks themselves are also gone.
-        The zip mirrors are intact, so prefer them rather than failing."""
+        Prefers the directory store when it is readable and falls back to the .zip sibling:
+        under eozarr_root the era5, era5_land, glofas and swe stores exist only as zips, while
+        seviri is a directory store."""
         directory = self.eozarr_root / f"{store_name}.eozarr"
         archive = self.eozarr_root / f"{store_name}.eozarr.zip"
         directory_is_readable = (directory / "data" / "zarr.json").exists()

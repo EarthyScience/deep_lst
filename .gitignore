@@ -1,3 +1,5 @@
+CLEANUP_PLAN.md
+
 assets/
 results/
 plots/
@@ -40,7 +42,7 @@ wheels/
 
 # experiments
 outputs/
-data/
+/data/
 *.ckpt
 .ipynb_checkpoints/
 __pycache__/

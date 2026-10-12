@@ -37,11 +37,10 @@ def _git_hash() -> str:
 
 @hydra.main(config_path="../conf", config_name="train", version_base="1.3")
 def main(cfg: DictConfig) -> None:
-    pl.seed_everything(42, workers=True)
-
     paths = ExperimentPaths()
 
     config = OmegaConf.to_container(cfg, resolve=True)
+    pl.seed_everything(config["seed"], workers=True)
 
     smoke = config.pop("smoke", False)
     tag = config.pop("tag", None)
@@ -103,6 +102,7 @@ def main(cfg: DictConfig) -> None:
             "config": config["_model_name"],
             "smoke": smoke,
             "tag": tag,
+            "seed": config["seed"],
             "git_hash": _git_hash(),
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),

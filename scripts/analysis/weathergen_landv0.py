@@ -12,8 +12,8 @@ import xarray as xr
 import zarr
 from eodata.grids.majortom import MajorTomGrid, MajorTomLandGrid
 
-STORE = "/Net/Groups/BGI/tscratch/weathergenerator/tmp/inference_lst/train.zarr"
-OUT = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/WGL/v0/weathergen_landv0.nc"
+STORE = "/Net/Groups/BGI/tscratch/weathergenerator/tmp/inference_lst/train_lst.zarr"
+OUT = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/WGL/v1/weathergen_landv0.nc"
 
 z = zarr.open(STORE, mode="r")
 lst = z["lst"][:]  # (10825, 7, 24, 1)

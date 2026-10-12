@@ -14,6 +14,7 @@ from eodata.sample import Mask, mask_name
 from tensordict import TensorDict
 from torch.utils.data import Dataset
 
+from deep_lst.dataset.transforms import with_transform
 from deep_lst.utils import features
 from deep_lst.utils.io import ExperimentPaths, load_computed_stats, stats_spatial
 from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
@@ -409,6 +410,10 @@ class MultimodalDataset(Dataset):
                 for modality in modality_ids
             },
         }
+        for modality in modality_ids:
+            transform = kwargs[modality].get("transform")
+            if transform is not None:  # only when set, so caches built before the key existed stay valid
+                fingerprint_spec["modalities"][modality]["transform"] = transform
         fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True).encode()).hexdigest()[:16]
         cache_path = PATHS.preload_cache_path(fingerprint, spatial_name)
         if cache_path.exists():
@@ -439,6 +444,7 @@ class MultimodalDataset(Dataset):
             normalizer = ModalityNormalizer.from_spec(
                 f"zscore:{PATHS.stats_zarr_path(modality, stats_tag)}", reader.schema
             )
+            normalizer = with_transform(normalizer, kwargs[modality].get("transform"))
             # Channel indices of the config variables within each data type's full store variable order.
             select = {
                 data_type: [list(getattr(reader, DATA_TYPES[data_type]).dtype.fields).index(var) for var in names]
