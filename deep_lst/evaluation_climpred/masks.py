@@ -11,6 +11,15 @@ LC_GROUPS = {
     "lc_grass_crop": (10, 12, 14),
     "lc_shrub_barren": (6, 7, 16),
 }
+# Annual-mean FVC classes: 1 = bare (FVC 0), 2-10 = nine equal-count bins of the vegetated
+# mtg_new sites (edges in assets/spatial/fvc_class_edges.json, per-site class in the
+# selection npz via scripts/assets/fvc_site_classes.py).
+FVC_GROUPS = {f"fvc_d{fvc_class}": (fvc_class,) for fvc_class in range(1, 11)}
+# Vegetation state at init: the pixel's FVC on the init day relative to its climatological
+# annual range (0 = at its minimum, 1 = at its maximum; cubes.attach_init_state), in ten
+# fixed 0.1-wide bins. Fixed rather than quantile bins because the clipped ends pile up at
+# exactly 0 and 1. The top bin is closed above like the top coverage bin.
+GREEN_BINS = {f"green_d{k}": ((k - 1) / 10, k / 10) for k in range(1, 11)}
 COV_BINS = {
     "cov_lt10": (0.0, 0.10),
     "cov_10_25": (0.10, 0.25),
@@ -36,6 +45,9 @@ WINDOW_LABELS = {
     "cov_75_90": "Coverage 75-90%",
     "cov_gt90": "Coverage > 90%",
 }
+WINDOW_LABELS.update({f"green_d{k}": f"Greenness {(k - 1) * 10}-{k * 10}%" for k in range(1, 11)})
+WINDOW_LABELS["fvc_d1"] = "FVC bare"
+WINDOW_LABELS.update({f"fvc_d{fvc_class}": f"FVC class {fvc_class}" for fvc_class in range(2, 11)})
 
 DAY_HOURS = (10, 15)
 NIGHT_HOURS = (22, 3)
@@ -129,11 +141,17 @@ for group_name, group_ids in KG_GROUPS.items():
     MASKS[group_name] = class_mask("kg_class", group_ids)
 for group_name, group_ids in LC_GROUPS.items():
     MASKS[group_name] = class_mask("lc_class", group_ids)
-for group_name in list(KG_GROUPS) + list(LC_GROUPS):
+for group_name, group_ids in FVC_GROUPS.items():
+    MASKS[group_name] = class_mask("fvc_class", group_ids)
+for group_name in list(KG_GROUPS) + list(LC_GROUPS) + list(FVC_GROUPS):
     for tod_name, tod_mask in (("day", day_mask), ("night", night_mask)):
         MASKS[f"{group_name}_{tod_name}"] = combined_mask(MASKS[group_name], tod_mask)
 for bin_name, bounds in COV_BINS.items():
     MASKS[bin_name] = coverage_mask("lookback_coverage", bounds)
+for bin_name, bounds in GREEN_BINS.items():
+    MASKS[bin_name] = coverage_mask("relative_greenness", bounds)
+    for tod_name, tod_mask in (("day", day_mask), ("night", night_mask)):
+        MASKS[f"{bin_name}_{tod_name}"] = combined_mask(MASKS[bin_name], tod_mask)
 
 
 def register_month_windows(months):

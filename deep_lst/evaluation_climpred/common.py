@@ -7,7 +7,15 @@ import yaml
 
 from deep_lst.utils.io import ExperimentPaths
 
-from .cubes import anomaly_ensemble, attach_classes, attach_coverage, baseline_cube, obs_series, prepare_initialised
+from .cubes import (
+    anomaly_ensemble,
+    attach_classes,
+    attach_coverage,
+    attach_init_state,
+    baseline_cube,
+    obs_series,
+    prepare_initialised,
+)
 from .masks import MASKS, register_month_windows, stack_windows
 
 VERIFY_KWARGS = {"metric": "mse", "comparison": "e2o", "alignment": "maximize", "skipna": True}
@@ -104,6 +112,9 @@ def setup_verif():
     obs = obs_series(forecast)
     lookback = lookback_hours(args.paths, args.experiment, args.version)
     initilised = attach_coverage(initilised, obs, lookback)
+    state_path = args.paths.assets_root / "static" / f"fvc_init_state_{args.spatial}.nc"
+    if state_path.exists():  # only the selections with a state file get the greenness windows
+        initilised = attach_init_state(initilised, state_path)
     return args, initilised, obs
 
 

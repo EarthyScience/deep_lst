@@ -1,6 +1,6 @@
 CLEANUP_PLAN.md
 
-assets/
+/assets/
 results/
 plots/
 tables

@@ -12,6 +12,7 @@ import xarray as xr
 from deep_lst.utils.io import ExperimentPaths
 
 from .common import build_parser, verification_dir
+from .cubes import pixel_attributes
 from .derive import derive_verif_products
 from .masks import register_month_windows
 from .plots import (
@@ -23,6 +24,8 @@ from .plots import (
     plot_error_and_skill,
     plot_error_skill_anomaly,
     plot_forecast_limit_map,
+    plot_fvc_decile_curves,
+    plot_fvc_pixel_scatter,
     plot_pixel_bias_planes,
     plot_rmse_maps,
     plot_score_bars,
@@ -161,6 +164,19 @@ def main():
     groups = _row_groups(pooled)
     plot_score_bars(pooled, days, groups, plots_dir)
     plot_skill_bars(pooled, days, groups, plots_dir)
+
+    # FVC conditioning: the decile curves need the fvc_d<k> windows (holdout-sized runs only);
+    # the pixel scatter needs just the day/night windows plus the per-pixel FVC from the npz.
+    if any(window.startswith("fvc_d") for window in windows):
+        plot_fvc_decile_curves(pooled, days, plots_dir)
+    attributes = pixel_attributes(args.paths.spatial_indices_path(args.paths.baseline_spatial(args.eval_name)))
+    if attributes is not None and "day" in windows and "night" in windows:
+        plot_fvc_pixel_scatter(pixel_daily, attributes, days, plots_dir, variable="rmse_ss")
+        plot_fvc_pixel_scatter(pixel_daily, attributes, days, plots_dir, variable="rmse_model")
+        if "lst_validity" in attributes:  # same scatter against the observational validity
+            plot_fvc_pixel_scatter(
+                pixel_daily, attributes, days, plots_dir, variable="rmse_ss", x_attribute="lst_validity"
+            )
     plot_site_forecasts(args, plots_dir)
 
 

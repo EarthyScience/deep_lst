@@ -97,7 +97,26 @@ def attach_classes(initilised, npz_path):
     order = np.argsort(npz["src_indices"], kind="stable")
     initilised = initilised.assign_coords(kg_class=("pixel", npz["kg_classes"][order]))
     initilised = initilised.assign_coords(lc_class=("pixel", npz["modis_lc_classes"][order]))
+    if "fvc_classes" in npz.files:  # annual-mean FVC decile, written by scripts/assets/fvc_site_classes.py
+        initilised = initilised.assign_coords(fvc_class=("pixel", npz["fvc_classes"][order]))
     return initilised
+
+
+def pixel_attributes(npz_path):
+    """Per-pixel FVC (annual mean + decile) and landcover class in forecast pixel order, for
+    the FVC scatter; None when the selection npz predates scripts/assets/fvc_site_classes.py."""
+    npz = np.load(npz_path)
+    if "fvc_classes" not in npz.files:
+        return None
+    order = np.argsort(npz["src_indices"], kind="stable")
+    attributes = {
+        "fvc_mean": npz["fvc_annual_mean"][order],
+        "fvc_class": npz["fvc_classes"][order],
+        "lc_class": npz["modis_lc_classes"][order],
+    }
+    if "lst_validity_annual_mean" in npz.files:
+        attributes["lst_validity"] = npz["lst_validity_annual_mean"][order]
+    return attributes
 
 
 def attach_coverage(initilised, obs, lookback):
@@ -118,4 +137,20 @@ def attach_coverage(initilised, obs, lookback):
 
     initilised = initilised.assign_coords(lookback_coverage=(("init", "pixel"), coverage))
 
+    return initilised
+
+
+def attach_init_state(initilised, state_path):
+    """Relative greenness of each pixel on its init day (assets/static/fvc_init_state_<selection>.nc,
+    scripts/assets/fvc_init_state.py) as an (init, pixel) coord; NaN where the state is
+    unknown, so the init drops out of every greenness window but stays in all/day/night."""
+    state = xr.open_dataset(state_path)
+    # Positional alignment, like attach_classes: the forecast pixels and the state file's sites
+    # both follow the sorted src_indices order (the forecast's pixel coordinate is a plain
+    # 0..N-1 position, not the MTG ids, so the values themselves cannot be compared).
+    if state.sizes["site"] != initilised.sizes["pixel"]:
+        raise ValueError(f"{state_path}: {state.sizes['site']} sites but {initilised.sizes['pixel']} forecast pixels")
+    init_days = initilised["init"].values.astype("datetime64[D]")
+    greenness = state["relative_greenness"].reindex(time=init_days).values  # (pixel, init), NaN outside the file's year
+    initilised = initilised.assign_coords(relative_greenness=(("init", "pixel"), greenness.T))
     return initilised

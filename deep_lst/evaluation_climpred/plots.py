@@ -6,7 +6,7 @@ from matplotlib.colors import BoundaryNorm, Normalize
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from .masks import KG_GROUPS
+from .masks import KG_GROUPS, LC_GROUPS
 
 COLORS = {"clim_smooth": "#256abf", "persistence": "#d95926", "era5land": "#199e70"}
 
@@ -488,6 +488,167 @@ BAR_MEMBERS = ("day", "night")
 # Regions as a grey ramp in the bar figures (dark -> light in group_order); the region
 # hues stay reserved for the ACC/R2 lead figure.
 BAR_REGION_GREYS = {"Arid": "#404040", "Temperate": "#8c8c8c", "Tropical": "#c8c8c8"}
+
+
+FVC_DECILES = range(1, 11)
+# Total / day / night series of the decile curves: the model's neutral line plus one
+# warm and one cool hue, so the two solar windows read as a pair against the total.
+FVC_WINDOW_STYLES = {"total": ("All hours", MODEL_LINE), "day": ("Day", "#eda100"), "night": ("Night", "#2a78d6")}
+# Landcover groups of the pixel scatter (masks.LC_GROUPS membership): three categorical
+# hues that pass the all-pairs separation check, the sparse shrub/barren group in grey,
+# everything else in a lighter grey. Marker shapes repeat the identity for print.
+LC_STYLES = {
+    "lc_forest": ("Forest", "#2a78d6", "o"),
+    "lc_savanna": ("Savanna", "#eb6834", "s"),
+    "lc_grass_crop": ("Grass/Crop", "#1baf7a", "^"),
+    "lc_shrub_barren": ("Shrub/Barren", "#898781", "D"),
+    "other": ("Other", "#c3c2b7", "x"),
+}
+
+
+def plot_fvc_decile_curves(pooled, days, out_dir):
+    """Pooled scores along the FVC deciles: RMSE and the skill against climatology
+    (rows) at the nowcast and medium-range day (columns), one line per solar window.
+    Reads the fvc_d<k>(_day|_night) windows; deciles that were not verified leave gaps."""
+    available = {str(window) for window in pooled["window"].values}
+    rows = [
+        ("RMSE [K]", pooled["rmse_model"], "%.2f"),
+        ("Skill improvement (RMSE) vs climatology", pooled["rmse_ss"].sel(baseline="clim_smooth"), "%.2f"),
+    ]
+    fig, axes = plt.subplots(
+        len(rows), len(days), figsize=(5.0 * len(days), 3.0 * len(rows)), sharex=True, sharey="row"
+    )
+    axes = np.atleast_2d(axes)
+    for row_index, (ylabel, values, fmt) in enumerate(rows):
+        for column, day in enumerate(days):
+            ax = axes[row_index, column]
+            for suffix, (label, color) in FVC_WINDOW_STYLES.items():
+                series = []
+                for decile in FVC_DECILES:
+                    window = f"fvc_d{decile}" if suffix == "total" else f"fvc_d{decile}_{suffix}"
+                    series.append(float(values.sel(window=window, day=day)) if window in available else np.nan)
+                ax.plot(list(FVC_DECILES), series, color=color, lw=2, marker="o", ms=5, label=label)
+            ax.axhline(0.0, color="#c3c2b7", lw=0.6)
+            ax.set_xticks(list(FVC_DECILES))
+            ax.grid(axis="y", color="#e1e0d9", lw=0.5)
+            ax.spines[["top", "right"]].set_visible(False)
+            if row_index == 0:
+                ax.set_title(f"Day {day}", fontsize=12)
+            if row_index == len(rows) - 1:
+                ax.set_xlabel("Annual-mean FVC class (1 = bare, 2-10 = vegetated bins)")
+            if column == 0:
+                ax.set_ylabel(ylabel)
+    axes[0, 0].legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_dir / "fvc_decile_curves.pdf")
+    plt.close(fig)
+
+
+def _lc_group(lc_class):
+    for group_name, class_ids in LC_GROUPS.items():
+        if lc_class in class_ids:
+            return group_name
+    return "other"
+
+
+# x axes of the pixel scatter: attribute key in cubes.pixel_attributes -> (axis label, file prefix).
+SCATTER_AXES = {
+    "fvc_mean": ("Annual-mean FVC", "fvc"),
+    "lst_validity": ("Annual-mean LST observational validity [%]", "validity"),
+}
+
+
+def _scatter_bins(attributes, x_attribute, x_values):
+    """Per-pixel bin id for the median line: the shared FVC classes on the FVC axis, ten
+    equal-count bins of the finite values on any other axis (0 = unbinned)."""
+    if x_attribute == "fvc_mean":
+        return np.asarray(attributes["fvc_class"])
+    finite = np.isfinite(x_values)
+    edges = np.quantile(x_values[finite], np.linspace(0, 1, 11)[1:-1])
+    bins = 1 + np.searchsorted(edges, x_values, side="right")
+    bins[~finite] = 0
+    return bins
+
+
+def plot_fvc_pixel_scatter(
+    pixel_daily, attributes, days, out_dir, variable="rmse_ss", baseline="clim_smooth", x_attribute="fvc_mean"
+):
+    """One point per pixel: score at the nowcast / medium-range day (columns) in the
+    day / night windows (rows) against a per-pixel attribute (annual-mean FVC by default,
+    or the LST observational validity), coloured by landcover group, with the per-bin
+    median as a line: the shared FVC classes on the FVC axis, ten equal-count bins
+    otherwise. `attributes` is cubes.pixel_attributes output. variable: rmse_ss (needs a
+    baseline) or rmse_model."""
+    xlabel, prefix = SCATTER_AXES[x_attribute]
+    if variable == "rmse_ss":
+        field = pixel_daily["rmse_ss"].sel(baseline=baseline)
+        ylabel = f"Skill improvement (RMSE) vs {BASELINE_LABELS[baseline].lower()}"
+        name = f"{prefix}_pixel_scatter_skill_{baseline}.pdf"
+    else:
+        field = pixel_daily[variable]
+        ylabel = "RMSE [K]"
+        name = f"{prefix}_pixel_scatter_{variable}.pdf"
+    x_values = np.asarray(attributes[x_attribute], dtype=float)
+    bins = _scatter_bins(attributes, x_attribute, x_values)
+    groups = np.array([_lc_group(int(lc_class)) for lc_class in attributes["lc_class"]])
+    windows = ["day", "night"]
+
+    # One y range for the whole figure, from the central 99% of all panels: a handful of
+    # pixels with runaway scores would otherwise flatten the cloud (seen: a night skill of -27).
+    panels = {
+        (window, day): np.asarray(field.sel(window=window, day=day).values, dtype=float)
+        for window in windows
+        for day in days
+    }
+    pooled_values = np.concatenate([values[np.isfinite(values)] for values in panels.values()])
+    low, high = np.quantile(pooled_values, [0.005, 0.995])
+    margin = 0.05 * (high - low)
+
+    fig, axes = plt.subplots(
+        len(windows), len(days), figsize=(5.0 * len(days), 3.4 * len(windows)), sharex=True, sharey=True
+    )
+    axes = np.atleast_2d(axes)
+    for row_index, window in enumerate(windows):
+        for column, day in enumerate(days):
+            ax = axes[row_index, column]
+            values = panels[(window, day)]
+            shown = np.isfinite(values) & np.isfinite(x_values)
+            for group_name, (label, color, marker) in LC_STYLES.items():
+                members = shown & (groups == group_name)
+                if not members.any():
+                    continue
+                ax.scatter(
+                    x_values[members],
+                    values[members],
+                    s=9,
+                    color=color,
+                    marker=marker,
+                    alpha=0.55,
+                    linewidths=0,
+                    label=f"{label} ({int(members.sum())})",
+                )
+            decile_x, decile_y = [], []
+            for bin_id in range(1, 11):
+                members = shown & (bins == bin_id)
+                if members.sum() < 5:
+                    continue
+                decile_x.append(np.median(x_values[members]))
+                decile_y.append(np.median(values[members]))
+            ax.plot(decile_x, decile_y, color=MODEL_LINE, lw=2, marker="o", ms=5, label="Class median")
+            ax.axhline(0.0, color="#c3c2b7", lw=0.6)
+            ax.set_ylim(low - margin, high + margin)
+            ax.grid(axis="y", color="#e1e0d9", lw=0.5)
+            ax.spines[["top", "right"]].set_visible(False)
+            if row_index == 0:
+                ax.set_title(f"Day {day}", fontsize=12)
+            if row_index == len(windows) - 1:
+                ax.set_xlabel(xlabel)
+            if column == 0:
+                ax.set_ylabel(f"{ylabel}\n{window} window")
+    axes[0, 0].legend(frameon=False, fontsize=8, markerscale=1.8)
+    fig.tight_layout()
+    fig.savefig(out_dir / name)
+    plt.close(fig)
 
 
 def plot_score_bars(pooled, days, groups, out_dir, group_order=("Arid", "Temperate", "Tropical")):
