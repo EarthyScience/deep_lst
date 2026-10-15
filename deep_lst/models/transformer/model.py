@@ -42,7 +42,17 @@ class Transformer(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.n_layers)
         self.head = nn.Linear(self.d_model, n_prognostic + n_diagnostic)
 
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(lookback + 1)
+        # causal: token t attends to tokens <= t. The query token is last and sees the whole
+        # window either way, so the mask only restricts how the history tokens build their
+        # own representations in layers 1..n_layers-1. full: bidirectional over the window
+        # (a None buffer is passed as mask=None below).
+        attention = config.get("attention", "causal")
+        if attention == "causal":
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(lookback + 1)
+        elif attention == "full":
+            causal_mask = None
+        else:
+            raise ValueError(f"model.attention must be 'causal' or 'full', got {attention!r}")
         self.register_buffer("causal_mask", causal_mask)
 
     def name(self):
