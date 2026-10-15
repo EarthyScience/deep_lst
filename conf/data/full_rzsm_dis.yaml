@@ -1,0 +1,56 @@
+# @package _global_
+# `full` plus GloFAS root-zone soil wetness (swir) and river discharge (dis24). Second rung of
+# the hydrology ladder full -> full_rzsm -> full_rzsm_dis -> full_glofas: the marginal effect of
+# the routed, non-local discharge signal, which only matters near rivers and floodplains and
+# needs a stratified evaluation. rowe/sd are loaded but not model inputs.
+_data: full_rzsm_dis
+
+modality_ids: [era5, era5_land, seviri, glofas_v4]
+
+train_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  glofas_v4:
+    inputs: [swir, dis24]
+    context_vars: [swir, dis24]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+val_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  glofas_v4:
+    inputs: [swir, dis24]
+    context_vars: [swir, dis24]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+test_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  glofas_v4:
+    inputs: [swir, dis24]
+    context_vars: [swir, dis24]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
