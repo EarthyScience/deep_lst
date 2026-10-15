@@ -1,0 +1,46 @@
+# @package _global_
+# `full` without the ERA5-Land soil moisture layers (swvl1, swvl2): a model with no hydrological
+# state at all, the rung below `full` in the hydrology ladder
+# full_noswvl -> full -> full_rzsm -> full_rzsm_dis -> full_glofas. The era5_land load list is
+# unchanged, so this shares the 3-modality preload cache with `full`; swvl1/swvl2 reach RAM and
+# stop there. Soil temperatures (stl1, stl2) stay.
+_data: full_noswvl
+
+train_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+val_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+test_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]

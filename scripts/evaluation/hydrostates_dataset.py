@@ -15,28 +15,40 @@ attributes of the selection npz. Columns:
     log_rmse_model, log_rmse_clim               the response and its site offset
 
     python scripts/evaluation/hydrostates_dataset.py --eval_name eval_mtg
+    python scripts/evaluation/hydrostates_dataset.py --eval_name eval_mtg --state_windows
+
+The second form takes the 20 greenness-at-init windows (hydrostates_runs.GREEN_WINDOWS) instead
+of day/night and writes hydrostates_<eval>_state_windows.csv next to the first file.
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-from deep_lst.utils.io import ExperimentPaths
-from deep_lst.utils.spatial import anchor_grid
+sys.path.insert(0, str(Path(__file__).parent))
+from hydrostates_runs import CONDITIONS, GREEN_WINDOWS, OUT_DIR, SEEDS, WINDOWS, run_name  # noqa: E402
+
+from deep_lst.utils.io import ExperimentPaths  # noqa: E402
+from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid  # noqa: E402
 
 PATHS = ExperimentPaths()
-OUT_DIR = Path("results/independent/hydrostates")
-CONDITIONS = ("full", "full_rzsm", "full_rzsm_dis", "full_glofas")
-SEEDS = (42, 7, 23)
 BASELINES = {"clim_smooth": "clim", "persistence": "persistence", "era5land": "era5land"}
+# Global Aridity Index v3.1 (annual P/PET, 1970-2000) regridded to the seviri equiangular grid by
+# deep_lst/preprocessing/aridity_index.py; a site climate, not a state.
+ARIDITY_PATH = Path(
+    "/Net/Groups/BGI/tscratch/weathergenerator/aux/AI_ET0__annual_v3_1/africa_ai_v31_yr_equiangular_005.nc"
+)
 
 
-def run_name(condition, seed):
-    tag = "hydrostates" if seed == 42 else f"hydrostates_s{seed}"
-    return f"mlp_smoothl1_h24_{condition}_v16_{tag}"
+def site_aridity(site):
+    """Aridity index at each site's seviri pixel (NaN outside the regridded field)."""
+    rows = map_to_store_rows(anchor_grid("mtg"), site, store_grid("seviri"))
+    field = xr.open_dataset(ARIDITY_PATH)["aridity_index"].values.ravel()
+    return field[rows]
 
 
 def site_table(eval_name):
@@ -54,6 +66,9 @@ def site_table(eval_name):
             "in_training": np.isin(site, training),
             "kg_class": npz["kg_classes"][order],
             "lc_class": npz["modis_lc_classes"][order],
+            "ecoregion": npz["ecoregion_classes"][order],
+            "biome": npz["biome_classes"][order],
+            "aridity": site_aridity(site),
             "fvc_annual_mean": npz["fvc_annual_mean"][order],
             "fvc_class": npz["fvc_classes"][order],
             "lst_validity": npz["lst_validity_annual_mean"][order],
@@ -101,26 +116,33 @@ def run_rows(eval_name, condition, seed, windows, days, sites):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--eval_name", default="eval_mtg")
-    parser.add_argument("--windows", nargs="+", default=["day", "night"])
+    parser.add_argument("--windows", nargs="+", default=list(WINDOWS))
+    parser.add_argument(
+        "--state_windows",
+        action="store_true",
+        help="the 20 greenness-at-init windows instead of --windows; output hydrostates_<eval>_state_windows.csv",
+    )
     parser.add_argument("--days", type=int, nargs="+", default=[1, 10])
     parser.add_argument("--out_dir", type=Path, default=OUT_DIR)
     args = parser.parse_args()
+    windows = GREEN_WINDOWS if args.state_windows else args.windows
 
     sites = site_table(args.eval_name)
     frames = []
     for condition in CONDITIONS:
         for seed in SEEDS:
-            rows = run_rows(args.eval_name, condition, seed, args.windows, args.days, sites)
+            rows = run_rows(args.eval_name, condition, seed, windows, args.days, sites)
             if rows is not None:
                 frames.append(rows)
     dataset = pd.concat(frames, ignore_index=True)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = args.out_dir / f"hydrostates_{args.eval_name}.csv"
+    suffix = "_state_windows" if args.state_windows else ""
+    out_path = args.out_dir / f"hydrostates_{args.eval_name}{suffix}.csv"
     dataset.to_csv(out_path, index=False, float_format="%.6g")
     runs = dataset["run"].nunique()
     print(
-        f"{out_path}: {len(dataset)} rows = {sites.shape[0]} sites x {runs} runs x {len(args.windows)} windows x {len(args.days)} days"
+        f"{out_path}: {len(dataset)} rows = {sites.shape[0]} sites x {runs} runs x {len(windows)} windows x {len(args.days)} days"
     )
     print(dataset.groupby(["condition", "seed"]).size().rename("rows").to_string())
 

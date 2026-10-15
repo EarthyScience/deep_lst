@@ -3,7 +3,7 @@ per bin, the no-GloFAS model next to each GloFAS model.
 
 For every run the per-site RMSE (scores/pixel_daily.nc, pooled with the sample counts of
 verif/by_pixel.nc) is pooled per bin on the 3000 training sites and on the 400 holdout
-sites. One figure per GloFAS condition: x = training-site RMSE of a bin, y = holdout RMSE
+sites. One figure per condition other than `full`: x = training-site RMSE of a bin, y = holdout RMSE
 of the same bin, the `full` model in black and the condition in colour, seed mean with the
 seed range as error bars, the 1:1 line as the no-gap reference. A summary figure shows the
 paired change of the gap (eval - train) relative to `full`, same seed, per bin.
@@ -16,34 +16,23 @@ Bins are shared between the two site sets: the FVC classes of the selection npz,
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from deep_lst.utils.io import ExperimentPaths
+sys.path.insert(0, str(Path(__file__).parent))
+from hydrostates_runs import CONDITIONS, OUT_DIR, REFERENCE, SEEDS, WINDOWS, run_name  # noqa: E402
+
+from deep_lst.utils.io import ExperimentPaths  # noqa: E402
 
 PATHS = ExperimentPaths()
-OUT_DIR = Path("results/independent/hydrostates")
 TRAIN_EVAL = "train_mtg_new"
 HOLDOUT_EVAL = "eval_mtg"
-REFERENCE = "full"
-CONDITIONS = {
-    "full": ("full (no GloFAS)", "#0b0b0b"),
-    "full_rzsm": ("+ RZSM", "#2a78d6"),
-    "full_rzsm_dis": ("+ RZSM + discharge", "#eb6834"),
-    "full_glofas": ("+ RZSM + discharge + runoff", "#1baf7a"),
-}
-SEEDS = (42, 7, 23)
-WINDOWS = ("day", "night")
 VALIDITY_EDGES = np.arange(10, 100, 10)  # 10 %-wide bins, shared by both site sets
 MIN_SITES = 5
-
-
-def run_name(condition, seed):
-    tag = "hydrostates" if seed == 42 else f"hydrostates_s{seed}"
-    return f"mlp_smoothl1_h24_{condition}_v16_{tag}"
 
 
 def site_bins(eval_name, x_attribute):
