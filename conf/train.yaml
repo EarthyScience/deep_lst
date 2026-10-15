@@ -7,6 +7,11 @@ defaults:
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new
+# Pixels held out from training for validation and test: 500 MTG cells disjoint from
+# ${_spatial} (assets/spatial/indices_eval_mtg_new_val.npz, 2026-10-13). Normalisation stays
+# on the training statistics via stats_spatial. The v16 reference runs validated on the
+# training pixels; set this to ${_spatial} to reproduce them.
+_spatial_val: eval_mtg_new_val
 _lookback:   24
 _experiment: ${_loss}_${_horizon}_${_data}_v16
 
@@ -86,7 +91,7 @@ train_dataset:
 #    quality_mask: ${_quality_mask}
 
 val_dataset:
-  spatial: ${_spatial}
+  spatial: ${_spatial_val}
   stats_spatial: ${_spatial}
   anchor: mtg
   temporal: ${_temporal_val}
@@ -110,7 +115,7 @@ val_dataset:
  #   quality_mask: ${_quality_mask}
 
 test_dataset:
-  spatial: ${_spatial}
+  spatial: ${_spatial_val}
   stats_spatial: ${_spatial}
   anchor: mtg
   temporal: test_period_00
