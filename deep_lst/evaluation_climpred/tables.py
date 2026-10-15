@@ -42,13 +42,14 @@ def _row_groups(pooled):
     ordered = [w for w in WINDOW_LABELS if w in bases]
     ordered += sorted(w for w in bases if w not in WINDOW_LABELS)
     groups = {}
+    if {"all", "day", "night"} & available:
+        # The plain windows form the "All" group, listed first: the whole-domain rows
+        # next to the class or month groups (and the only group of a homogeneous
+        # case-study region).
+        groups["All"] = {"total": "all", "day": "day", "night": "night"}
     for window in ordered:
         label = WINDOW_LABELS.get(window, window)
         groups[label] = {"total": window, "day": f"{window}_day", "night": f"{window}_night"}
-    if not groups and {"all", "day", "night"} & available:
-        # Homogeneous case-study regions verify only the plain windows; render them
-        # as a single group so the tables are not empty.
-        groups["All"] = {"total": "all", "day": "day", "night": "night"}
     return groups
 
 

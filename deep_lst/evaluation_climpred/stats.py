@@ -3,10 +3,11 @@ import pandas as pd
 import xarray as xr
 
 from .cubes import obs_cube
-from .masks import MASKS
+from .masks import KG_GROUPS, MASKS
 
 SEASONS = {"DJF": (12, 1, 2), "MAM": (3, 4, 5), "JJA": (6, 7, 8), "SON": (9, 10, 11)}
 MEDIUM_RANGE = 24  # last N leads: the window the reported site skill is scored on
+MIN_OBSERVED_HOURS = 12  # a drawn forecast day needs at least half its hours observed
 
 
 def select_init(pred, observed, climatology, init_times):
@@ -56,6 +57,48 @@ def select_init(pred, observed, climatology, init_times):
             "percentile": float(np.mean(skill[pool] < skill[index])),
         }
     return chosen
+
+
+def select_regime_pixels(pixel_daily, day, quantile=0.75, window="all", baseline="clim_smooth"):
+    """Per KG regime, the pixel at `quantile` of the day-`day` skill against the
+    baseline: a good example by construction (above the class median), not the
+    most flattering one. Returns regime window -> pixel index."""
+    skill = pixel_daily["rmse_ss"].sel(window=window, baseline=baseline, day=day).values
+    kg_class = pixel_daily["kg_class"].values
+    pixels = {}
+    for regime, class_ids in KG_GROUPS.items():
+        members = np.where(np.isin(kg_class, class_ids) & np.isfinite(skill))[0]
+        ranked = members[np.argsort(skill[members])]
+        position = int(quantile * (len(ranked) - 1))
+        pixels[regime] = int(ranked[position])
+    return pixels
+
+
+def select_clear_lookback_init(coverage, pred, observed, day_positions, eligible=None):
+    """The init with the fullest lookback window at one pixel, among the inits whose
+    drawn forecast days are completely forecast and each observed for at least
+    MIN_OBSERVED_HOURS. `eligible` (init,) narrows the pool further, e.g. to one init
+    hour so every drawn day spans the same valid hours. Ties in coverage (common
+    under clear skies) go to the init with more observed hours.
+
+    `coverage` is the (init,) lookback clear fraction, `pred` and `observed` the
+    (init, lead) forecast and obs of the pixel, `day_positions` the lead positions of
+    each drawn day."""
+    usable = np.isfinite(coverage)
+    if eligible is not None:
+        usable &= eligible
+    n_observed = np.zeros(len(coverage), dtype=int)
+    for positions in day_positions:
+        forecast_complete = np.isfinite(pred[:, positions]).all(axis=1)
+        n_day = np.isfinite(observed[:, positions]).sum(axis=1)
+        usable &= forecast_complete & (n_day >= MIN_OBSERVED_HOURS)
+        n_observed += n_day
+    pool = np.where(usable)[0]
+    if len(pool) == 0:
+        raise ValueError("no init with a complete forecast and enough observed hours in the drawn days")
+    order = np.lexsort((n_observed[pool], coverage[pool]))  # coverage first, then observed hours
+    index = pool[order[-1]]
+    return int(index)
 
 
 def anomaly_obs_variance(initilised, anomaly_obs, windows, masks=None):
