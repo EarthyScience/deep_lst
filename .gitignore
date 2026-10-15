@@ -46,3 +46,5 @@ outputs/
 *.ckpt
 .ipynb_checkpoints/
 __pycache__/
+
+/*.log
