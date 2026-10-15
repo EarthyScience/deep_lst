@@ -1,3 +1,5 @@
+import calendar
+
 import xarray as xr
 
 KG_GROUPS = {
@@ -165,3 +167,13 @@ def register_month_windows(months):
     MASKS[f"{name}_night"] = combined_mask(MASKS[name], night_mask)
     WINDOW_LABELS[name] = initials
     return [name, f"{name}_day", f"{name}_night"]
+
+
+# Twelve single-month windows (valid-time month, like register_month_windows) for the
+# month-by-month maps (gifs.py). Registered at import under fixed names m01-m12: the
+# initials-based names above collide for single months (J = Jan/Jun/Jul). No day/night
+# variants -- every window stacks a copy of the forecast cube.
+MONTHLY_WINDOWS = [f"m{month:02d}" for month in range(1, 13)]
+for name, month in zip(MONTHLY_WINDOWS, range(1, 13)):
+    MASKS[name] = month_mask((month,))
+    WINDOW_LABELS[name] = calendar.month_name[month]

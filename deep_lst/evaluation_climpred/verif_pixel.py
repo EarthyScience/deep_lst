@@ -29,7 +29,10 @@ def main():
             "n": per_pixel_counts(initilised, obs, args.windows),
         }
     )
-    out.to_netcdf(verification_dir(args, "verif") / "by_pixel.nc")
+    # A month-windows run gets its own file: it must not overwrite the by_pixel.nc
+    # the maps and tables derive from.
+    name = "by_pixel_monthly.nc" if args.monthly else "by_pixel.nc"
+    out.to_netcdf(verification_dir(args, "verif") / name)
 
 
 if __name__ == "__main__":

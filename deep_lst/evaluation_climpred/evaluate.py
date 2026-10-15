@@ -14,6 +14,7 @@ from deep_lst.utils.io import ExperimentPaths
 from .common import build_parser, verification_dir
 from .cubes import pixel_attributes
 from .derive import derive_verif_products
+from .gifs import render_standard_gifs
 from .masks import register_month_windows
 from .plots import (
     COLORS,
@@ -69,6 +70,11 @@ def main():
         default=[1, 10],
         metavar=("FIRST", "SECOND"),
         help="The two forecast days overlaid in the per-pixel bias planes (need the day and night windows).",
+    )
+    parser.add_argument(
+        "--gifs",
+        action="store_true",
+        help="Also render the animated maps (gifs.py standard set; training sites only, the month set needs verif_pixel --monthly).",
     )
     args = parser.parse_args()
     month_windows = register_month_windows(args.months)
@@ -188,6 +194,8 @@ def main():
     plot_site_forecasts(args, plots_dir)
     if regions:  # one example pixel per KG regime: needs the regime windows (train domain)
         plot_regime_forecasts(args, plots_dir)
+    if args.gifs:
+        render_standard_gifs(args, pixel_daily, plots_dir)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from .cubes import (
     obs_series,
     prepare_initialised,
 )
-from .masks import MASKS, register_month_windows, stack_windows
+from .masks import MASKS, MONTHLY_WINDOWS, register_month_windows, stack_windows
 
 VERIFY_KWARGS = {"metric": "mse", "comparison": "e2o", "alignment": "maximize", "skipna": True}
 
@@ -89,6 +89,11 @@ def build_parser():
         metavar="M",
         help="Months to filter by (1-12); if given, the 'month' mask is applied.",
     )
+    parser.add_argument(
+        "--monthly",
+        action="store_true",
+        help="Add the twelve single-month windows m01-m12 (month-by-month maps); verif_pixel then writes by_pixel_monthly.nc.",
+    )
     return parser
 
 
@@ -103,6 +108,8 @@ def baseline_files(paths, spatial):
 def setup_verif():
     args = build_parser().parse_args()
     args.windows = args.windows + register_month_windows(args.months)
+    if args.monthly:
+        args.windows = args.windows + MONTHLY_WINDOWS
     args.paths = ExperimentPaths()
     args.spatial = args.paths.baseline_spatial(args.eval_name)
 
