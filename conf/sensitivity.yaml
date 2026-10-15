@@ -1,0 +1,14 @@
+defaults:
+  - infer
+  - _self_
+
+# Input sensitivity of a trained model (deep_lst/sensitivity): the model and its preload are
+# built once, then one forecast store per perturbed input is written under
+# results/<experiment>/<version>/<eval>/sensitivity/<method>_<block>/ and scored against the
+# run's forecast.zarr (scores.nc + summary.csv in the same folder).
+sensitivity:
+  method: permute_days   # deep_lst.sensitivity.perturb.METHODS
+  block: month           # month: shuffle days within calendar months (anomalies only) | all
+  variables: null        # ["era5_land.swvl1", ...]; null = every temporal input of the model
+  seed: 0
+  score: true

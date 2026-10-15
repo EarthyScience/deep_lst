@@ -1,3 +1,5 @@
+import calendar
+
 import xarray as xr
 
 KG_GROUPS = {
@@ -51,6 +53,9 @@ WINDOW_LABELS.update({f"fvc_d{fvc_class}": f"FVC class {fvc_class}" for fvc_clas
 
 DAY_HOURS = (10, 15)
 NIGHT_HOURS = (22, 3)
+# Local solar hour bins of the diurnal cycle, [lo, hi), for the hour-resolved per-cell verification.
+HOUR_BINS = {f"h{lo:02d}_{lo + 4:02d}": (lo, lo + 4) for lo in range(0, 24, 4)}
+WINDOW_LABELS.update({name: f"Solar {lo:02d}-{hi:02d} h" for name, (lo, hi) in HOUR_BINS.items()})
 
 MONTH_INITIALS = "JFMAMJJASOND"
 
@@ -73,6 +78,17 @@ def night_mask(df):
 
 def diurnal_mask(df):
     return day_mask(df) | night_mask(df)
+
+
+def solar_hour_mask(bounds):
+    """MASKS-style function keeping samples whose local solar hour is in [lo, hi)."""
+    lo, hi = bounds
+
+    def mask(df):
+        hour = solar_hour(df)
+        return (hour >= lo) & (hour < hi)
+
+    return mask
 
 
 def class_mask(coord, class_ids):
@@ -146,6 +162,8 @@ for group_name, group_ids in FVC_GROUPS.items():
 for group_name in list(KG_GROUPS) + list(LC_GROUPS) + list(FVC_GROUPS):
     for tod_name, tod_mask in (("day", day_mask), ("night", night_mask)):
         MASKS[f"{group_name}_{tod_name}"] = combined_mask(MASKS[group_name], tod_mask)
+for bin_name, bounds in HOUR_BINS.items():
+    MASKS[bin_name] = solar_hour_mask(bounds)
 for bin_name, bounds in COV_BINS.items():
     MASKS[bin_name] = coverage_mask("lookback_coverage", bounds)
 for bin_name, bounds in GREEN_BINS.items():
@@ -165,3 +183,13 @@ def register_month_windows(months):
     MASKS[f"{name}_night"] = combined_mask(MASKS[name], night_mask)
     WINDOW_LABELS[name] = initials
     return [name, f"{name}_day", f"{name}_night"]
+
+
+# Twelve single-month windows (valid-time month, like register_month_windows) for the
+# month-by-month maps (gifs.py). Registered at import under fixed names m01-m12: the
+# initials-based names above collide for single months (J = Jan/Jun/Jul). No day/night
+# variants -- every window stacks a copy of the forecast cube.
+MONTHLY_WINDOWS = [f"m{month:02d}" for month in range(1, 13)]
+for name, month in zip(MONTHLY_WINDOWS, range(1, 13)):
+    MASKS[name] = month_mask((month,))
+    WINDOW_LABELS[name] = calendar.month_name[month]

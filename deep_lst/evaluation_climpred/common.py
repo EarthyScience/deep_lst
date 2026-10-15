@@ -16,7 +16,7 @@ from .cubes import (
     obs_series,
     prepare_initialised,
 )
-from .masks import MASKS, register_month_windows, stack_windows
+from .masks import MASKS, MONTHLY_WINDOWS, register_month_windows, stack_windows
 
 VERIFY_KWARGS = {"metric": "mse", "comparison": "e2o", "alignment": "maximize", "skipna": True}
 
@@ -89,6 +89,11 @@ def build_parser():
         metavar="M",
         help="Months to filter by (1-12); if given, the 'month' mask is applied.",
     )
+    parser.add_argument(
+        "--monthly",
+        action="store_true",
+        help="Add the twelve single-month windows m01-m12 (month-by-month maps); verif_pixel then writes by_pixel_monthly.nc.",
+    )
     return parser
 
 
@@ -103,6 +108,8 @@ def baseline_files(paths, spatial):
 def setup_verif():
     args = build_parser().parse_args()
     args.windows = args.windows + register_month_windows(args.months)
+    if args.monthly:
+        args.windows = args.windows + MONTHLY_WINDOWS
     args.paths = ExperimentPaths()
     args.spatial = args.paths.baseline_spatial(args.eval_name)
 
@@ -115,6 +122,9 @@ def setup_verif():
     state_path = args.paths.assets_root / "static" / f"fvc_init_state_{args.spatial}.nc"
     if state_path.exists():  # only the selections with a state file get the greenness windows
         initilised = attach_init_state(initilised, state_path)
+    hydro_path = args.paths.assets_root / "static" / f"hydro_init_state_{args.spatial}.nc"
+    if hydro_path.exists():  # hydrological states at init (wetness, ...) as coords for the per-cell product
+        initilised = attach_init_state(initilised, hydro_path, variables=None)
     return args, initilised, obs
 
 
@@ -125,6 +135,13 @@ def verification_dir(args, kind):
 def build_ensembles(args, initilised, obs):
     files = baseline_files(args.paths, args.spatial)
     cubes = np.stack([baseline_cube(path, initilised) for path in files.values()])
+    # Score the baselines on the model's samples only. The rollout issues no forecast from a
+    # cloudy init hour (NaN seed state), so without this mask climpred averages each baseline
+    # over every observed hour -- a superset the model is never scored on -- and the skill
+    # score compares two different sample sets. Climatology and persistence are valid wherever
+    # the model is, so their sample set becomes identical to the model's and the joint counts
+    # (per_init_counts / per_pixel_counts) remain the exact pooling weights.
+    cubes = np.where(np.isfinite(initilised["LST"].values), cubes, np.nan)
     baseline_init = xr.Dataset(
         {"LST": (("baseline", "init", "lead", "pixel"), cubes)},
         coords=dict(initilised.coords) | {"baseline": list(files)},

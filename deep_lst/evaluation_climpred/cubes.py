@@ -140,10 +140,12 @@ def attach_coverage(initilised, obs, lookback):
     return initilised
 
 
-def attach_init_state(initilised, state_path):
-    """Relative greenness of each pixel on its init day (assets/static/fvc_init_state_<selection>.nc,
-    scripts/assets/fvc_init_state.py) as an (init, pixel) coord; NaN where the state is
-    unknown, so the init drops out of every greenness window but stays in all/day/night."""
+def attach_init_state(initilised, state_path, variables=("relative_greenness",)):
+    """States of each pixel on its init day from a (site, time) asset file
+    (assets/static/fvc_init_state_<selection>.nc from scripts/assets/fvc_init_state.py, or
+    hydro_init_state_<selection>.nc from hydro_init_state.py) as (init, pixel) coords named
+    like the variables; NaN where the state is unknown, so the init drops out of every state
+    window but stays in all/day/night. variables=None attaches every data variable of the file."""
     state = xr.open_dataset(state_path)
     # Positional alignment, like attach_classes: the forecast pixels and the state file's sites
     # both follow the sorted src_indices order (the forecast's pixel coordinate is a plain
@@ -151,6 +153,9 @@ def attach_init_state(initilised, state_path):
     if state.sizes["site"] != initilised.sizes["pixel"]:
         raise ValueError(f"{state_path}: {state.sizes['site']} sites but {initilised.sizes['pixel']} forecast pixels")
     init_days = initilised["init"].values.astype("datetime64[D]")
-    greenness = state["relative_greenness"].reindex(time=init_days).values  # (pixel, init), NaN outside the file's year
-    initilised = initilised.assign_coords(relative_greenness=(("init", "pixel"), greenness.T))
+    if variables is None:
+        variables = list(state.data_vars)
+    for variable in variables:
+        values = state[variable].reindex(time=init_days).values  # (pixel, init), NaN outside the file's year
+        initilised = initilised.assign_coords({variable: (("init", "pixel"), values.T)})
     return initilised

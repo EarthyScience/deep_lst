@@ -470,8 +470,12 @@ Things to know:
 
 - **`--grid MajorTom` is mandatory for deep_lst.** The script's default writes ids of the
   land-only subset grid, which deep_lst would silently misread as global ids.
-- The script writes fixed names `indices_sites.npz` + `indices_meta.json` into `--out_dir`;
-  copy them to `deep_lst/assets/spatial/indices_<sel>.npz` and `indices_<sel>_meta.json`.
+- The script writes `indices_<name>.npz` + `indices_<name>_meta.json` into `--out_dir`
+  (`--name`, default `sites`); copy them to `deep_lst/assets/spatial/`.
+- `--fixed_sites <existing .npz>` extends a selection: the new sites are disjoint from the
+  existing ones and keep `--min_distance` from them; `--n_sites` then counts only the new
+  sites. This is how the spatial holdout `indices_eval_mtg_new_val.npz` was drawn from
+  `indices_mtg_new.npz` (seed 1, same axes).
 - **Check disjointness from the holdout evaluation set** you will score on:
   ```
   python -c "import numpy as np; a=np.load('assets/spatial/indices_<sel>.npz')['src_indices']; \

@@ -14,10 +14,12 @@ from deep_lst.utils.io import ExperimentPaths
 from .common import build_parser, verification_dir
 from .cubes import pixel_attributes
 from .derive import derive_verif_products
+from .gifs import render_standard_gifs
 from .masks import register_month_windows
 from .plots import (
     COLORS,
     REGION_STYLES,
+    apply_print_style,
     plot_acc_r2,
     plot_acc_r2_regions,
     plot_bias_maps,
@@ -27,14 +29,16 @@ from .plots import (
     plot_fvc_decile_curves,
     plot_fvc_pixel_scatter,
     plot_pixel_bias_planes,
+    plot_regime_summary,
     plot_rmse_maps,
     plot_score_bars,
     plot_skill_bars,
     plot_skill_limit_maps,
     plot_skill_maps,
+    plot_skill_summary,
 )
 from .tables import _row_groups, write_verif_tables
-from .timeseries import plot_site_forecasts
+from .timeseries import plot_regime_forecasts, plot_site_forecasts
 
 # The dense case studies share one colour range per map kind so their maps compare
 # across regions (set by hand: 98th percentiles of |bias| span 0.7-2.5 K and of
@@ -45,6 +49,7 @@ CASE_STUDY_LIMITS = {"bias": 2.0, "skill": 0.8}
 
 
 def main():
+    apply_print_style()
     parser = build_parser()
     parser.add_argument(
         "--skill_windows",
@@ -65,6 +70,11 @@ def main():
         default=[1, 10],
         metavar=("FIRST", "SECOND"),
         help="The two forecast days overlaid in the per-pixel bias planes (need the day and night windows).",
+    )
+    parser.add_argument(
+        "--gifs",
+        action="store_true",
+        help="Also render the animated maps (gifs.py standard set; training sites only, the month set needs verif_pixel --monthly).",
     )
     args = parser.parse_args()
     month_windows = register_month_windows(args.months)
@@ -164,6 +174,10 @@ def main():
     groups = _row_groups(pooled)
     plot_score_bars(pooled, days, groups, plots_dir)
     plot_skill_bars(pooled, days, groups, plots_dir)
+    if regions:
+        plot_regime_summary(out, pooled, groups, plots_dir, days=days)
+    if regions and "day" in windows and "night" in windows:
+        plot_skill_summary(out, pooled, bootstrap_hourly, bootstrap_daily, groups, plots_dir, days=days)
 
     # FVC conditioning: the decile curves need the fvc_d<k> windows (holdout-sized runs only);
     # the pixel scatter needs just the day/night windows plus the per-pixel FVC from the npz.
@@ -178,6 +192,10 @@ def main():
                 pixel_daily, attributes, days, plots_dir, variable="rmse_ss", x_attribute="lst_validity"
             )
     plot_site_forecasts(args, plots_dir)
+    if regions:  # one example pixel per KG regime: needs the regime windows (train domain)
+        plot_regime_forecasts(args, plots_dir)
+    if args.gifs:
+        render_standard_gifs(args, pixel_daily, plots_dir)
 
 
 if __name__ == "__main__":
