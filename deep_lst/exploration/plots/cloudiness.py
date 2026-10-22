@@ -16,7 +16,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 
-from deep_lst.evaluation.plots._design import RC
+from deep_lst.exploration.plots._design import RC
 
 
 def _month_period_ticks(period_names, period_labels):

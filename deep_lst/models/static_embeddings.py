@@ -17,7 +17,7 @@ class StaticEmbedder(nn.Module):
 
     specs: [{"name": str, "channel": int, "codes": [raw code, ...], "dim": int}, ...]
     where `channel` is the variable's position in the packed input vector and `codes` is the
-    training vocabulary (see preprocessing/static_vocab.py). Any code outside `codes` — a class
+    training vocabulary (see dataset/static_vocab.py). Any code outside `codes` — a class
     the training pixels never saw — maps to the reserved trailing id.
     """
 
