@@ -92,13 +92,18 @@ def axis_tick(value, position):
 
 
 def value_text(value, metric):
+    """Two or three decimals for Kelvin, one or two for percent; a value that rounds to zero
+    prints without a sign, every other negative value keeps it."""
     if not np.isfinite(value):
         return "-"
     if metric == "kelvin":
-        text = f"{value:.2f}" if abs(value) >= 0.1 else f"{value:.3f}"
+        decimals = 2 if abs(value) >= 0.1 else 3
     else:
-        text = f"{value:.1f}" if abs(value) >= 1 else f"{value:.2f}"
-    return text.replace("-0.00", "0.00").replace("-0.000", "0.000")
+        decimals = 1 if abs(value) >= 1 else 2
+    rounded = round(value, decimals)
+    if rounded == 0:
+        rounded = 0.0
+    return f"{rounded:.{decimals}f}"
 
 
 def draw_lead_change(ax, means, order, days, metric):
