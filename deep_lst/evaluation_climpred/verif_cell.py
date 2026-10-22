@@ -36,7 +36,7 @@ TROUGH_HOURS = (3, 7)  # ... and the pre-dawn minimum
 
 
 def main():
-    args, initilised, obs = setup_verif()
+    args, initilised, obs = setup_verif(extra_windows=(AMPLITUDE_WINDOW,))
     observed = obs_cube(obs, initilised)
     signed_error = initilised["LST"] - observed
     errors = {"model": signed_error**2}
