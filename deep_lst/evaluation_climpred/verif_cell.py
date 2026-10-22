@@ -56,7 +56,15 @@ def main():
         if window == AMPLITUDE_WINDOW:
             peak = solar_hour_mask(PEAK_HOURS)(initilised)
             trough = solar_hour_mask(TROUGH_HOURS)(initilised)
-            per_window.append(amplitude_cells(initilised["LST"], observed, references, peak, trough))
+            amplitude = amplitude_cells(initilised["LST"], observed, references, peak, trough)
+            # the (pixel) and (init, pixel) coords the mask windows inherit from the cube (lat, lon,
+            # classes, coverage, states), so the windows concatenate and the export reads them
+            cell_coords = {
+                name: coord
+                for name, coord in initilised.coords.items()
+                if set(coord.dims) <= {"init", "pixel"} and name not in amplitude.coords
+            }
+            per_window.append(amplitude.assign_coords(cell_coords))
             continue
         mask_fn = MASKS[window]
         keep = valid if mask_fn is None else valid & mask_fn(initilised)
