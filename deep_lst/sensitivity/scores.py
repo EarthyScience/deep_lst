@@ -33,16 +33,19 @@ def pixel_day_rmse(cube, observed, keep, day):
     return np.sqrt(total / count), count
 
 
-def amplitude_errors(cube, observed, reference):
-    """Signed diurnal amplitude error per (init, day, pixel) of one forecast cube; the solar-hour
-    windows of the rule come from the reference cube's init times and longitudes."""
-    peak = solar_hour_mask(PEAK_HOURS)(reference)
-    trough = solar_hour_mask(TROUGH_HOURS)(reference)
+def amplitude_errors(cube, observed):
+    """Signed diurnal amplitude error per (init, day, pixel) of one forecast cube. The obs are
+    taken on the cube's inits (a perturbed store may hold a thinned init set); the solar-hour
+    windows of the rule come from the cube's init times and longitudes."""
+    observed = observed.reindex(init=cube["init"].values)
+    peak = solar_hour_mask(PEAK_HOURS)(cube)
+    trough = solar_hour_mask(TROUGH_HOURS)(cube)
     return amplitude_cells(cube, observed, {}, peak, trough)["bias_model"]
 
 
 def amplitude_window(reference_errors, perturbed_errors):
     """(day, pixel) RMS amplitude error of both forecasts over the inits where both days count."""
+    reference_errors, perturbed_errors = xr.align(reference_errors, perturbed_errors, join="inner")
     keep = reference_errors.notnull() & perturbed_errors.notnull()
     count = keep.sum("init")
     rmse_reference = np.sqrt((reference_errors**2).where(keep).sum("init") / count)
@@ -59,7 +62,7 @@ def score_cube(reference, observed, perturbed, windows, reference_amplitude=None
     per_window = []
     for window in windows:
         if window == AMPLITUDE_WINDOW:
-            scores = amplitude_window(reference_amplitude, amplitude_errors(perturbed, observed, reference))
+            scores = amplitude_window(reference_amplitude, amplitude_errors(perturbed, observed))
             per_window.append(scores.assign_coords(pixel_coords))
             continue
         mask_fn = MASKS[window]
@@ -99,7 +102,7 @@ def collect(paths, experiment, version, eval_name, out_dir, windows=WINDOWS):
     observed = obs_cube(obs_series(forecast), reference)
     reference_amplitude = None
     if AMPLITUDE_WINDOW in windows:
-        reference_amplitude = amplitude_errors(reference["LST"], observed, reference)
+        reference_amplitude = amplitude_errors(reference["LST"], observed)
     stores = sorted(out_dir.glob("*.zarr"))
     per_variable = []
     for path in stores:
