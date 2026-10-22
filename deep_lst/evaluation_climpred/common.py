@@ -63,7 +63,8 @@ def lookback_hours(paths, experiment, version):
     return max(found)
 
 
-def build_parser():
+def build_parser(extra_windows=()):
+    """extra_windows: window names a verifier computes itself, beyond the masks (verif_cell's "amplitude")."""
     parser = argparse.ArgumentParser(description="Verify model and baselines with climpred.")
     parser.add_argument("--experiment", type=str, required=True, help="Experiment name (results/<experiment>/...).")
     parser.add_argument("--version", type=str, default="version_0", help="Experiment version.")
@@ -76,7 +77,7 @@ def build_parser():
     parser.add_argument(
         "--windows",
         nargs="+",
-        choices=list(MASKS),
+        choices=list(MASKS) + list(extra_windows),
         default=["all", "day", "night"],
         help="Solar windows to stack along the 'window' dim; one shared verify pass.",
     )
@@ -105,8 +106,8 @@ def baseline_files(paths, spatial):
     }
 
 
-def setup_verif():
-    args = build_parser().parse_args()
+def setup_verif(extra_windows=()):
+    args = build_parser(extra_windows).parse_args()
     args.windows = args.windows + register_month_windows(args.months)
     if args.monthly:
         args.windows = args.windows + MONTHLY_WINDOWS
