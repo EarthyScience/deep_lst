@@ -382,3 +382,70 @@ def amplitude_sums(initilised, observed, references, min_hours=MIN_OBSERVED_HOUR
     for name, values in sums.items():
         data[name] = (("day", "pixel"), values)
     return xr.Dataset(data, coords=coords)
+
+
+def amplitude_cells(forecast, observed, references, peak, trough, min_hours=MIN_OBSERVED_HOURS):
+    """Diurnal amplitude error per (init, forecast day, pixel), paired on the jointly observed
+    hours. A forecast day counts when at least min_hours of its 24 hours are valid for model
+    and obs and, among those, one lies in the peak window and one in the trough window
+    (`peak`, `trough`: boolean (init, lead, pixel) masks of local solar hours). Its error is the
+    amplitude (max - min over exactly those hours) of the model minus that of the obs, so the
+    truncation by cloud gaps hits both alike. Returns a Dataset in the by_cell layout (init,
+    day, pixel) with the variables of the other windows -- mse_model (squared error),
+    bias_model (signed error), n (joint hours), mse_<reference> (squared error of each
+    reference over the hours where it is valid as well) -- plus amplitude_obs (the paired obs
+    amplitude), amplitude_model_full (the model's amplitude over all 24 hours; its difference to
+    the paired amplitude is the truncation) and the two coverage flags. Days failing the rule
+    are NaN with n = 0. The 24-lead forecast day is a solar day for 00 UTC inits only; later
+    inits straddle two diurnal cycles."""
+    model = np.asarray(forecast)
+    obs = np.asarray(observed)
+    peak = np.asarray(peak)
+    trough = np.asarray(trough)
+    n_init, n_lead, n_px = model.shape
+    n_days = n_lead // 24
+    shape = (n_init, n_days, n_px)
+    out = {
+        name: np.full(shape, np.nan) for name in ("mse_model", "bias_model", "amplitude_obs", "amplitude_model_full")
+    }
+    for reference in references:
+        out[f"mse_{reference}"] = np.full(shape, np.nan)
+    out["n"] = np.zeros(shape, dtype=np.int32)
+    out["peak_observed"] = np.zeros(shape, dtype=bool)
+    out["trough_observed"] = np.zeros(shape, dtype=bool)
+
+    def covered(valid, hours):
+        """Rule per (init, pixel): enough joint hours, one in the peak and one in the trough window."""
+        enough = valid.sum(axis=1) >= min_hours
+        peak_seen = (valid & peak[:, hours]).any(axis=1)
+        trough_seen = (valid & trough[:, hours]).any(axis=1)
+        return enough & peak_seen & trough_seen, peak_seen, trough_seen
+
+    for day in range(n_days):
+        hours = slice(24 * day, 24 * day + 24)
+        model_day = model[:, hours]
+        obs_day = obs[:, hours]
+        valid = np.isfinite(model_day) & np.isfinite(obs_day)
+        keep, peak_seen, trough_seen = covered(valid, hours)
+        amplitude_obs = _amplitude(obs_day, valid)
+        error = _amplitude(model_day, valid) - amplitude_obs
+        complete = np.isfinite(model_day).all(axis=1)
+        with np.errstate(invalid="ignore"):
+            full = np.where(complete, model_day.max(axis=1) - model_day.min(axis=1), np.nan)
+        out["bias_model"][:, day] = np.where(keep, error, np.nan)
+        out["mse_model"][:, day] = np.where(keep, error**2, np.nan)
+        out["amplitude_obs"][:, day] = np.where(keep, amplitude_obs, np.nan)
+        out["amplitude_model_full"][:, day] = np.where(keep, full, np.nan)
+        out["n"][:, day] = np.where(keep, valid.sum(axis=1), 0)
+        out["peak_observed"][:, day] = peak_seen
+        out["trough_observed"][:, day] = trough_seen
+        for reference, cube in references.items():
+            reference_day = np.asarray(cube)[:, hours]
+            valid_reference = valid & np.isfinite(reference_day)
+            keep_reference, _, _ = covered(valid_reference, hours)
+            error_reference = _amplitude(reference_day, valid_reference) - _amplitude(obs_day, valid_reference)
+            out[f"mse_{reference}"][:, day] = np.where(keep_reference, error_reference**2, np.nan)
+
+    coords = {"init": forecast["init"].values, "day": np.arange(1, n_days + 1), "pixel": forecast["pixel"].values}
+    data = {name: (("init", "day", "pixel"), values) for name, values in out.items()}
+    return xr.Dataset(data, coords=coords)
