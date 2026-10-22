@@ -17,7 +17,7 @@ class StaticEmbedder(nn.Module):
 
     specs: [{"name": str, "channel": int, "codes": [raw code, ...], "dim": int}, ...]
     where `channel` is the variable's position in the packed input vector and `codes` is the
-    training vocabulary (see preprocessing/static_vocab.py). Any code outside `codes` — a class
+    training vocabulary (see dataset/static_vocab.py). Any code outside `codes` — a class
     the training pixels never saw — maps to the reserved trailing id.
     """
 
@@ -89,6 +89,6 @@ def build_embedder(n_input: int, config: dict, static_spec: list[dict] | None) -
     if not static_spec:
         raise ValueError(
             "model.static_encoding='embedding' needs a static_spec; build the vocabulary with "
-            "`python -m deep_lst.preprocessing.static_vocab` and pass static_spec into the model."
+            "`python -m deep_lst.dataset.static_vocab` and pass static_spec into the model."
         )
     return StaticEmbedder(n_input, static_spec)

@@ -30,8 +30,8 @@ from eodata.grids import T1H
 from matplotlib.colors import TwoSlopeNorm
 from sklearn.decomposition import PCA
 
-from deep_lst.exploration.full_store import ERA5_LAND_STORE, ERA5_STORE, load_store_columns
 from deep_lst.utils import ExperimentPaths
+from deep_lst.utils.full_store import ERA5_LAND_STORE, ERA5_STORE, load_store_columns
 from deep_lst.utils.spatial import store_grid
 
 # ── configuration ─────────────────────────────────────────────────────────────

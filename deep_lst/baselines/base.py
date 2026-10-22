@@ -19,9 +19,9 @@ from eodata import get_data_reader
 from eodata.grids import T1H
 
 from deep_lst.dataset.dataset import PRELOAD_END_DAY, PRELOAD_START_DAY, STORE_EPOCH_OFFSET
-from deep_lst.evaluation.spatial import pixel_grid
 from deep_lst.utils import ExperimentPaths, StatsZarrNormalizer
 from deep_lst.utils.io import stats_spatial
+from deep_lst.utils.spatial import pixel_grid
 
 _SPARSE_FILL_THRESHOLD = 0.01
 _ANCHOR_MODALITY = "seviri"

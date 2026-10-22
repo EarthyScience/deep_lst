@@ -1,6 +1,4 @@
 import pytorch_lightning as pl
-
-# from deep_lst.deep_lst.mlp.loss_logic import DiagnosticMSE, RolloutMSE
 from torch.utils.data import DataLoader
 
 from deep_lst.dataset.collator import Collator

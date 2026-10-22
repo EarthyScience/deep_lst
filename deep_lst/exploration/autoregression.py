@@ -39,9 +39,9 @@ import pandas as pd
 from eodata.grids import T1H
 
 from deep_lst.dataset.dataset import DATA_TYPES, _preload_columns
-from deep_lst.evaluation.plots._design import OBS_COLOR, RC
-from deep_lst.exploration.full_store import SEVIRI_STORE, open_store_reader
+from deep_lst.exploration.plots._design import OBS_COLOR, RC
 from deep_lst.exploration.plots.kg_sampling import EVAL_CENTERS
+from deep_lst.utils.full_store import SEVIRI_STORE, open_store_reader
 from deep_lst.utils.spatial import store_grid
 
 OUT_DIR = Path("/Net/Groups/BGI/people/mwessel/deep_lst/results/autoregression")

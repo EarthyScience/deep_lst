@@ -15,9 +15,9 @@ import numpy as np
 matplotlib.use("Agg")  # headless cluster script
 
 from deep_lst.dataset.dataset import STORE_EPOCH_OFFSET
-from deep_lst.exploration.full_store import SEVIRI_STORE, load_store_columns
 from deep_lst.exploration.plots import plot_cloudiness_heatmap, plot_cloudiness_polar, plot_diurnal_cycle
 from deep_lst.utils import ExperimentPaths
+from deep_lst.utils.full_store import SEVIRI_STORE, load_store_columns
 from deep_lst.utils.spatial import store_grid
 
 

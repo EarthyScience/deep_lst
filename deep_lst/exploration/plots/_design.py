@@ -5,7 +5,7 @@ always uses the same hue, style, and font size for the same case / baseline.
 
 Usage
 -----
-from deep_lst.evaluation.plots._design import (
+from deep_lst.exploration.plots._design import (
     CASE_COLORS, OBS_COLOR, DEFAULT_COLOR, RC,
 )
 plt.rcParams.update(RC)

@@ -22,7 +22,7 @@ import pandas as pd
 import xarray as xr
 from eodata.grids import T1H
 
-from deep_lst.exploration.full_store import SEVIRI_STORE, open_store_reader
+from deep_lst.utils.full_store import SEVIRI_STORE, open_store_reader
 from deep_lst.utils.io import ExperimentPaths
 from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
 

@@ -10,9 +10,9 @@ from eodata.grids import T1H
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from deep_lst.evaluation.spatial import pixel_grid
 from deep_lst.utils import ExperimentPaths, StatsZarrNormalizer
 from deep_lst.utils.io import stats_spatial
+from deep_lst.utils.spatial import pixel_grid
 
 PATHS = ExperimentPaths()
 
