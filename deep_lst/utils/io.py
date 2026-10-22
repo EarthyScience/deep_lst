@@ -16,7 +16,6 @@ class ExperimentPaths:
         default_factory=lambda: Path("/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old")
     )
     preload_cache_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/tmp"))
-    # --- directories ---
 
     def experiment_dir(self, experiment: str) -> Path:
         return self.experiment_root / experiment
@@ -29,8 +28,6 @@ class ExperimentPaths:
 
     def experiment_plots_dir(self, experiment: str, version: str) -> Path:
         return self.experiment_dir(experiment) / version / "plots"
-
-    # --- file resolutions ---
 
     def latest_checkpoint(self, experiment: str, version: str) -> Path:
         """Return the most recent .ckpt file by alphabetical sort (last.ckpt wins)."""
@@ -49,8 +46,6 @@ class ExperimentPaths:
 
     def config_path(self, experiment: str) -> Path:
         return self.config_root / experiment / "config.yml"
-
-    # --- asset data resolutions ---
 
     def statistics_path(self, modality, name) -> Path:
         return self.assets_root / modality / "statistics" / f"statistics_{name}.npz"

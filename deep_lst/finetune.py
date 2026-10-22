@@ -72,7 +72,6 @@ def main(cfg: DictConfig) -> None:
         name = f"{name}_smoke"
     config["name"] = name
 
-    # --- resolve source checkpoint ---
     paths = ExperimentPaths()
     from_parts = from_run.split("/")
     if len(from_parts) != 2:
@@ -106,7 +105,6 @@ def main(cfg: DictConfig) -> None:
             f"  WARNING: source config.yml not found at {saved_config_path}; architecture must match the checkpoint manually."
         )
 
-    # --- loggers ---
     loggers = []
     if config["csv_logger"]:
         csv_logger = lgrs.CSVLogger(save_dir="./experiments", name=config["name"])
@@ -115,7 +113,6 @@ def main(cfg: DictConfig) -> None:
         wandb_logger = lgrs.WandbLogger(project="deep_lst", name=config["name"])
         loggers.append(wandb_logger)
 
-    # --- snapshot config + metadata ---
     if config["csv_logger"]:
         run_dir = Path(csv_logger.log_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -137,7 +134,6 @@ def main(cfg: DictConfig) -> None:
 
     torch.set_float32_matmul_precision("medium")
 
-    # --- checkpointing ---
     callbacks = []
     if not smoke and config["csv_logger"]:
         monitor = config["model"].get("checkpoint_monitor", "val_loss_step_epoch")
@@ -164,7 +160,6 @@ def main(cfg: DictConfig) -> None:
             )
         )
 
-    # --- build model from new config, then load pre-trained weights ---
     data_module = LitDataModule(**config)
     data_module.setup()
 
@@ -196,7 +191,6 @@ def main(cfg: DictConfig) -> None:
     lit_module.load_state_dict(state["state_dict"], strict=False)
     print(f"Weights loaded. Starting finetuning as: {config['name']}")
 
-    # --- trainer ---
     ngpu = torch.cuda.device_count()
     accelerator = "gpu" if ngpu > 0 else "cpu"
     devices = ngpu if ngpu > 0 else 1

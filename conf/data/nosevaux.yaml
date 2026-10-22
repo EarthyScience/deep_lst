@@ -1,0 +1,43 @@
+# @package _global_
+# Data ablation: full minus the SEVIRI auxiliaries (FVC, DEM, LWMASK, LANDCOV); solar+time encodings kept.
+# Same modality_ids/load as full -> reuses its preload cache; only inputs shrink.
+_data: nosevaux
+
+train_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+val_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
+
+test_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: [LST]
+    diagnostics: []
+    context_vars: [LST]
