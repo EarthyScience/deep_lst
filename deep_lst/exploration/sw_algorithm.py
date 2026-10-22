@@ -31,22 +31,22 @@ MLST_FILE = (
     "datalsasaf.lsasvcs.ipma.pt/PRODUCTS/MSG/MLST/NETCDF/2020/06/15/"
     "NETCDF4_LSASAF_MSG_LST_MSG-Disk_202006151200.nc"
 )
-FIG_DIR = Path("/Net/Groups/BGI/people/mwessel/deep_lst/results/exploration/sw_algorithm")
+FIG_DIR = Path("/Net/Groups/BGI/people/mwessel/deep_lst/results/independent/sw_algorithm")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# Presentation convention: black figure/axes backgrounds, white text/ticks/edges.
+# Presentation convention: white figure/axes backgrounds, black text/ticks/edges.
 plt.rcParams.update(
     {
-        "figure.facecolor": "black",
-        "savefig.facecolor": "black",
-        "axes.facecolor": "black",
-        "savefig.edgecolor": "black",
-        "text.color": "white",
-        "axes.labelcolor": "white",
-        "axes.titlecolor": "white",
-        "xtick.color": "white",
-        "ytick.color": "white",
-        "axes.edgecolor": "white",
+        "figure.facecolor": "white",
+        "savefig.facecolor": "white",
+        "axes.facecolor": "white",
+        "savefig.edgecolor": "white",
+        "text.color": "black",
+        "axes.labelcolor": "black",
+        "axes.titlecolor": "black",
+        "xtick.color": "black",
+        "ytick.color": "black",
+        "axes.edgecolor": "black",
     }
 )
 
@@ -283,8 +283,8 @@ def plot_map(field, cmap, vlim, title, cbar_label, fname, extend="neither", ring
     fig, ax = plt.subplots(figsize=(7.5, 7))
     im = ax.imshow(field, origin="lower", cmap=cmap, vmin=vlim[0], vmax=vlim[1])
     if rings is not None:
-        cs = ax.contour(rings, levels=[30, 45, 60, 75], colors="white", linewidths=0.8)
-        ax.clabel(cs, fmt="%d°", fontsize=8, colors="white")
+        cs = ax.contour(rings, levels=[30, 45, 60, 75], colors="black", linewidths=0.8)
+        ax.clabel(cs, fmt="%d°", fontsize=8, colors="black")
     if marker is not None:
         ax.plot(marker[0], marker[1], "c+", ms=12, mew=2)
     ax.set_title(title)
@@ -358,14 +358,14 @@ def plot_scatter_density(x, y, stats_text, title, xlabel, ylabel, fname, lo=270,
     """log-density hexbin scatter with 1:1 line (axes KEPT)."""
     fig, ax = plt.subplots(figsize=(7, 7))
     hb = ax.hexbin(x, y, gridsize=120, bins="log", extent=(lo, hi, lo, hi), cmap="turbo", mincnt=1)
-    ax.plot([lo, hi], [lo, hi], color="white", lw=1.0, ls="--")
+    ax.plot([lo, hi], [lo, hi], color="black", lw=1.0, ls="--")
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect("equal")
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    ax.text(0.04, 0.93, stats_text, transform=ax.transAxes, color="white", fontsize=11, va="top")
+    ax.text(0.04, 0.93, stats_text, transform=ax.transAxes, color="black", fontsize=11, va="top")
     fig.colorbar(hb, ax=ax, shrink=0.8, label="pixel count (log)")
     fig.tight_layout()
     fig.savefig(FIG_DIR / fname, dpi=120, bbox_inches="tight")
@@ -409,7 +409,7 @@ def gif_single(stack, times, cmap, lim, label, fname, extend="neither", rings_fi
         cax = fig.add_axes([0.84, 0.12, 0.035, 0.68])
         im = ax.imshow(stack[f], origin="lower", cmap=cmap, vmin=lim[0], vmax=lim[1])
         if rings_field is not None:
-            ax.contour(rings_field, levels=[30, 45, 60], colors="white", linewidths=0.5)
+            ax.contour(rings_field, levels=[30, 45, 60], colors="black", linewidths=0.5)
         ax.set_title(_stamp(times, f), fontsize=10)
         _bare_ax(ax)
         fig.colorbar(im, cax=cax, label=label, extend=extend)
