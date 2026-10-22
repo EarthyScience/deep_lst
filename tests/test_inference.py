@@ -1,4 +1,4 @@
-"""Tests for deep_lst/evaluation/inference.py
+"""Tests for deep_lst/inference.py
 
 Hermetic — no zarr stores, no real data, no GPU required.
 
@@ -27,7 +27,7 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
-from deep_lst.evaluation.inference import Forecast
+from deep_lst.inference import Forecast
 
 # ── shared constants ──────────────────────────────────────────────────────────
 
@@ -156,7 +156,7 @@ class _MockNormaliser:
 
     def denormalise(self, arr, var):
         self.calls += 1
-        return arr  # identity
+        return arr
 
 
 def _collect(gen):
