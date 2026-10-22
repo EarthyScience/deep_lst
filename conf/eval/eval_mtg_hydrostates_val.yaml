@@ -1,0 +1,7 @@
+# @package _global_
+eval_name: eval_mtg_hydrostates_val
+
+test_dataset:
+  spatial: eval_mtg_hydrostates_val   # 500-site spatial holdout drawn before mtg_hydrostates, validity-weighted
+  temporal: test
+  anchor: mtg

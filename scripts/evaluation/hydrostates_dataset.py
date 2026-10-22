@@ -30,6 +30,7 @@ import pandas as pd
 import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).parent))
+from eodata.selection.stratification import kg_major_from_classes  # noqa: E402
 from hydrostates_runs import CONDITIONS, GREEN_WINDOWS, OUT_DIR, SEEDS, WINDOWS, run_name  # noqa: E402
 
 from deep_lst.utils.io import ExperimentPaths  # noqa: E402
@@ -51,24 +52,28 @@ def site_aridity(site):
     return field[rows]
 
 
-def site_table(eval_name):
-    """Per-site attributes in forecast pixel order (sorted src_indices)."""
+def site_table(eval_name, training_selection="mtg_new"):
+    """Per-site attributes in forecast pixel order (sorted src_indices); in_training is
+    membership in training_selection."""
     npz = np.load(PATHS.spatial_indices_path(PATHS.baseline_spatial(eval_name)))
     order = np.argsort(npz["src_indices"], kind="stable")
     site = npz["src_indices"][order].astype(np.int64)
     centers = np.asarray(anchor_grid("mtg").centers)[site]
-    training = np.load(PATHS.spatial_indices_path("mtg_new"))["src_indices"].astype(np.int64)
+    training = np.load(PATHS.spatial_indices_path(training_selection))["src_indices"].astype(np.int64)
+    kg_class = npz["kg_classes"][order]
     return pd.DataFrame(
         {
             "site": site,
             "lon": centers[:, 0],
             "lat": centers[:, 1],
             "in_training": np.isin(site, training),
-            "kg_class": npz["kg_classes"][order],
+            "kg_class": kg_class,
+            "kg_major": kg_major_from_classes(kg_class.astype(np.int8)).astype(np.int16),  # 1-5 = A-E
             "lc_class": npz["modis_lc_classes"][order],
             "ecoregion": npz["ecoregion_classes"][order],
             "biome": npz["biome_classes"][order],
             "aridity": site_aridity(site),
+            "elevation": npz["dem_values"][order],  # m, lisflood DEM sampled at the selection
             "fvc_annual_mean": npz["fvc_annual_mean"][order],
             "fvc_class": npz["fvc_classes"][order],
             "lst_validity": npz["lst_validity_annual_mean"][order],
