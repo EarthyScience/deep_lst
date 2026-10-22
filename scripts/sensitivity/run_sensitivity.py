@@ -1,9 +1,23 @@
-"""Sensitivity of a trained model to its stored inputs: inference with one input permuted at a
-time, then the RMSE change per pixel and forecast day (conf/sensitivity.yaml).
+"""Sensitivity of a trained run to its stored inputs, one input at a time (deep_lst/sensitivity).
 
+Data: the run's saved config.yml and best checkpoint; the eval dataset built from the same
+preload cache the inference uses (every stored input of the eval sites, normalised), with the
+windows, collator and rollout of scripts/inference/run_inference.py (forecast.PerturbedInference).
+Perturbation: the chosen input's days are shuffled per cell in the preloaded columns
+(perturb.permute_days), within calendar months (block=month: day-to-day anomalies only) or across
+the whole record (block=all: seasonal cycle too); every other input stays as it is.
+Output: one forecast store per input,
+results/<experiment>/<version>/<eval>/sensitivity/permute_days_<block>/<modality>.<variable>.zarr,
+then scores.collect compares every store with the run's own forecast.zarr on the samples where
+both forecasts and the observation are valid: scores.nc (per pixel) and summary.csv (pooled per
+solar window and forecast day). Settings: conf/sensitivity.yaml; the eval dataset follows
+conf/infer.yaml (e.g. test_dataset.init_hours=[0] thins the inits to 00 UTC).
+
+    python scripts/sensitivity/run_sensitivity.py experiment=<exp> eval=eval_mtg sensitivity.block=month
     python scripts/sensitivity/run_sensitivity.py experiment=<exp> eval=eval_mtg \\
-        sensitivity.variables='[era5_land.swvl1,era5_land.swvl2]'
-    python scripts/sensitivity/run_sensitivity.py experiment=<exp> eval=eval_mtg   # every temporal input
+        sensitivity.variables='[era5_land.swvl1,era5_land.swvl2]'   # a subset; default = every stored temporal input
+
+Launcher: scripts/sensitivity/run_sensitivity.sh (CPU partition). Figures: plot_sensitivity.py.
 """
 
 import hydra
