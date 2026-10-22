@@ -1,12 +1,12 @@
 """Figures of the input sensitivity of a trained run (deep_lst/sensitivity/plots.py).
 
     python scripts/sensitivity/plot_sensitivity.py --experiment mlp_smoothl1_h24_full_v16.2_hydrostates \\
-        --eval_name eval_mtg_hydrostates_val --blocks month all --days 1 10 \\
-        --out results/independent/sensitivity/v03
+        --eval_name eval_mtg_hydrostates_val --blocks month all --days 1 10
 
-Several --experiment values (e.g. seeds) are drawn together with their mean. Writes
-relevance_<eval>.pdf and relevance_leads_<eval>.pdf to --out (default: the first experiment's
-sensitivity folder) and prints the ranked relevance of the first block and day.
+Writes relevance_<eval>.pdf and relevance_leads_<eval>.pdf next to the stores, into the
+experiment's results/<experiment>/<version>/<eval>/sensitivity/ folder (--out overrides), and
+prints the ranked relevance of the first block and day. Several --experiment values (e.g.
+seeds) are drawn together with their mean, into the first experiment's folder.
 """
 
 import argparse
