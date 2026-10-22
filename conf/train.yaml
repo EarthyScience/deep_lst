@@ -13,7 +13,8 @@ _spatial:    mtg_new
 # training pixels; set this to ${_spatial} to reproduce them.
 _spatial_val: eval_mtg_new_val
 _lookback:   24
-_experiment: ${_loss}_${_horizon}_${_data}_v16
+_version:    v16   # data/selection generation in the run name; v16.2 = the validity-decorrelated mtg_hydrostates selection
+_experiment: ${_loss}_${_horizon}_${_data}_${_version}
 
 # Temporal split, chronological: train <= 2022, validate 2023, test 2024. Training is
 # every hour of 2016-01-01..2022-12-31; validation is days 11-20 of every month of 2023
