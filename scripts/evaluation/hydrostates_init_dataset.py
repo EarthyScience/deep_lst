@@ -6,15 +6,25 @@ One row per site x init x solar window x forecast day x run, from verif/by_cell.
     site, lon, lat, in_training, kg_class, kg_major, lc_class, ecoregion, biome, aridity, elevation,
     fvc_annual_mean, fvc_class, lst_validity     site attributes (aridity = Global Aridity Index v3.1)
     site_set         holdout | training (train_* evals), for stacking the two files
-    condition, seed, run, init, window, lead     window = solar window (day/night) or solar-hour bin (h00_04 ...);
-                                                 lead = forecast day (1-10), the 24 hourly leads of that day pooled
+    condition, seed, run, init, window, lead     window = solar window (day/night), solar-hour bin (h00_04 ...)
+                                                 or "amplitude" (see below); lead = forecast day (1-10), the
+                                                 24 hourly leads of that day pooled
     greenness        FVC on the init day relative to the site's climatological annual range (0-1)
     wetness          ERA5-Land swvl1 on the init day relative to the site's climatological annual range (0-1)
-    rzsm_wetness     the same for the GloFAS root-zone soil wetness index (where the asset has it)
+    wetness_lookback, wetness_tendency   mean over the 7 days ending at the init / init minus 7 days earlier
+    rzsm_wetness, rzsm_wetness_lookback, rzsm_wetness_tendency   the same for the GloFAS root-zone soil
+                     wetness index (where the asset has it)
     coverage         share of valid LST hours in the lookback window before the init (0-1)
     n_valid          jointly valid (forecast, obs) hours pooled into the row
     rmse_model, bias_model, rmse_clim, rmse_persistence, rmse_era5land   over the model's samples
     skill_clim, log_rmse_model, log_rmse_clim, log_rmse_persistence
+    amplitude rows (window == "amplitude", verif_cell / stats.amplitude_cells): bias_model = model minus obs
+    diurnal amplitude over the jointly observed hours of the forecast day (K), rmse_model = |bias_model|,
+    rmse_<reference> likewise for the references, n_valid = joint hours, and
+    amplitude_obs            observed amplitude over those hours (K)
+    amplitude_model_full     model amplitude over all 24 hours (K); minus (amplitude_obs + bias_model) = truncation
+    amplitude_ratio          (amplitude_obs + bias_model) / amplitude_obs, 1 = the forecast reproduces the range
+    peak_observed, trough_observed   coverage flags of the rule (>= 12 joint hours, solar 12-16 h and 3-7 h seen)
 
 Inits default to 00 UTC only (greenness is a daily state; four inits a day would quadruple
 the rows with the same state); --init_stride keeps every n-th init day (7 = weekly, which
@@ -23,10 +33,12 @@ also thins the serial correlation between consecutive inits). Windows day/night,
     python scripts/evaluation/hydrostates_init_dataset.py --eval_name eval_mtg --init_stride 7
     python scripts/evaluation/hydrostates_init_dataset.py --eval_name train_mtg_new --init_stride 7
 
---version selects the run matrix (hydrostates_runs.VERSIONS); v03 = the v16.2 matrix, all ten days:
+--version selects the run matrix (hydrostates_runs.VERSIONS); v03 = the v16.2 matrix, all ten days;
+v04 = v03 plus the amplitude rows and the lookback wetness:
 
     python scripts/evaluation/hydrostates_init_dataset.py --version v16.2 --eval_name eval_mtg_hydrostates_val \
-        --init_stride 7 --days 1 2 3 4 5 6 7 8 9 10 --out_dir results/independent/hydrostates/v03
+        --windows day night amplitude --init_stride 7 --days 1 2 3 4 5 6 7 8 9 10 \
+        --out_dir results/independent/hydrostates/v04
 
 Rows are appended to the CSV run by run, so the training file never sits in memory whole.
 (v01/v02 files call the lead column `day`.)
@@ -51,8 +63,13 @@ REFERENCES = ("clim", "persistence", "era5land")
 STATES = {
     "relative_greenness": "greenness",
     "wetness": "wetness",
+    "wetness_lookback": "wetness_lookback",
+    "wetness_tendency": "wetness_tendency",
     "rzsm_wetness": "rzsm_wetness",
+    "rzsm_wetness_lookback": "rzsm_wetness_lookback",
+    "rzsm_wetness_tendency": "rzsm_wetness_tendency",
 }  # by_cell coord -> column
+AMPLITUDE_COLUMNS = ("amplitude_obs", "amplitude_model_full", "peak_observed", "trough_observed")  # amplitude window
 
 
 def run_rows(eval_name, condition, seed, version, windows, days, init_hours, init_stride, sites):
@@ -90,6 +107,11 @@ def run_rows(eval_name, condition, seed, version, windows, days, init_hours, ini
             rows["log_rmse_model"] = np.log(rows["rmse_model"])
             rows["log_rmse_clim"] = np.log(rows["rmse_clim"])
             rows["log_rmse_persistence"] = np.log(rows["rmse_persistence"])
+            for column in AMPLITUDE_COLUMNS:
+                if column in selected:
+                    rows[column] = selected[column].values.T.ravel()
+            if window == "amplitude":
+                rows["amplitude_ratio"] = (rows["amplitude_obs"] + rows["bias_model"]) / rows["amplitude_obs"]
             frames.append(rows[rows["n_valid"] > 0])
     return pd.concat(frames, ignore_index=True)
 
