@@ -48,3 +48,7 @@ outputs/
 __pycache__/
 
 /*.log
+
+# local artefacts
+nas/hpo.db
+*.ipynb
