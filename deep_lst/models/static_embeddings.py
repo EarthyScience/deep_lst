@@ -89,6 +89,6 @@ def build_embedder(n_input: int, config: dict, static_spec: list[dict] | None) -
     if not static_spec:
         raise ValueError(
             "model.static_encoding='embedding' needs a static_spec; build the vocabulary with "
-            "`python -m deep_lst.preprocessing.static_vocab` and pass static_spec into the model."
+            "`python -m deep_lst.dataset.static_vocab` and pass static_spec into the model."
         )
     return StaticEmbedder(n_input, static_spec)

@@ -5,10 +5,10 @@ import json
 import pytest
 import torch
 
+from deep_lst.dataset.static_vocab import embedding_dim
 from deep_lst.models.mlp.model import MultiModalMLP
 from deep_lst.models.static_embeddings import StaticEmbedder, build_embedder
 from deep_lst.models.transformer.model import Transformer
-from deep_lst.preprocessing.static_vocab import embedding_dim
 
 N_INPUT = 8
 N_PROGNOSTIC = 1
@@ -209,7 +209,7 @@ def test_embedding_dim_rule():
 
 def test_vocab_asset_is_loadable_and_sorted():
     """The persisted asset is the model contract; codes must be sorted for reproducibility."""
-    from deep_lst.preprocessing.static_vocab import vocab_path
+    from deep_lst.dataset.static_vocab import vocab_path
     from deep_lst.utils.io import ExperimentPaths
 
     path = vocab_path(ExperimentPaths(), "mtg_new")

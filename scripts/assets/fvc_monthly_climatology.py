@@ -17,7 +17,7 @@ import pandas as pd
 import xarray as xr
 from eodata.grids import T1H
 
-from deep_lst.exploration.full_store import SEVIRI_STORE, open_store_reader
+from deep_lst.utils.full_store import SEVIRI_STORE, open_store_reader
 from deep_lst.utils.spatial import store_grid
 
 OUT_DIR = Path("/Net/Groups/BGI/work_5/scratch/mwessel/data/derived/FVC_monthly_climatology")

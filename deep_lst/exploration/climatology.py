@@ -11,7 +11,7 @@ import pandas as pd
 import xarray as xr
 from eodata.grids import T1H
 
-from deep_lst.exploration.full_store import SEVIRI_STORE, load_store_columns
+from deep_lst.utils.full_store import SEVIRI_STORE, load_store_columns
 
 CLIM_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/climatology_hourly/mtg.nc"
 OUT_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/results/exploration/climatology.png"

@@ -29,7 +29,7 @@ import pandas as pd
 import xarray as xr
 from eodata.grids import T1H
 
-from deep_lst.exploration.full_store import SEVIRI_STORE, load_store_columns
+from deep_lst.utils.full_store import SEVIRI_STORE, load_store_columns
 from deep_lst.utils.spatial import store_grid
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)  # all-NaN-slice noise from cloudy pixels

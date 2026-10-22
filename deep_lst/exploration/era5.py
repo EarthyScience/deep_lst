@@ -53,7 +53,7 @@ from matplotlib.colors import ListedColormap
 from PIL import Image
 from scipy.stats import norm, rankdata, spearmanr
 
-from deep_lst.exploration.full_store import ERA5_LAND_STORE, ERA5_STORE, SEVIRI_STORE, open_store_reader
+from deep_lst.utils.full_store import ERA5_LAND_STORE, ERA5_STORE, SEVIRI_STORE, open_store_reader
 from deep_lst.utils.spatial import store_grid
 
 # %% ============================== CONFIG =============================================

@@ -85,7 +85,7 @@ def build_model(config: dict, dataset_config: dict, lookback: int, paths=None):
     One place builds models for training and inference so both agree on input_size and on
     the vocabulary the embeddings were trained with.
     """
-    from deep_lst.preprocessing.static_vocab import build_static_spec
+    from deep_lst.dataset.static_vocab import build_static_spec
 
     packing = get_packing_keys(dataset_config)
     static_spec = None

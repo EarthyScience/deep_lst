@@ -12,7 +12,7 @@ import numpy as np
 import xarray as xr
 from eodata.grids import T1H
 
-from deep_lst.exploration.full_store import SEVIRI_STORE, open_store_reader
+from deep_lst.utils.full_store import SEVIRI_STORE, open_store_reader
 from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
 
 OUT_DIR = Path("/Net/Groups/BGI/tscratch/weathergenerator/aux/AI_ET0__annual_v3_1")
