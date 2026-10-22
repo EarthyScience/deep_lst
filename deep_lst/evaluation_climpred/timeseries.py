@@ -16,8 +16,8 @@ import xarray as xr
 
 from .common import baseline_files, lookback_hours, nearest_pixel, verification_dir
 from .cubes import attach_coverage, obs_series, prepare_initialised, series_at_pixel
-from .plots import REGIME_COLUMNS, SITE_STYLES, _day_positions, plot_regime_days, plot_site
-from .stats import select_clear_lookback_init, select_init, select_regime_pixels
+from .plots import REGIME_COLUMNS, SITE_STYLES, _day_positions, plot_pixel_forecast, plot_regime_days, plot_site
+from .stats import select_clear_lookback_init, select_example_pixel, select_init, select_regime_pixels
 
 EXAMPLE_INIT_HOUR = 0  # UTC: every drawn forecast day then spans the valid hours 01-24
 
@@ -116,3 +116,67 @@ def plot_regime_forecasts(args, plots_dir, days=(1, 10)):
         }
         print(f"regime example {regime}: pixel {pixel}, init {init_times[index]}, lookback {coverage[index]:.0%} clear")
     plot_regime_days(picks, days, plots_dir)
+
+
+# The drawn example pixels: skill quantile of the eval set per figure tag.
+EXAMPLE_PIXELS = {"good": 0.9, "bad": 0.1}
+
+
+def plot_example_forecasts(args, plots_dir):
+    """One very good and one bad pixel of the eval set, each at one clear init: the
+    forecast against the observations over the lookback window and the whole horizon,
+    with the bias beneath (example_pixel_forecast_<good|bad>.pdf).
+
+    The pixels sit at the EXAMPLE_PIXELS quantiles of the last day's skill against the
+    climatology over all pixels (window 'all', so any eval set qualifies, regime windows
+    or not); the init is chosen as for the regime examples (fullest lookback among the
+    EXAMPLE_INIT_HOUR inits whose first and last days are forecast and observed). Only
+    the chosen pixel is read from the store per figure."""
+    forecast = xr.open_dataset(args.paths.forecast_path(args.experiment, args.version, args.eval_name))
+    pixel_daily = xr.open_dataset(verification_dir(args, "scores") / "pixel_daily.nc")
+    horizon = int(pixel_daily["day"].values[-1])
+    lookback = lookback_hours(args.paths, args.experiment, args.version)
+    for name, quantile in EXAMPLE_PIXELS.items():
+        pixel, skill = select_example_pixel(pixel_daily, day=horizon, quantile=quantile)
+        try:
+            pick = _example_pick(forecast, pixel, lookback, horizon)
+        except ValueError as error:
+            print(f"Skipping the {name} example pixel figure: pixel {pixel} -- {error}")
+            continue
+        print(
+            f"{name} example pixel {pixel}: day-{horizon} skill {skill:.2f} (q{quantile}), "
+            f"init {pick['init']}, lookback {pick['coverage']:.0%} clear"
+        )
+        plot_pixel_forecast(pick, plots_dir, name)
+
+
+def _example_pick(forecast, pixel, lookback, horizon):
+    """The drawn series of `pixel` at its clearest usable init (see plot_example_forecasts);
+    raises ValueError when no init qualifies."""
+    subset = forecast.isel(pixel=[pixel])
+    initilised = prepare_initialised(subset)
+    obs = obs_series(subset)
+    initilised = attach_coverage(initilised, obs, lookback)
+
+    lead = initilised["lead"].values
+    init_times = initilised["init"].values
+    valid_times = init_times[:, None] + lead[None, :] * np.timedelta64(1, "h")
+    lookback_times = init_times[:, None] + np.arange(-lookback, 0)[None, :] * np.timedelta64(1, "h")
+    day_positions = [_day_positions(lead, day) for day in (1, horizon)]
+    eligible = pd.DatetimeIndex(init_times).hour == EXAMPLE_INIT_HOUR
+
+    pred = initilised["LST"].isel(pixel=0).values
+    observed = series_at_pixel(obs, valid_times, 0)
+    coverage = initilised["lookback_coverage"].isel(pixel=0).values
+    index = select_clear_lookback_init(coverage, pred, observed, day_positions, eligible)
+    return {
+        "valid_times": valid_times[index],
+        "pred": pred[index],
+        "observed": observed[index],
+        "lookback_times": lookback_times[index],
+        "lookback_obs": series_at_pixel(obs, lookback_times, 0)[index],
+        "lon": float(initilised["lon"].isel(pixel=0)),
+        "lat": float(initilised["lat"].isel(pixel=0)),
+        "init": init_times[index],
+        "coverage": float(coverage[index]),
+    }

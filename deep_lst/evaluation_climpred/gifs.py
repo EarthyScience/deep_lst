@@ -3,8 +3,10 @@
 Two layouts (--layout): `single` is one map stepping through the forecast days
 (--over day) or through the months at one forecast day (--over month, --day); `pair`
 is the day-1 and day-10 maps side by side stepping through the months. Both show the
-model RMSE or its RMSE skill score against climatology or persistence (--variable,
---baseline). Meant for the training sites: the holdouts are too sparse to read as maps.
+model RMSE, its normalised RMSE, its bias, its Nash-Sutcliffe efficiency, its anomaly
+correlation, or its RMSE skill score against climatology or persistence (--variable,
+--baseline). Meant for the training sites and the dense case studies: the holdouts are
+too sparse to read as maps.
 
 The day frames come from scores/pixel_daily.nc (window 'all', written by evaluate).
 The month frames need verif/by_pixel_monthly.nc from
@@ -12,48 +14,49 @@ The month frames need verif/by_pixel_monthly.nc from
     python -m deep_lst.evaluation_climpred.verif_pixel --experiment <exp> --eval_name <name> --windows all --monthly
 
 (thirteen stacked windows: ~450G on train_mtg_new; run_climpred.sh submits it for the
-training sites), pooled into forecast days here exactly as derive.py pools by_pixel.nc.
-The month is the valid-time month, as for the JFMA windows, so the January frame also
-holds the first January days of the following year from the late-December inits.
+training sites), pooled into forecast days exactly as derive.py pools by_pixel.nc
+(derive.pixel_day_scores). The month is the valid-time month, as for the JFMA windows,
+so the January frame also holds the first January days of the following year from the
+late-December inits.
 
-One colour scale per gif over every frame (98th percentile, as the static maps), so
-the colours stay comparable while the animation runs.
+The frames are drawn by plots.draw_pixel_panels, the renderer of the static pixel maps,
+so a frame and the matching pixel_map pdf look alike. One colour scale per gif over
+every frame (plots.map_scale, as the static maps), so the colours stay comparable while
+the animation runs.
 
-`evaluate --gifs` renders the standard set (render_standard_gifs). This entry point
-renders one gif of any combination:
+evaluate renders the standard set (render_standard_gifs): the bias as a single map over
+the forecast days, and the pair over the months per variable where the month windows
+were verified. This entry point renders one gif of any combination:
     python -m deep_lst.evaluation_climpred.gifs --experiment <exp> --layout single --over month --variable rmse --day 10
 """
 
 import argparse
 import io
 
-import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
-import numpy as np
 import xarray as xr
-from matplotlib.colors import Normalize
 from PIL import Image
 
 from deep_lst.utils.io import ExperimentPaths
 
-from .derive import pooled_mean
+from .derive import pixel_day_scores
 from .masks import MONTHLY_WINDOWS, WINDOW_LABELS
-from .plots import BASELINE_LABELS, _diverging_scale, _map_ax, _map_extent
+from .plots import BASELINE_LABELS, MAP_LABELS, MAP_RC, _map_extent, draw_pixel_panels, map_scale
 
 PAIR_DAYS = (1, 10)  # nowcast and medium range, as the static maps
-# The standard set: (variable, baseline) each as a single map over the days and, with
-# the month windows verified, as the pair and the day-1 single map over the months.
-STANDARD_VARIABLES = (("rmse", None), ("skill", "clim_smooth"), ("skill", "persistence"))
-STANDARD_MONTH_DAY = 1
-# Presentation sizes: smaller than PRINT_RC so the panels get the space on a slide.
-GIF_RC = {
-    "font.size": 11,
-    "axes.titlesize": 14,
-    "figure.titlesize": 16,
-    "xtick.labelsize": 10,
-    "ytick.labelsize": 10,
-}
-PANEL_INCHES = 7.0
+# The standard set (render_standard_gifs): (variable, baseline) each as a single map over
+# the forecast days (scores/pixel_daily.nc, every verification) and, once verif_pixel
+# --monthly has run, as the day-1/day-10 pair over the months.
+STANDARD_DAY_VARIABLES = (("bias", None),)
+STANDARD_MONTH_VARIABLES = (
+    ("rmse", None),
+    ("nrmse", None),
+    ("skill", "clim_smooth"),
+    ("skill", "persistence"),
+    ("nse", None),
+    ("acc", None),
+)
+VARIABLES = ("rmse", "nrmse", "bias", "skill", "nse", "acc")
 DPI = 110
 
 
@@ -73,15 +76,15 @@ def build_parser():
     )
     parser.add_argument(
         "--variable",
-        choices=["rmse", "skill"],
+        choices=list(VARIABLES),
         default="skill",
-        help="RMSE of the model, or its RMSE skill score against --baseline.",
+        help="RMSE of the model, its normalised RMSE, bias, NSE or ACC, or its RMSE skill score against --baseline.",
     )
     parser.add_argument(
         "--baseline",
         choices=["clim_smooth", "persistence"],
         default="clim_smooth",
-        help="Reference of the skill score (ignored for rmse).",
+        help="Reference of the skill score (ignored for the other variables).",
     )
     parser.add_argument("--day", type=int, default=1, help="Forecast day of a single map stepping through the months.")
     parser.add_argument("--seconds", type=float, default=1.0, help="Seconds per frame.")
@@ -102,13 +105,11 @@ def monthly_verif_path(args):
 
 def month_fields(args):
     """Per-pixel scores by forecast day and month: by_pixel_monthly.nc pooled over the
-    24 leads of a day as derive.py does (count-weighted in the mse domain, sqrt after)."""
+    24 leads of a day as derive.py pools by_pixel.nc (the file's 'all' window supplies
+    the annual nRMSE span, then only the twelve month windows are kept)."""
     by_pixel = xr.open_dataset(monthly_verif_path(args), decode_timedelta=False)
-    by_pixel = by_pixel.sel(window=MONTHLY_WINDOWS)
-    day = xr.DataArray((by_pixel["lead"].values - 1) // 24 + 1, dims="lead", name="day")
-    rmse_model = np.sqrt(pooled_mean(by_pixel["mse_model"], by_pixel["n"], dim="lead", group=day))
-    rmse_baseline = np.sqrt(pooled_mean(by_pixel["mse_baseline"], by_pixel["n"], dim="lead", group=day))
-    return xr.Dataset({"rmse_model": rmse_model, "rmse_ss": 1.0 - rmse_model / rmse_baseline})
+    fields = pixel_day_scores(by_pixel)
+    return fields.sel(window=MONTHLY_WINDOWS)
 
 
 def init_year(args):
@@ -119,9 +120,9 @@ def init_year(args):
 
 def select_field(fields, variable, baseline):
     """The drawn variable and its colorbar label."""
-    if variable == "rmse":
-        return fields["rmse_model"], "RMSE [K]"
-    return fields["rmse_ss"].sel(baseline=baseline), f"Skill improvement (RMSE) vs {BASELINE_LABELS[baseline]}"
+    if variable == "skill":
+        return fields["rmse_ss"].sel(baseline=baseline), f"Skill improvement (RMSE) vs {BASELINE_LABELS[baseline]}"
+    return fields[f"{variable}_model"], MAP_LABELS[variable]
 
 
 def animated_field(field, layout, over, day):
@@ -131,16 +132,6 @@ def animated_field(field, layout, over, day):
     if over == "month":
         return field.sel(day=day)
     return field
-
-
-def colour_scale(field, variable):
-    """One scale for every frame: viridis from zero for the RMSE, the diverging skill
-    scale of the static maps; both capped at the 98th percentile over all frames."""
-    limit = float(abs(field).quantile(0.98))
-    if variable == "rmse":
-        return plt.get_cmap("viridis"), Normalize(0.0, limit), "max"
-    cmap, norm = _diverging_scale(limit)
-    return cmap, norm, "both"
 
 
 def frame_specs(field, layout, over, day, year):
@@ -161,39 +152,9 @@ def frame_specs(field, layout, over, day, year):
 
 
 def render_frame(title, panels, extent, cmap, norm, extend, label):
-    """One frame as an image. Fixed margins, no tight bbox: every frame must have the
-    same pixel size and panel placement. Latitude labels on the first panel only."""
-    n_panels = len(panels)
-    fig, axes = plt.subplots(
-        1,
-        n_panels,
-        figsize=(PANEL_INCHES * n_panels, PANEL_INCHES + 0.8),
-        dpi=DPI,
-        subplot_kw={"projection": ccrs.PlateCarree()},
-    )
-    axes_list = list(np.atleast_1d(axes))
-    fig.subplots_adjust(left=0.05, right=0.98, top=0.93, bottom=0.08, wspace=0.04)
-    for index, (ax, (panel_title, values)) in enumerate(zip(axes_list, panels)):
-        label_sides = ("left", "bottom") if index == 0 else ("bottom",)
-        _map_ax(ax, extent, label_sides=label_sides)
-        sc = ax.scatter(values["lon"], values["lat"], c=values, s=8, cmap=cmap, norm=norm, transform=ccrs.PlateCarree())
-        if panel_title:
-            ax.set_title(panel_title)
-    fig.suptitle(title)
-    # A thin bar (fraction) close to the maps (pad): both are taken from the panel
-    # height, and the maps are height-limited at this aspect.
-    fig.colorbar(
-        sc,
-        ax=axes_list,
-        orientation="horizontal",
-        fraction=0.04,
-        shrink=0.5,
-        pad=0.06,
-        aspect=40,
-        extend=extend,
-        format="%.2f",
-        label=label,
-    )
+    """One frame as an image: the static map layout (plots.draw_pixel_panels, fixed
+    margins) with the frame title above, so every frame has the same pixel size."""
+    fig = draw_pixel_panels(panels, extent, cmap, norm, extend, label, title=title)
     buffer = io.BytesIO()
     fig.savefig(buffer, format="png", dpi=DPI)
     plt.close(fig)
@@ -216,9 +177,9 @@ def render_gif(fields, layout, over, variable, baseline, day, year, path, second
     fixed forecast day of a single map over the months, None otherwise."""
     field, label = select_field(fields, variable, baseline)
     field = animated_field(field, layout, over, day)
-    cmap, norm, extend = colour_scale(field, variable)
+    cmap, norm, extend = map_scale(variable, field)
     extent = _map_extent(field["lon"], field["lat"])
-    with plt.rc_context(GIF_RC):
+    with plt.rc_context(MAP_RC):
         frames = []
         for title, panels in frame_specs(field, layout, over, day, year):
             frames.append(render_frame(title, panels, extent, cmap, norm, extend, label))
@@ -227,11 +188,12 @@ def render_gif(fields, layout, over, variable, baseline, day, year, path, second
 
 
 def render_standard_gifs(args, pixel_daily, plots_dir):
-    """The evaluate set (--gifs): STANDARD_VARIABLES each as a single map over the
-    forecast days and, once verif_pixel --monthly has run, as the day-1/day-10 pair and
-    the day-1 single map over the months."""
+    """The evaluate set: STANDARD_DAY_VARIABLES each as a single map over the forecast
+    days (from `pixel_daily`, window 'all') and, once verif_pixel --monthly has run,
+    STANDARD_MONTH_VARIABLES each as the day-1/day-10 pair over the months. Variables
+    a monthly verif predating the per-pixel sums lacks (nrmse, nse, acc) are skipped."""
     day_set = pixel_daily.sel(window="all")
-    for variable, baseline in STANDARD_VARIABLES:
+    for variable, baseline in STANDARD_DAY_VARIABLES:
         path = gif_path(plots_dir, "single", "day", variable, baseline, None)
         render_gif(day_set, "single", "day", variable, baseline, None, None, path)
 
@@ -240,11 +202,12 @@ def render_standard_gifs(args, pixel_daily, plots_dir):
         return
     month_set = month_fields(args)
     year = init_year(args)
-    for variable, baseline in STANDARD_VARIABLES:
+    for variable, baseline in STANDARD_MONTH_VARIABLES:
+        if variable != "skill" and f"{variable}_model" not in month_set:
+            print(f"Skipping the {variable} month gif: {monthly_verif_path(args)} predates the per-pixel sums")
+            continue
         path = gif_path(plots_dir, "pair", "month", variable, baseline, None)
         render_gif(month_set, "pair", "month", variable, baseline, None, year, path)
-        path = gif_path(plots_dir, "single", "month", variable, baseline, STANDARD_MONTH_DAY)
-        render_gif(month_set, "single", "month", variable, baseline, STANDARD_MONTH_DAY, year, path)
 
 
 def main():

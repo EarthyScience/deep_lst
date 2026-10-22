@@ -79,14 +79,22 @@ def obs_cube(obs, initilised):
     return xr.DataArray(cube, dims=("init", "lead", "pixel"), coords=initilised.coords)
 
 
-def anomaly_ensemble(initilised, obs, clim_path, windows):
-    """Anomalies w.r.t. the smoothed climatology on both sides, for the centered ACC."""
+def anomaly_pair(initilised, obs, clim_path):
+    """Forecast and obs anomalies w.r.t. the smoothed climatology: the forecast as an
+    (init, lead, pixel) cube, the obs as a continuous (time, pixel) series."""
     clim = baseline_cube(clim_path, initilised)
-    anomaly_init = initilised.copy()
-    anomaly_init["LST"] = initilised["LST"] - clim
+    anomaly_forecast = initilised["LST"] - clim
     clim_series = xr.open_dataset(clim_path)
     clim_obs = payload(clim_series).rename({"valid_time": "time"})
     anomaly_obs = (obs["LST"] - clim_obs).to_dataset(name="LST")
+    return anomaly_forecast, anomaly_obs
+
+
+def anomaly_ensemble(initilised, obs, clim_path, windows):
+    """Anomalies w.r.t. the smoothed climatology on both sides, for the centered ACC."""
+    anomaly_forecast, anomaly_obs = anomaly_pair(initilised, obs, clim_path)
+    anomaly_init = initilised.copy()
+    anomaly_init["LST"] = anomaly_forecast
     return stack_windows(anomaly_init, windows), anomaly_obs
 
 

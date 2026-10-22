@@ -16,6 +16,9 @@ SHORT_BASELINE_LABELS = {"clim_smooth": "Clim.", "persistence": "Persis.", "era5
 
 PLAIN_WINDOWS = ("all", "day", "night", "diurnal")  # time-of-day only, no row group
 
+# Per-pixel scores of skill_daily.nc (quantile, day, window) the efficiency table reports.
+EFFICIENCY_SCORES = ("acc_pixel", "r2_pixel", "nse_pixel")
+
 # Short row labels for the standalone coverage tables (one group, one row per bin).
 COVERAGE_ROW_LABELS = {
     "cov_lt10": r"$<$ 10\%",
@@ -128,6 +131,30 @@ def _anomaly_rows(pooled, days, groups):
     return rows
 
 
+def _efficiency_rows(pooled, days, groups):
+    """(group, label, values): per-pixel median ACC, anomaly R2 and NSE at both days,
+    then the absolute changes."""
+    nowcast, medium = days
+    available = _available(pooled)
+    rows = []
+    for group, members in groups.items():
+        for label, window in members.items():
+            if window not in available:
+                rows.append((group, label, [None] * 9))
+                continue
+            at_nowcast = []
+            at_medium = []
+            for name in EFFICIENCY_SCORES:
+                median = pooled[name].sel(quantile=0.5, window=window)
+                at_nowcast.append(float(median.sel(day=nowcast)))
+                at_medium.append(float(median.sel(day=medium)))
+            changes = []
+            for nowcast_value, medium_value in zip(at_nowcast, at_medium):
+                changes.append(medium_value - nowcast_value)
+            rows.append((group, label, at_nowcast + at_medium + changes))
+    return rows
+
+
 def _emit_csv(path, columns, rows):
     """One flat file: group, row, then the raw values at full precision."""
     with open(path, "w", newline="") as handle:
@@ -194,6 +221,15 @@ def _anomaly_cells(values):
         return [MISSING] * 6
     scores = [f"{value:.2f}" for value in values[:4]]
     changes = [f"{value:+.2f}" for value in values[4:]]
+    return scores + changes
+
+
+def _efficiency_cells(values):
+    """Two-decimal per-pixel medians, then the signed absolute changes."""
+    if values[0] is None:
+        return [MISSING] * 9
+    scores = [f"{value:.2f}" for value in values[:6]]
+    changes = [f"{value:+.2f}" for value in values[6:]]
     return scores + changes
 
 
@@ -332,8 +368,46 @@ def write_anomaly_table(pooled, days, tables_dir):
     _emit_latex(tables_dir / "anomaly.tex", "lrrrr|rr", header, rows, caption, _anomaly_cells, highlight=True)
 
 
+def write_efficiency_table(pooled, days, tables_dir):
+    """Per-pixel centered ACC, anomaly R2 and Nash-Sutcliffe efficiency per region x time
+    of day at both lead windows: the median over the pixels of each window, so the three
+    columns share one convention (the anomaly table pools the samples of every pixel
+    instead). Skipped when the verif predates the per-pixel sums."""
+    if "nse_pixel" not in pooled:
+        return
+    nowcast, medium = days
+    columns = [f"{name}_d{day}" for day in days for name in ("acc", "r2", "nse")]
+    columns += ["acc_diff", "r2_diff", "nse_diff"]
+    rows = _efficiency_rows(pooled, days, _row_groups(pooled))
+    _emit_csv(tables_dir / "efficiency.csv", columns, rows)
+    header = (
+        "& \\multicolumn{3}{c}{Nowcast range} & \\multicolumn{3}{c}{Medium range}"
+        " & \\multicolumn{3}{c}{Difference} \\\\\n"
+        "& ACC & $R^2$ & NSE & ACC & $R^2$ & NSE & ACC & $R^2$ & NSE \\\\"
+    )
+    caption = (
+        "Per-pixel centered anomaly correlation (ACC), anomaly $R^2$ and Nash-Sutcliffe "
+        "efficiency (NSE) by Koeppen-Geiger group and time of day: the median over the pixels "
+        f"of each group, pooled over the same nowcasting (day {nowcast}) and medium-range "
+        f"(day {medium}) windows as the score table. ACC and $R^2$ are computed on the departures "
+        "from the smoothed diurnal climatology, the NSE on the observed temperature itself, every "
+        "pixel centred on the mean of its own scored samples. The difference displays medium "
+        "range $-$ nowcast range."
+    )
+    _emit_latex(
+        tables_dir / "efficiency.tex",
+        "lrrrrrr|rrr",
+        header,
+        rows,
+        caption,
+        _efficiency_cells,
+        highlight=True,
+    )
+
+
 def write_verif_tables(pooled, days, tables_dir, baselines):
     write_score_table(pooled, days, tables_dir)
     write_skill_table(pooled, days, tables_dir, baselines)
     write_coverage_tables(pooled, days, tables_dir, baselines)
     write_anomaly_table(pooled, days, tables_dir)
+    write_efficiency_table(pooled, days, tables_dir)

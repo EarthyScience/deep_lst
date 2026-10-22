@@ -74,6 +74,18 @@ def select_regime_pixels(pixel_daily, day, quantile=0.75, window="all", baseline
     return pixels
 
 
+def select_example_pixel(pixel_daily, day, quantile=0.9, window="all", baseline="clim_smooth"):
+    """The pixel at `quantile` of the day-`day` skill against the baseline over the
+    whole eval set: a very good example by construction, not the most flattering one
+    (the maximum is where the artefacts live). Returns (pixel index, its skill)."""
+    skill = pixel_daily["rmse_ss"].sel(window=window, baseline=baseline, day=day).values
+    members = np.where(np.isfinite(skill))[0]
+    ranked = members[np.argsort(skill[members])]
+    position = int(quantile * (len(ranked) - 1))
+    pixel = int(ranked[position])
+    return pixel, float(skill[pixel])
+
+
 def select_clear_lookback_init(coverage, pred, observed, day_positions, eligible=None):
     """The init with the fullest lookback window at one pixel, among the inits whose
     drawn forecast days are completely forecast and each observed for at least
@@ -121,14 +133,17 @@ def anomaly_obs_variance(initilised, anomaly_obs, windows, masks=None):
     return xr.concat(variances, dim="window").assign_coords(window=windows)
 
 
-def anomaly_moments(initilised, anomaly_forecast, anomaly_obs, windows, masks=None):
-    """Sufficient statistics of the (forecast, obs) anomaly pairs per (window, lead):
-    count and the sums of f, o, f^2, o^2 and f*o over the jointly valid samples.
-    Any anomaly correlation, variance or mse pooled over any set of leads follows
-    from these -- unlike a per-lead correlation, which cannot be re-pooled.
+def anomaly_moments(initilised, anomaly_forecast, anomaly_obs, windows, masks=None, dims=("init", "pixel")):
+    """Sufficient statistics of the (forecast, obs) anomaly pairs summed over `dims`:
+    count and the sums of f, o, f^2, o^2 and f*o over the jointly valid samples, per
+    (window, lead) for the domain-wide scores (init and pixel summed out) or per
+    (window, lead, pixel) for the per-pixel scores (init alone). Any anomaly
+    correlation, variance or mse pooled over any set of leads follows from these --
+    unlike a per-lead correlation, which cannot be re-pooled.
 
     The cubes stay float32 (the dense evals are 16k pixels); only the accumulation
     is float64."""
+    dims = list(dims)
     obs_anomaly = obs_cube(anomaly_obs, initilised)
     valid = anomaly_forecast.notnull() & obs_anomaly.notnull()
     masks = MASKS if masks is None else masks
@@ -140,12 +155,12 @@ def anomaly_moments(initilised, anomaly_forecast, anomaly_obs, windows, masks=No
         o = obs_anomaly.where(window_valid)
         moments = xr.Dataset(
             {
-                "n": window_valid.sum(["init", "pixel"]),
-                "sum_f": f.sum(["init", "pixel"], dtype="float64"),
-                "sum_o": o.sum(["init", "pixel"], dtype="float64"),
-                "sum_ff": (f * f).sum(["init", "pixel"], dtype="float64"),
-                "sum_oo": (o * o).sum(["init", "pixel"], dtype="float64"),
-                "sum_fo": (f * o).sum(["init", "pixel"], dtype="float64"),
+                "n": window_valid.sum(dims),
+                "sum_f": f.sum(dims, dtype="float64"),
+                "sum_o": o.sum(dims, dtype="float64"),
+                "sum_ff": (f * f).sum(dims, dtype="float64"),
+                "sum_oo": (o * o).sum(dims, dtype="float64"),
+                "sum_fo": (f * o).sum(dims, dtype="float64"),
             }
         )
         per_window.append(moments)
@@ -153,7 +168,7 @@ def anomaly_moments(initilised, anomaly_forecast, anomaly_obs, windows, masks=No
 
 
 def per_init_counts(initilised, obs, windows, masks=None):
-    """Jointly valid samples per (window, init, lead) -- weights for the paired bootstrap."""
+    """Jointly valid samples per (window, init, lead) -- weights for pooling init out of by_init."""
     valid = initilised["LST"].notnull() & obs_cube(obs, initilised).notnull()
     counts = []
     masks = MASKS if masks is None else masks
@@ -169,48 +184,36 @@ def window_counts(initilised, obs, windows, masks=None):
     return per_init_counts(initilised, obs, windows, masks).sum("init")
 
 
-def per_pixel_counts(initilised, obs, windows, masks=None):
-    """Jointly valid samples per (window, lead, pixel) -- weights for per-pixel day pooling."""
-    valid = initilised["LST"].notnull() & obs_cube(obs, initilised).notnull()
-    counts = []
+OBS_RANGE_QUANTILES = [0.05, 0.95]  # robust span of a site's observed LST: the nRMSE normaliser
+
+
+def per_pixel_obs_moments(initilised, obs, windows, masks=None):
+    """Obs statistics of the model's samples per pixel: the jointly valid count per
+    (window, lead, pixel) -- the weight for per-pixel day pooling -- with the sums of o
+    and o^2 over those samples (the NSE denominator, exact under any lead pooling), and
+    per (window, pixel) the 5-95 % range of the obs over every lead of the window: the
+    span the normalised RMSE divides by, one fixed value per site and window."""
+    observed = obs_cube(obs, initilised)
+    valid = initilised["LST"].notnull() & observed.notnull()
     masks = MASKS if masks is None else masks
+    per_window = []
     for window in windows:
         mask_fn = masks[window]
         window_valid = valid if mask_fn is None else valid & mask_fn(initilised)
-        counts.append(window_valid.sum("init"))
-    return xr.concat(counts, dim="window").assign_coords(window=windows)
-
-
-def bootstrap_skill_score(score_model, score_baseline, counts, iterations=500, seed=0, block_days=1):
-    """Paired block bootstrap: draws whole init-days (blocks of 4 6-hourly inits),
-    preserving the serial correlation of errors within each block.
-    Assumes inits are chronological with exactly 4 per day (1460 = 365 x 4).
-
-    Returns (hourly, daily) RMSE-SS quantiles. The daily buckets are pooled INSIDE
-    each draw before the sqrt/ratio, so their intervals inherit all correlations
-    (across leads and between model and baseline) without propagation formulas."""
-    rng = np.random.default_rng(seed)
-    weighted_model = score_model.fillna(0.0) * counts
-    weighted_baseline = score_baseline.fillna(0.0) * counts
-    day = xr.DataArray((counts["lead"].values - 1) // 24 + 1, dims="lead", name="day")
-    inits_per_block = 4 * block_days
-    n_blocks = counts.sizes["init"] // inits_per_block
-    hourly_samples, daily_samples = [], []
-    for _ in range(iterations):
-        blocks = rng.integers(0, n_blocks, n_blocks)
-        idx = (blocks[:, None] * inits_per_block + np.arange(inits_per_block)).ravel()
-        pooled_n = counts.isel(init=idx).sum("init")
-        pooled_m = weighted_model.isel(init=idx).sum("init")
-        pooled_b = weighted_baseline.isel(init=idx).sum("init")
-        hourly_samples.append(1.0 - np.sqrt(pooled_m / pooled_n) / np.sqrt(pooled_b / pooled_n))
-        day_n = pooled_n.groupby(day).sum("lead")
-        day_m = pooled_m.groupby(day).sum("lead")
-        day_b = pooled_b.groupby(day).sum("lead")
-        daily_samples.append(1.0 - np.sqrt(day_m / day_n) / np.sqrt(day_b / day_n))
-    quantiles = [0.025, 0.5, 0.975]
-    hourly = xr.concat(hourly_samples, dim="iteration").quantile(quantiles, dim="iteration")
-    daily = xr.concat(daily_samples, dim="iteration").quantile(quantiles, dim="iteration")
-    return hourly, daily
+        o = observed.where(window_valid)
+        quantiles = o.quantile(OBS_RANGE_QUANTILES, dim=["init", "lead"])
+        # The difference of the two slices carries no quantile coord any more.
+        obs_range = quantiles.sel(quantile=OBS_RANGE_QUANTILES[1]) - quantiles.sel(quantile=OBS_RANGE_QUANTILES[0])
+        moments = xr.Dataset(
+            {
+                "n": window_valid.sum("init"),
+                "sum_o": o.sum("init", dtype="float64"),
+                "sum_oo": (o * o).sum("init", dtype="float64"),
+                "obs_range": obs_range,
+            }
+        )
+        per_window.append(moments)
+    return xr.concat(per_window, dim="window").assign_coords(window=windows)
 
 
 def forecast_limit_map(rmse_ss_px_daily):
@@ -225,3 +228,157 @@ def forecast_limit_map(rmse_ss_px_daily):
     limit_days = xr.where(crossed, first_day, horizon + 1)
     has_skill = rmse_ss_px_daily.notnull().any("day")
     return limit_days.where(has_skill).rename("forecast_limit_days")
+
+
+# Sums of the diurnal verification per (solar hour, forecast day, pixel) over the samples
+# where model, obs and climatology are all valid: the count, the model's squared and
+# signed errors, the obs sums (NSE denominator) and the anomaly sums (ACC, named as in
+# by_pixel.nc).
+MODEL_SUMS = [
+    "n",
+    "se_model",
+    "e_model",
+    "sum_o",
+    "sum_oo",
+    "anom_sum_f",
+    "anom_sum_o",
+    "anom_sum_ff",
+    "anom_sum_oo",
+    "anom_sum_fo",
+]
+# The same for every reference forecast on the model's samples where the reference is
+# itself valid (persistence has gaps), stored as <stat>_<reference>.
+REFERENCE_SUMS = ["n", "se", "e", "sum_o", "sum_oo"]
+# Sums of the diurnal amplitude errors per (forecast day, pixel): the model's, and per
+# reference (<stat>_<reference>) on the (init, day) pairs with enough hours for it.
+AMPLITUDE_MODEL_SUMS = ["n", "e_model", "se_model", "sum_obs"]
+AMPLITUDE_REFERENCE_SUMS = ["n", "e", "se"]
+
+
+def local_solar_hour(init_hour, lead, lon):
+    """Integer local solar hour (0-23) of the (init, pixel) samples at one lead: the hour
+    masks.solar_hour computes, floored to the hour bin."""
+    valid_hour = (init_hour + lead) % 24
+    solar = (valid_hour[:, None] + lon[None, :] / 15.0) % 24
+    return np.floor(solar).astype(int)
+
+
+def _bin_hourly(sums, weights, bins, day, n_px):
+    """Add the per-sample `weights` (None = count) binned by `bins` = hour * n_px + pixel
+    into sums[name][:, day]."""
+    for name, values in weights.items():
+        binned = np.bincount(bins, weights=values, minlength=24 * n_px)
+        sums[name][:, day] += binned.reshape(24, n_px)
+
+
+def diurnal_sums(initilised, observed, references):
+    """MODEL_SUMS per (local solar hour, forecast day, pixel) over the samples where model,
+    obs and the climatology are all valid, and REFERENCE_SUMS of every reference in
+    `references` (name -> (init, lead, pixel) cube; 'clim' is required, it defines the
+    anomalies) on those samples where the reference is itself valid. Lead by lead, so
+    nothing larger than one (init, pixel) slab is allocated besides the cubes."""
+    forecast = initilised["LST"].values
+    n_init, n_lead, n_px = forecast.shape
+    leads = initilised["lead"].values
+    n_days = int((leads[-1] - 1) // 24 + 1)
+    init_hour = initilised["init"].dt.hour.values
+    lon = initilised["lon"].values
+    pixel = np.broadcast_to(np.arange(n_px)[None, :], (n_init, n_px))
+    sums = {}
+    for name in MODEL_SUMS:
+        sums[name] = np.zeros((24, n_days, n_px))
+    for reference in references:
+        for stat in REFERENCE_SUMS:
+            sums[f"{stat}_{reference}"] = np.zeros((24, n_days, n_px))
+    for position, lead in enumerate(leads):
+        day = int((lead - 1) // 24)
+        bins = local_solar_hour(init_hour, int(lead), lon) * n_px + pixel
+        f = forecast[:, position].astype(np.float64)
+        o = observed[:, position].astype(np.float64)
+        c = references["clim"][:, position].astype(np.float64)
+        valid = np.isfinite(f) & np.isfinite(o) & np.isfinite(c)
+        error = (f - o)[valid]
+        anomaly_f = (f - c)[valid]
+        anomaly_o = (o - c)[valid]
+        weights = {
+            "n": None,
+            "se_model": error**2,
+            "e_model": error,
+            "sum_o": o[valid],
+            "sum_oo": (o * o)[valid],
+            "anom_sum_f": anomaly_f,
+            "anom_sum_o": anomaly_o,
+            "anom_sum_ff": anomaly_f * anomaly_f,
+            "anom_sum_oo": anomaly_o * anomaly_o,
+            "anom_sum_fo": anomaly_f * anomaly_o,
+        }
+        _bin_hourly(sums, weights, bins[valid], day, n_px)
+        for reference, cube in references.items():
+            r = cube[:, position].astype(np.float64)
+            valid_r = valid & np.isfinite(r)
+            error_r = (r - o)[valid_r]
+            weights_r = {
+                f"n_{reference}": None,
+                f"se_{reference}": error_r**2,
+                f"e_{reference}": error_r,
+                f"sum_o_{reference}": o[valid_r],
+                f"sum_oo_{reference}": (o * o)[valid_r],
+            }
+            _bin_hourly(sums, weights_r, bins[valid_r], day, n_px)
+    coords = {"hour": np.arange(24), "day": np.arange(1, n_days + 1), "pixel": initilised["pixel"].values}
+    data = {}
+    for name, values in sums.items():
+        data[name] = (("hour", "day", "pixel"), values)
+    return xr.Dataset(data, coords=coords)
+
+
+def _amplitude(values, valid):
+    """Max - min over the valid hours (axis 1) of (init, hour, pixel) values. Invalid hours
+    sit at -inf for the max and +inf for the min, so they never win; the caller drops the
+    (init, pixel) days without enough valid hours."""
+    high = np.where(valid, values, -np.inf).max(axis=1)
+    low = np.where(valid, values, np.inf).min(axis=1)
+    return (high - low).astype(np.float64)
+
+
+def amplitude_sums(initilised, observed, references, min_hours=MIN_OBSERVED_HOURS):
+    """AMPLITUDE_MODEL_SUMS per (forecast day, pixel): for every (init, pixel, day) with at
+    least min_hours hours valid for model, obs and climatology, the diurnal amplitude
+    (max - min over those hours) of the model and of the obs; summed over init the count,
+    the signed and squared amplitude errors and the obs amplitude. AMPLITUDE_REFERENCE_SUMS
+    likewise for every reference in `references`, over the hours where the reference is
+    valid as well (the obs amplitude taken over the same hours). Days with fewer hours
+    are skipped, their amplitude being truncated."""
+    forecast = initilised["LST"].values
+    n_init, n_lead, n_px = forecast.shape
+    n_days = n_lead // 24
+    pixel = np.broadcast_to(np.arange(n_px)[None, :], (n_init, n_px))
+    sums = {}
+    for name in AMPLITUDE_MODEL_SUMS:
+        sums[name] = np.zeros((n_days, n_px))
+    for reference in references:
+        for stat in AMPLITUDE_REFERENCE_SUMS:
+            sums[f"{stat}_{reference}"] = np.zeros((n_days, n_px))
+    for day in range(n_days):
+        hours = slice(24 * day, 24 * day + 24)
+        f = forecast[:, hours]
+        o = observed[:, hours]
+        valid = np.isfinite(f) & np.isfinite(o) & np.isfinite(references["clim"][:, hours])
+        enough = valid.sum(axis=1) >= min_hours
+        amplitude_o = _amplitude(o, valid)
+        error = (_amplitude(f, valid) - amplitude_o)[enough]
+        weights = {"n": None, "e_model": error, "se_model": error**2, "sum_obs": amplitude_o[enough]}
+        for name, values in weights.items():
+            sums[name][day] += np.bincount(pixel[enough], weights=values, minlength=n_px)
+        for reference, cube in references.items():
+            valid_r = valid & np.isfinite(cube[:, hours])
+            enough_r = valid_r.sum(axis=1) >= min_hours
+            error_r = (_amplitude(cube[:, hours], valid_r) - _amplitude(o, valid_r))[enough_r]
+            weights_r = {f"n_{reference}": None, f"e_{reference}": error_r, f"se_{reference}": error_r**2}
+            for name, values in weights_r.items():
+                sums[name][day] += np.bincount(pixel[enough_r], weights=values, minlength=n_px)
+    coords = {"day": np.arange(1, n_days + 1), "pixel": initilised["pixel"].values}
+    data = {}
+    for name, values in sums.items():
+        data[name] = (("day", "pixel"), values)
+    return xr.Dataset(data, coords=coords)

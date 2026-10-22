@@ -1,7 +1,7 @@
 """Per-init verification: keeps the init dim, reduces pixels (dim=["pixel"]).
 
-Saves raw material only (mse + counts); pooled curves, buckets and the paired
-bootstrap are derived in derive.py. Run: python -m deep_lst.evaluation_climpred.verif_init
+Saves raw material only (mse + counts); pooled curves and buckets are derived in
+derive.py. Run: python -m deep_lst.evaluation_climpred.verif_init
 """
 
 import xarray as xr
