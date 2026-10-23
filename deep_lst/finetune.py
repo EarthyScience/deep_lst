@@ -57,7 +57,7 @@ def main(cfg: DictConfig) -> None:
     from_run = config.pop("from_run")
     checkpoint_choice = config.pop("checkpoint", "best")
 
-    name = f"{config['_model_name']}_{config['_experiment']}"
+    name = config["_experiment"]
     if tag:
         name = f"{name}_{tag}"
 

@@ -17,14 +17,14 @@ model:
   activation: gelu
   # causal = history tokens attend to their past only (v16 reference); full = bidirectional
   attention: causal
-  # integer = raw class codes (v13 reference); embedding = learnable static embeddings
-  static_encoding: embedding
+  # integer = raw class codes (campaign default since v16); embedding = learnable static embeddings
+  static_encoding: integer
   step_loss: RolloutLoss
   loss_fn: smooth_l1
   checkpoint_monitor: val_loss_step_epoch_log
   detach_rollout: false
   teacher_forcing_loss: true
-  incremental_loss: true
+  incremental_loss: false
   rollout_loss: true
   probabilistic: false
   scheduler_T0: 80000

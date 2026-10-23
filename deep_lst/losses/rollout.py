@@ -46,6 +46,10 @@ class RolloutLoss:
 
         n_states = y_prog.shape[-1]
         n_diagnostic = n_states - self.n_prognostic
+        # Diagnostic-only run (no prognostic): the state and increment terms have nothing to
+        # score, and the rollout carries nothing between steps, so it would only repeat the
+        # teacher-forced diagnostic term.
+        has_prognostic = self.n_prognostic > 0
 
         # increment term
         inc_std = self.inc_std.to(y_prog.device)
@@ -86,17 +90,18 @@ class RolloutLoss:
             y_prog_pred = prior_state + inc_pred
 
             if self.teacher_forcing_loss:
-                loss_logits += state_loss(y_prog_pred, target_state)
+                if has_prognostic:
+                    loss_logits += state_loss(y_prog_pred, target_state)
                 if n_diagnostic:
                     loss_logits += state_loss(
                         diag_pred, y_prog[:, lookback + 1 : lookback + horizon + 1, ..., self.n_prognostic :]
                     )
 
-            if self.incremental_loss:
+            if self.incremental_loss and has_prognostic:
                 loss_logits += state_loss(inc_pred / inc_std, target_inc / inc_std)
 
         # ---------- rollout branch ----------
-        if self.rollout_loss:
+        if self.rollout_loss and has_prognostic:
             prog_seq = [y_prog[:, i, ..., : self.n_prognostic] for i in range(lookback + horizon + 1)]
             state_preds = []
             diag_preds = []
