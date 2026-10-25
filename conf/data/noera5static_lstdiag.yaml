@@ -1,0 +1,46 @@
+# @package _global_
+# v18 no. 4: LST as the only diagnostic, no prognostic, no LST history. The model regresses
+# LST at t0+h from the drivers' window, the drivers at t0+h and the statics (inputs as
+# noera5static, the v18 baseline). seviri context_vars is empty on purpose: LST would
+# otherwise enter the forcing-context window, which carries no validity mask.
+# Same modality_ids/load as full -> reuses its preload cache; only the model roles change.
+_data: noera5static_lstdiag
+
+train_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: []
+    diagnostics: [LST]
+    context_vars: []
+
+val_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: []
+    diagnostics: [LST]
+    context_vars: []
+
+test_dataset:
+  era5:
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
+  era5_land:
+    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
+  seviri:
+    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
+    prognostics: []
+    diagnostics: [LST]
+    context_vars: []

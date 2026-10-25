@@ -12,9 +12,12 @@ _spatial:    mtg_new
 # on the training statistics via stats_spatial. The v16 reference runs validated on the
 # training pixels; set this to ${_spatial} to reproduce them.
 _spatial_val: eval_mtg_new_val
-_lookback:   24
-_version:    v16   # data/selection generation in the run name; v16.2 = the validity-decorrelated mtg_hydrostates selection
-_experiment: ${_loss}_${_horizon}_${_data}_${_version}
+_lookback:   168
+_version:    v18   # data/selection generation in the run name; v16.2 = the validity-decorrelated mtg_hydrostates selection
+# Run name = <_version>_<_model_name>_<_loss>_<_horizon>_<_data>[_<tag>][_smoke] (train.py). The
+# recipe (lookback, statics encoding, loss terms, epochs) lives in the defaults and is not part
+# of the name; `tag` carries what varies between otherwise identical runs (seed, attention).
+_experiment: ${_version}_${_model_name}_${_loss}_${_horizon}_${_data}
 
 # Temporal split, chronological: train <= 2022, validate 2023, test 2024. Training is
 # every hour of 2016-01-01..2022-12-31; validation is days 11-20 of every month of 2023
@@ -139,7 +142,7 @@ test_dataset:
     lookback: ${_lookback}
 
 training:
-  max_epochs: 100
+  max_epochs: 70
   batch_size: 512
   num_workers: 24
   pin_memory: true

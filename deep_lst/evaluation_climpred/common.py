@@ -122,7 +122,7 @@ def setup_verif(extra_windows=()):
     initilised = attach_coverage(initilised, obs, lookback)
     state_path = args.paths.assets_root / "static" / f"fvc_init_state_{args.spatial}.nc"
     if state_path.exists():  # only the selections with a state file get the greenness windows
-        initilised = attach_init_state(initilised, state_path)
+        initilised = attach_init_state(initilised, state_path, variables=None)  # greenness + lookback states
     hydro_path = args.paths.assets_root / "static" / f"hydro_init_state_{args.spatial}.nc"
     if hydro_path.exists():  # hydrological states at init (wetness, ...) as coords for the per-cell product
         initilised = attach_init_state(initilised, hydro_path, variables=None)

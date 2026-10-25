@@ -188,12 +188,15 @@ python deep_lst/train.py model=transformer_rollout loss=smoothl1 horizon=h24 dat
 The **run name** is assembled in `deep_lst/train.py` as
 
 ```
-<_model_name>_<_loss>_<_horizon>_<_data>_v14[_<tag>][_smoke]
+<_version>_<_model_name>_<_loss>_<_horizon>_<_data>[_<tag>][_smoke]
 ```
 
-(`v14` is a data-version label set in `conf/train.yaml`). `_spatial` and `_lookback` are
-**not** part of the name, so put them into `tag`; otherwise two runs land in the same
-`experiments/<run>/` directory as `version_0`, `version_1`, ... and are hard to tell apart.
+(`_version` is the data/selection generation set in `conf/train.yaml`; runs before v18 used
+`<_model_name>_<_loss>_<_horizon>_<_data>_<_version>` and keep their directory names). The
+recipe (lookback 168, integer statics, no incremental loss, 70 epochs) is the config default
+and not part of the name. `_spatial` and any override are **not** part of the name either,
+so put them into `tag`; otherwise two runs land in the same `experiments/<run>/` directory
+as `version_0`, `version_1`, ... and are hard to tell apart.
 
 Every run writes `experiments/<run>/version_N/` with:
 
@@ -393,8 +396,10 @@ sbatch --gres=gpu:4 scripts/training/train.sh model=transformer_rollout _spatial
 
 Conventions of the current campaigns: global batch 512 everywhere, the transformer as DDP on
 4 GPUs with per-rank batch 128 (it does not fit on one A40 at long lookbacks), the MLP on one
-GPU at 512, `max_epochs=40`. Measured: ~28 min/epoch transformer, ~8 min/epoch MLP. Pass
-`_lookback` and any model override explicitly and encode them in `tag`.
+GPU at 512. Since v18 the recipe (`_lookback=168`, `model.static_encoding=integer`,
+`model.incremental_loss=false`, `training.max_epochs=70`) is the config default; encode any
+deviation from it in `tag`. Measured: ~28 min/epoch transformer, ~8 min/epoch MLP (~7 h for
+70 epochs with the preload cache present).
 
 ### 7.4 Monitoring and learning curves
 

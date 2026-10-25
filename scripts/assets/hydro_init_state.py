@@ -14,10 +14,11 @@ so 0 is the site at its climatological driest month and 1 at its wettest, compar
 sites with opposite seasons, like the relative greenness of fvc_init_state.py. Three variables
 per request, for the test year:
 
-    <name>            the init day
-    <name>_lookback   mean over the --lookback_days days ending at the init day: what the model
-                      saw in its context window (7 days = the 168 h lookback of the v16 models)
-    <name>_tendency   init day minus --lookback_days days earlier: drying < 0 < wetting
+    <name>            the init day, clipped to [0, 1]
+    <name>_unclipped  the init day, unclipped
+    <name>_lookback   mean of the unclipped state over the --lookback_days days ending at the init
+                      day: what the model saw in its context window (7 days = the 168 h lookback)
+    <name>_tendency   unclipped init day minus --lookback_days days earlier: drying < 0 < wetting
 
 Written as assets/static/hydro_init_state_<selection>.nc with dims (site, time); the
 verification attaches every variable as an (init, pixel) coordinate (cubes.attach_init_state
@@ -40,6 +41,7 @@ from omegaconf import OmegaConf
 
 from deep_lst.dataset.dataset import MultimodalDataset
 from deep_lst.sensitivity.perturb import HOURS_PER_DAY, locate, preload_dates
+from deep_lst.utils.init_state import lookback_mean, lookback_tendency
 from deep_lst.utils.io import ExperimentPaths
 
 PATHS = ExperimentPaths()
@@ -63,30 +65,14 @@ def monthly_range(daily, dates, years):
 
 
 def relative_state(daily, dates, years):
-    """Daily values relative to the climatological annual range of monthly means, clipped to
-    [0, 1], on the whole day axis; NaN where the cell has no range."""
+    """Daily values relative to the climatological annual range of monthly means, unclipped, on
+    the whole day axis; NaN where the cell has no range."""
     site_min, site_max = monthly_range(daily, dates, years)
     annual_range = site_max - site_min
     has_range = np.isfinite(annual_range) & (annual_range > 0)
     relative = np.full(daily.shape, np.nan, dtype=np.float32)
-    scaled = (daily[has_range] - site_min[has_range, None]) / annual_range[has_range, None]
-    relative[has_range] = np.clip(scaled, 0, 1)
+    relative[has_range] = (daily[has_range] - site_min[has_range, None]) / annual_range[has_range, None]
     return relative, has_range
-
-
-def lookback_mean(relative, lookback_days):
-    """(cells, days) -> mean over the lookback_days days ending at each day; NaN until the window
-    is complete."""
-    frame = pd.DataFrame(relative.T)
-    rolling = frame.rolling(lookback_days, min_periods=lookback_days).mean()
-    return rolling.to_numpy().T.astype(np.float32)
-
-
-def lookback_tendency(relative, lookback_days):
-    """(cells, days) -> value of the day minus the value lookback_days days earlier."""
-    tendency = np.full(relative.shape, np.nan, dtype=np.float32)
-    tendency[:, lookback_days:] = relative[:, lookback_days:] - relative[:, :-lookback_days]
-    return tendency
 
 
 def main():
@@ -125,7 +111,8 @@ def main():
         series = shared["columns"][modality][leaf][:, :, channel].numpy()
         relative, has_range = relative_state(daily_means(series), dates, args.clim_years)
         per_cell = {
-            name: relative,
+            name: np.clip(relative, 0.0, 1.0),
+            f"{name}_unclipped": relative,
             f"{name}_lookback": lookback_mean(relative, args.lookback_days),
             f"{name}_tendency": lookback_tendency(relative, args.lookback_days),
         }
@@ -141,15 +128,16 @@ def main():
 
     dataset = xr.Dataset(states, coords={"site": sites, "time": times})
     kinds = {
-        "": "daily mean relative to the site's climatological annual range of monthly means",
-        "_lookback": f"mean of the relative daily state over the {args.lookback_days} days ending at the day",
-        "_tendency": f"relative daily state minus its value {args.lookback_days} days earlier",
+        "": "daily mean relative to the site's climatological annual range of monthly means, clipped to [0, 1]",
+        "_unclipped": "the same, unclipped",
+        "_lookback": f"mean of the unclipped relative state over the {args.lookback_days} days ending at the day",
+        "_tendency": f"unclipped relative state minus its value {args.lookback_days} days earlier",
     }
     for state_name in states:
-        suffix = next(kind for kind in ("_lookback", "_tendency", "") if state_name.endswith(kind))
+        suffix = next(kind for kind in ("_unclipped", "_lookback", "_tendency", "") if state_name.endswith(kind))
         dataset[state_name].attrs = {
             "long_name": f"{state_name}: {kinds[suffix]}",
-            "note": "(x - min_month) / (max_month - min_month), clipped to [0, 1]; NaN where the site has no range",
+            "note": "(x - min_month) / (max_month - min_month); NaN where the site has no range",
         }
     dataset.attrs = {
         "selection": args.selection,

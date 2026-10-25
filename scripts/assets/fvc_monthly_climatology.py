@@ -1,11 +1,13 @@
 """Monthly FVC climatology (mean, std, valid-day count) on the full seviri grid.
 
-Pools every day of a calendar month across the store years (2016-2024) and writes one
-NetCDF per month. Same full-store access and output layout as the former yearly-mean
+Pools every day of a calendar month across --years and writes one NetCDF per month into
+derived/FVC_monthly_climatology_<first>_<last>. The default 2016-2023 leaves the test year
+out; it scales the init states (fvc_init_state.py). The 2016-2024 version in
+derived/FVC_monthly_climatology is the site-selection raster and stays as it is. Same full-store access and output layout as the former yearly-mean
 script (preprocessing/vegetation_cover.py): FVC already lives on the seviri grid in
 `data_daily`, so this is a temporal reduction only, read in row blocks.
 
-    python scripts/assets/fvc_monthly_climatology.py
+    python scripts/assets/fvc_monthly_climatology.py --years 2016 2023
     python scripts/assets/fvc_monthly_climatology.py --rows 4096000 4100000 --out_dir /tmp/fvc_smoke   # smoke on a land block
 """
 
@@ -20,15 +22,13 @@ from eodata.grids import T1H
 from deep_lst.utils.full_store import SEVIRI_STORE, open_store_reader
 from deep_lst.utils.spatial import store_grid
 
-OUT_DIR = Path("/Net/Groups/BGI/work_5/scratch/mwessel/data/derived/FVC_monthly_climatology")
-FIRST_YEAR = 2016
-LAST_YEAR = 2024
+CLIMATOLOGY_ROOT = Path("/Net/Groups/BGI/work_5/scratch/mwessel/data/derived")
 ROW_BLOCK = 100_000  # rows per read: 100k rows x 3288 days x float32 = 1.3 GB
 
 
-def month_of_store_day(first_day, last_day):
+def month_of_store_day(first_day, last_day, first_year):
     """Calendar month (1-12) of every store day in [first_day, last_day)."""
-    dates = pd.date_range(f"{FIRST_YEAR}-01-01", periods=last_day - first_day, freq="D")
+    dates = pd.date_range(f"{first_year}-01-01", periods=last_day - first_day, freq="D")
     return dates.month.to_numpy()
 
 
@@ -62,7 +62,7 @@ def accumulate_block(block, months):
     return mean, std, count
 
 
-def write_month(month, mean, std, count, grid, out_dir):
+def write_month(month, mean, std, count, grid, out_dir, years):
     n_lat, n_lon = grid.get_shape()
     dataset = xr.Dataset(
         {
@@ -73,7 +73,7 @@ def write_month(month, mean, std, count, grid, out_dir):
         coords={"lat": grid.y, "lon": grid.x},
     )
     dataset["fvc_mean"].attrs = {
-        "long_name": f"mean fractional vegetation cover, month {month:02d}, {FIRST_YEAR}-{LAST_YEAR}",
+        "long_name": f"mean fractional vegetation cover, month {month:02d}, {years[0]}-{years[1]}",
         "units": "1",
         "note": "mean over all days of the month with a valid retrieval; NaN where none",
     }
@@ -88,7 +88,7 @@ def write_month(month, mean, std, count, grid, out_dir):
     }
     dataset.attrs = {
         "month": month,
-        "years": f"{FIRST_YEAR}-{LAST_YEAR}",
+        "years": f"{years[0]}-{years[1]}",
         "grid": grid.name,
         "resolution_deg": grid.resolution,
         "source": f"seviri full store {SEVIRI_STORE}, data_daily FVC",
@@ -100,7 +100,10 @@ def write_month(month, mean, std, count, grid, out_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--out_dir", type=Path, default=OUT_DIR)
+    parser.add_argument("--years", type=int, nargs=2, default=[2016, 2023], metavar=("FIRST", "LAST"))
+    parser.add_argument(
+        "--out_dir", type=Path, default=None, help="default: derived/FVC_monthly_climatology_<first>_<last>"
+    )
     parser.add_argument(
         "--rows",
         type=int,
@@ -110,15 +113,17 @@ def main():
         help="store row range to process instead of the whole grid (smoke test)",
     )
     args = parser.parse_args()
+    if args.out_dir is None:
+        args.out_dir = CLIMATOLOGY_ROOT / f"FVC_monthly_climatology_{args.years[0]}_{args.years[1]}"
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     grid = store_grid("seviri")
     reader = open_store_reader("seviri", SEVIRI_STORE, ["data_daily"])
     daily = reader.data_daily_arr
 
-    first_day = T1H.date_to_index(f"{FIRST_YEAR}-01-01") // 24
-    last_day = T1H.date_to_index(f"{LAST_YEAR + 1}-01-01") // 24
-    months = month_of_store_day(first_day, last_day)
+    first_day = T1H.date_to_index(f"{args.years[0]}-01-01") // 24
+    last_day = T1H.date_to_index(f"{args.years[1] + 1}-01-01") // 24
+    months = month_of_store_day(first_day, last_day, args.years[0])
 
     n_pixels = daily.shape[0]
     first_row, last_row = (0, n_pixels) if args.rows is None else args.rows
@@ -126,7 +131,7 @@ def main():
     std = np.full((12, n_pixels), np.nan, dtype=np.float32)
     count = np.zeros((12, n_pixels), dtype=np.int16)
     print(
-        f"rows {first_row}-{last_row} x {last_day - first_day} days ({FIRST_YEAR}-{LAST_YEAR}), blocks of {ROW_BLOCK}",
+        f"rows {first_row}-{last_row} x {last_day - first_day} days ({args.years[0]}-{args.years[1]}), blocks of {ROW_BLOCK}",
         flush=True,
     )
 
@@ -140,7 +145,7 @@ def main():
         print(f"  rows {row_start}-{row_stop}: {int((block_count.sum(axis=0) > 0).sum())} pixels with data", flush=True)
 
     for month in range(1, 13):
-        out_path = write_month(month, mean[month - 1], std[month - 1], count[month - 1], grid, args.out_dir)
+        out_path = write_month(month, mean[month - 1], std[month - 1], count[month - 1], grid, args.out_dir, args.years)
         covered = int((count[month - 1] > 0).sum())
         print(
             f"month {month:02d}: {covered} pixels, mean FVC {np.nanmean(mean[month - 1]):.3f} -> {out_path}", flush=True

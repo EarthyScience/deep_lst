@@ -69,7 +69,7 @@ def main(cfg: DictConfig) -> None:
                 print(f"WARNING: hpo_best was tuned for horizon={expected}, running with {actual}")
         print(f">>> HPO params loaded from {hpo_path} (val_loss={hpo.get('val_loss', '?'):.4f})")
 
-    name = f"{config['_model_name']}_{config['_experiment']}"
+    name = config["_experiment"]
     if tag:
         name = f"{name}_{tag}"
 
