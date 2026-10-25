@@ -127,7 +127,7 @@ def main():
     times = pd.date_range(f"{args.year}-01-01", periods=last_day - first_day, freq="D") - pd.Timedelta(
         days=args.lookback_days
     )
-    in_year = (times.year == args.year).to_numpy()
+    in_year = np.asarray(times.year == args.year)
 
     reader = open_store_reader("seviri", SEVIRI_STORE, ["data_daily"])
     order = np.argsort(rows)  # zarr wants sorted rows; undo afterwards
