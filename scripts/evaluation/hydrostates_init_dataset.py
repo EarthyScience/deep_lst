@@ -10,6 +10,9 @@ One row per site x init x solar window x forecast day x run, from verif/by_cell.
                                                  or "amplitude" (see below); lead = forecast day (1-10), the
                                                  24 hourly leads of that day pooled
     greenness        FVC on the init day relative to the site's climatological annual range (0-1)
+    greenness_unclipped, greenness_lookback, greenness_tendency, greenness_real_days, greenness_carried_days
+                     the unclipped state, its 7-day mean and tendency (unclipped), observed FVC days in the
+                     7-day window, days the init-day value was carried forward (scripts/assets/fvc_init_state.py)
     wetness          ERA5-Land swvl1 on the init day relative to the site's climatological annual range (0-1)
     wetness_lookback, wetness_tendency   mean over the 7 days ending at the init / init minus 7 days earlier
     rzsm_wetness, rzsm_wetness_lookback, rzsm_wetness_tendency   the same for the GloFAS root-zone soil
@@ -34,7 +37,8 @@ also thins the serial correlation between consecutive inits). Windows day/night,
     python scripts/evaluation/hydrostates_init_dataset.py --eval_name train_mtg_new --init_stride 7
 
 --version selects the run matrix (hydrostates_runs.VERSIONS); v03 = the v16.2 matrix, all ten days;
-v04 = v03 plus the amplitude rows and the lookback wetness:
+v04 = v03 plus the amplitude rows and the lookback wetness; v05 = v04 with the lookback greenness,
+the unclipped states and the climatology 2016-2023 (--out_dir results/independent/hydrostates/v05):
 
     python scripts/evaluation/hydrostates_init_dataset.py --version v16.2 --eval_name eval_mtg_hydrostates_val \
         --windows day night amplitude --init_stride 7 --days 1 2 3 4 5 6 7 8 9 10 \
@@ -62,10 +66,17 @@ PATHS = ExperimentPaths()
 REFERENCES = ("clim", "persistence", "era5land")
 STATES = {
     "relative_greenness": "greenness",
+    "relative_greenness_unclipped": "greenness_unclipped",
+    "relative_greenness_lookback": "greenness_lookback",
+    "relative_greenness_tendency": "greenness_tendency",
+    "real_days": "greenness_real_days",
+    "carried_days": "greenness_carried_days",
     "wetness": "wetness",
+    "wetness_unclipped": "wetness_unclipped",
     "wetness_lookback": "wetness_lookback",
     "wetness_tendency": "wetness_tendency",
     "rzsm_wetness": "rzsm_wetness",
+    "rzsm_wetness_unclipped": "rzsm_wetness_unclipped",
     "rzsm_wetness_lookback": "rzsm_wetness_lookback",
     "rzsm_wetness_tendency": "rzsm_wetness_tendency",
 }  # by_cell coord -> column
