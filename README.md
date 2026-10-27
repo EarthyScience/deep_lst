@@ -252,9 +252,9 @@ One `assets/spatial/indices_<name>.npz` per selection. deep_lst reads a single k
   eodata); `anchor: mtg` in the config.
 - **Evaluation sets** are either MajorTom selections as well (a holdout of sites) or dense
   SEVIRI pixel ids for a region (`anchor: seviri`). Their config lives in `conf/eval/<name>.yaml`
-  and is selected with `eval=<name>` at inference; `ExperimentPaths.eval_indices_path` resolves
-  `indices_eval_<name>.npz`, or `indices_<name>.npz` when the eval name starts with `train_`
-  (evaluating on a training selection).
+  and is selected with `eval=<name>` at inference; its `test_dataset.spatial` key names the
+  selection, which `ExperimentPaths.spatial_indices_path` resolves to `indices_<spatial>.npz`
+  (a training selection such as `mtg_new` is evaluated by naming it there).
 
 At preload, every modality maps the anchor ids to its own store rows by nearest neighbour
 (`deep_lst/utils/spatial.py::map_to_store_rows`), so one file serves all modalities and no
