@@ -15,16 +15,28 @@ Covered:
 
   _predict_rollout  ← core lookback=0 regression
     - loop runs exactly `horizon` times per batch (NOT horizon+1)
-    - output shape is (N_total, horizon) — t=0 is NEVER a forecast target
+    - output shape is (N_total, horizon + 1): lead 0 = start state + init observation, never a
+      model forecast without init_fill
     - model is called `horizon × n_batches` times in total
     - prognostic state is initialised from batch[:,0,...] (observed t=0)
     - state is updated autoregressively (each step uses previous prediction)
     - NaN in init state (batch[:,0,...]) propagates to all forecast steps
     - all-NaN init returns correct shape (NaN outputs, not crash)
+
+  _predict_rollout: joint head and init_fill
+    - a diagnostic copy of a prognostic is labelled <var>_diag, denormalised via its source
+    - init_fill none: nothing filled, lead 0 = the init observation
+    - init_fill gated: missing inits start from the nowcast, observed inits untouched
+    - init_fill always: every init starts from the nowcast
+    - init_fill needs a diagnostic copy of every prognostic
+    - _write_init_times scatters the filled flag per init slot
 """
 
 import numpy as np
+import pandas as pd
+import pytest
 import torch
+import xarray as xr
 from tensordict import TensorDict
 
 from deep_lst.inference import Forecast
@@ -160,15 +172,26 @@ class _MockNormaliser:
 
 
 def _collect(gen):
-    """Drain a predict generator and concatenate per-batch dicts (the old return shape)."""
-    batches = list(gen)
-    preds = {v: np.concatenate([p[v] for p, _ in batches], axis=0) for v in batches[0][0]}
-    obs = {v: np.concatenate([o[v] for _, o in batches], axis=0) for v in batches[0][1]}
+    """Drain a predict generator and concatenate per-batch dicts (preds, obs)."""
+    preds, obs, _ = _collect_all(gen)
     return preds, obs
+
+
+def _collect_all(gen):
+    """Drain a predict generator and concatenate per-batch dicts (preds, obs, filled)."""
+    batches = list(gen)
+    preds = {v: np.concatenate([p[v] for p, _, _ in batches], axis=0) for v in batches[0][0]}
+    obs = {v: np.concatenate([o[v] for _, o, _ in batches], axis=0) for v in batches[0][1]}
+    filled = {v: np.concatenate([f[v] for _, _, f in batches], axis=0) for v in batches[0][2]}
+    return preds, obs, filled
 
 
 def _run_rollout(*args, **kwargs):
     return _collect(Forecast._predict_rollout(*args, **kwargs))
+
+
+def _run_rollout_all(*args, **kwargs):
+    return _collect_all(Forecast._predict_rollout(*args, **kwargs))
 
 
 def _run_diagnostic(*args, **kwargs):
@@ -290,11 +313,9 @@ def test_predict_diagnostic_normaliser_called():
 
 def test_rollout_output_shape_is_N_by_horizon():
     """
-    REGRESSION: output shape must be (N_total, HORIZON), not (N_total, HORIZON+1).
-
-    Before the lookback=0 fix, the loop was range(lookback, horizon+1). With
-    lookback=0 that would iterate t=0,1,2,3 → 4 steps → shape (N, 4).
-    After the fix, the loop is range(1, horizon+1) → t=1,2,3 → 3 steps → shape (N, 3).
+    Output shape is (N_total, HORIZON + 1): lead 0 carries the state the rollout starts
+    from (the init observation without init_fill), leads 1..HORIZON the forecasts. The
+    lookback=0 regression (a loop starting at t=0) is caught by the call-count test.
     """
     n_batches = 2
     loader = [_rollout_batch() for _ in range(n_batches)]
@@ -311,11 +332,8 @@ def test_rollout_output_shape_is_N_by_horizon():
     )
 
     var = PROG_KEYS[0][1]
-    expected_shape = (n_batches * B, HORIZON)
-    assert preds[var].shape == expected_shape, (
-        f"Shape is {preds[var].shape}, expected {expected_shape}. "
-        f"If shape[1]=={HORIZON + 1} the loop starts at t=0 (lookback bug)."
-    )
+    expected_shape = (n_batches * B, HORIZON + 1)  # lead 0 = the start state, then leads 1..H
+    assert preds[var].shape == expected_shape
     assert obs[var].shape == expected_shape
 
 
@@ -376,13 +394,8 @@ def test_rollout_init_state_is_t0_observed():
 
 def test_rollout_t0_not_a_forecast_target():
     """
-    The forecast output at each step corresponds to targets at t=1,2,...,horizon.
-    Target at t=0 (the init observation itself) must never appear in predictions.
-
-    Strategy: set batch[:,0,...] = 99.0 (a sentinel), batch[:,t>0,...] = normal values.
-    With zero increment, preds == init_state (99.0). If t=0 were a target, obs
-    at index 0 in the output would be 99.0. But targets are batch[:,1,...],
-    batch[:,2,...], batch[:,3,...] — none of which are 99.0.
+    Leads 1..horizon correspond to targets t=1,2,...,horizon; the init observation (t=0)
+    sits at lead 0 only. Strategy: batch[:,0,...] = 99.0 (a sentinel), batch[:,t>0,...] = 0.0.
     """
     b = _rollout_batch()
     b["y_prog"][:, 0, ..., 0] = 99.0  # sentinel at t=0 (init, not a target)
@@ -401,12 +414,9 @@ def test_rollout_t0_not_a_forecast_target():
     )
 
     var = PROG_KEYS[0][1]
-    # obs must come from y_prog[:,1], y_prog[:,2], y_prog[:,3] — all 0.0
-    assert not np.any(obs[var] == 99.0), (
-        "obs contains the t=0 sentinel value (99.0) — t=0 is being used as a "
-        "forecast target, which violates the lookback=0 convention."
-    )
-    assert np.allclose(obs[var], 0.0), f"All obs targets should be 0.0, got {obs[var]}"
+    # lead 0 carries the init observation itself; the forecast targets are y_prog[:, 1:], all 0.0
+    assert np.all(obs[var][:, 0] == 99.0)
+    assert np.allclose(obs[var][:, 1:], 0.0), f"All forecast targets should be 0.0, got {obs[var][:, 1:]}"
 
 
 def test_rollout_autoregressive_state_update():
@@ -431,8 +441,8 @@ def test_rollout_autoregressive_state_update():
     )
 
     var = PROG_KEYS[0][1]
-    # step 1: init(5) + 1 = 6; step 2: 6+1=7; step 3: 7+1=8
-    expected = np.array([[init_val + k for k in range(1, HORIZON + 1)]])  # (1, horizon)
+    # lead 0: init(5); step 1: 5 + 1 = 6; step 2: 7; step 3: 8
+    expected = np.array([[init_val + k for k in range(0, HORIZON + 1)]])  # (1, horizon + 1)
     np.testing.assert_allclose(preds[var], expected, rtol=1e-5)
 
 
@@ -459,7 +469,7 @@ def test_rollout_nan_init_state_propagates():
 
 
 def test_rollout_nan_init_correct_output_shape():
-    """Even with NaN init, output shape must be (N_total, horizon)."""
+    """Even with NaN init, output shape must be (N_total, horizon + 1)."""
     b = _rollout_batch()
     b["y_prog"][:, 0, ..., 0] = float("nan")
     loader = [b]
@@ -473,7 +483,7 @@ def test_rollout_nan_init_correct_output_shape():
         horizon=HORIZON,
     )
     var = PROG_KEYS[0][1]
-    assert preds[var].shape == (B, HORIZON)
+    assert preds[var].shape == (B, HORIZON + 1)
 
 
 def test_rollout_normaliser_called_per_batch():
@@ -496,3 +506,159 @@ def test_rollout_normaliser_called_per_batch():
     # 1 prognostic var × 2 sides (pred + obs) × n_batches
     expected_calls = 1 * 2 * n_batches
     assert norm.calls == expected_calls
+
+
+# ── _predict_rollout: joint head (diagnostic copy of a prognostic) ────────────
+
+JOINT_TD_KEYS = {**ROLLOUT_TD_KEYS, "diagnostic_keys": PROG_KEYS, "diagnostic_out_keys": PROG_OUT_KEYS}
+
+
+class _JointModel:
+    """Rollout model with a diagnostic copy of the prognostic: zero increment, diagnostic 3.0."""
+
+    def __init__(self):
+        self.model = self
+
+    def __call__(self, state_window, X_dyn_window, step_X_dyn):
+        n, h, w = step_X_dyn.shape[:3]
+        out = torch.zeros(n, h, w, 2)
+        out[..., 1] = 3.0
+        return out
+
+
+class _NamingNormaliser:
+    """Identity normaliser that records the variable names it was asked for."""
+
+    def __init__(self):
+        self.names = []
+
+    def denormalise(self, arr, var):
+        self.names.append(var)
+        return arr
+
+
+def test_rollout_joint_head_labels_the_diagnostic_copy():
+    batch = _rollout_batch()
+    batch["y_prog"] = torch.cat([batch["y_prog"], batch["y_prog"]], dim=-1)  # LST packed twice, prog first
+    norm = _NamingNormaliser()
+
+    preds, obs = _run_rollout(
+        _JointModel(),
+        torch.device("cpu"),
+        [batch],
+        JOINT_TD_KEYS,
+        normaliser=norm,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
+    )
+
+    assert set(preds) == {"LST", "LST_diag"}
+    assert np.all(preds["LST_diag"][:, 1:] == 3.0)
+    assert np.all(np.isnan(preds["LST_diag"][:, 0]))  # no nowcast without init_fill
+    assert np.array_equal(obs["LST_diag"], obs["LST"], equal_nan=True)
+    assert set(norm.names) == {"LST"}  # the copy is denormalised through its source variable
+
+
+# ── _predict_rollout: init_fill ───────────────────────────────────────────────
+
+
+def _joint_batch_with_gaps():
+    """One batch, LST packed twice; rows 0 and 2 have no observation at init."""
+    batch = _rollout_batch()
+    batch["y_prog"] = torch.cat([batch["y_prog"], batch["y_prog"]], dim=-1)
+    batch["y_prog"][[0, 2], LOOKBACK, ..., :] = float("nan")
+    return batch
+
+
+def _run_joint(init_fill, nowcast="history"):
+    return _run_rollout_all(
+        _JointModel(),
+        torch.device("cpu"),
+        [_joint_batch_with_gaps()],
+        JOINT_TD_KEYS,
+        normaliser=None,
+        lookback=LOOKBACK,
+        horizon=HORIZON,
+        init_fill=init_fill,
+        nowcast=nowcast,
+    )
+
+
+def test_rollout_init_fill_none_records_nothing_filled():
+    preds, obs, filled = _run_joint("none")
+
+    assert not filled["LST"].any()
+    assert np.isnan(preds["LST"][[0, 2]]).all()  # the chain from a missing init stays NaN
+    assert np.array_equal(preds["LST"][:, 0], obs["LST"][:, 0], equal_nan=True)  # lead 0 = the init observation
+
+
+def test_rollout_init_fill_gated_starts_missing_inits_from_the_nowcast():
+    preds, obs, filled = _run_joint("gated")
+
+    assert filled["LST"].tolist() == [True, False, True, False]
+    assert np.all(preds["LST"][[0, 2], 0] == 3.0)  # start state = the nowcast (diagnostic channel)
+    assert np.all(preds["LST"][[0, 2], 1:] == 3.0)  # the zero increment carries it forward
+    assert np.array_equal(preds["LST"][[1, 3], 0], obs["LST"][[1, 3], 0])  # observed inits untouched
+    assert np.all(preds["LST_diag"][:, 0] == 3.0)  # the nowcast is written for every init
+    assert np.isnan(obs["LST"][[0, 2], 0]).all()  # the init observation stays what it was
+
+
+def test_rollout_init_fill_always_starts_every_init_from_the_nowcast():
+    preds, _, filled = _run_joint("always", nowcast="analysis")
+
+    assert filled["LST"].all()
+    assert np.all(preds["LST"][:, 0] == 3.0)
+
+
+def test_rollout_init_fill_always_needs_the_analysis_nowcast():
+    with pytest.raises(ValueError, match="analysis"):
+        _run_joint("always")
+
+
+def test_rollout_init_fill_needs_a_diagnostic_copy():
+    with pytest.raises(ValueError, match="diagnostic copy"):
+        _run_rollout_all(
+            _ZeroIncrementModel(),
+            torch.device("cpu"),
+            [_rollout_batch()],
+            ROLLOUT_TD_KEYS,
+            normaliser=None,
+            lookback=LOOKBACK,
+            horizon=HORIZON,
+            init_fill="gated",
+        )
+
+
+def test_write_init_times_filled_flag_sparse():
+    n_time, t_out, n_spatial = 2, HORIZON + 1, 3
+    pa, oa = _empty_store(n_time, t_out, (n_spatial,))
+    fa = np.zeros((n_time, n_spatial), dtype=bool)
+    preds = {"LST": np.zeros((n_time * n_spatial, t_out), dtype=np.float32)}
+    obs = {"LST": np.zeros((n_time * n_spatial, t_out), dtype=np.float32)}
+    filled = {"LST": np.array([True, False, False, False, True, True])}
+
+    Forecast._write_init_times(
+        {"LST": (pa, oa)}, preds, obs, 0, n_spatial, 0, None, None, (n_spatial,), True, {"LST": fa}, filled
+    )
+
+    assert fa.tolist() == [[True, False, False], [False, True, True]]
+
+
+# ── rechunk_store ─────────────────────────────────────────────────────────────
+
+
+def test_rechunk_store_sizes_chunks_by_the_heaviest_variable(tmp_path):
+    """The boolean init_filled flag must not set the init chunk for the float cubes."""
+    path = tmp_path / "forecast.zarr"
+    n_time, t_out, n_pixel = 8, 3, 4
+    init_times = pd.date_range("2024-01-01", periods=n_time, freq="6h")
+    lead_times = pd.timedelta_range("0h", periods=t_out, freq="h")
+    Forecast._create_zarr_store(
+        path, ["LST"], n_time, t_out, (n_pixel,), init_times, lead_times, np.zeros(n_pixel), np.zeros(n_pixel), ["LST"]
+    )
+
+    Forecast.rechunk_store(path, target_bytes=2 * t_out * n_pixel * 4)  # room for two inits of the float cube
+
+    ds = xr.open_zarr(path)
+    assert ds["LST_pred"].chunks[0] == (2, 2, 2, 2)
+    assert ds["LST_init_filled"].chunks[0] == (2, 2, 2, 2)

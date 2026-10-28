@@ -451,6 +451,39 @@ performance to the composition of the training set.
 
 ---
 
+### 7.7 Diagnostic regression, the joint head and init fill
+
+The model is a one-step function: a window ending at hour tau, the forcings at tau+1, outputs
+for tau+1. A prognostic (LST in `prognostics`) is carried forward as `state(tau) + increment`, so
+the rollout needs a number at the init hour and a missing observation there makes the whole
+forecast NaN. A diagnostic (`diagnostics`) is an immediate value with no prior. A diagnostic's
+observed past enters the state window like a prognostic's (`model.diagnostic_history`, default
+on; off = drivers only), hidden from t0+1 on because it is never carried.
+
+- `prognostics: []`, `diagnostics: [LST]` (`conf/data/full_lstdiag.yaml`): the diagnostic
+  regression, LST at every lead as an immediate estimate from the LST history and the drivers;
+  `losses/rollout.py` skips the state and rollout terms. Forecasts exist at every init.
+- LST in both lists (`conf/data/full_joint.yaml`): the joint head. The diagnostic copy is written
+  as `LST_diag`; its history is not added to the window twice.
+- `init_fill` (`none | gated | always`) is one question asked in two phases: where does the
+  rollout take its first prior? In training (`model.init_fill`, variants `model=mlp_gated` and
+  `model=mlp_always`) gated starts from the observation where present and from the analysis
+  elsewhere, so cloudy inits enter the rollout term; always starts every sample from the
+  analysis. Both train the analysis head, the diagnostic copy at t0 from the window ending at
+  t0, with the t0 slot hidden in `init_hide_fraction` of the samples so filling has a target. At
+  inference (`init_fill` in `conf/infer.yaml`, null = as trained) the nowcast is the analysis for
+  such models and the history nowcast (the lead-1 diagnostic one hour early) for any other joint
+  model, which allows `gated` without retraining; `always` needs the analysis. An inference whose
+  `init_fill` deviates from the trained one writes `forecast_<init_fill>.zarr`, verified with
+  `--init_fill <value>` (outputs in `<kind>_<value>`).
+
+Every rollout store written since 2026-10-23 has a uniform lead axis 0..H: lead 0 holds the state
+the rollout started from (`LST_pred`), the init observation (`LST_obs`), the nowcast (`LST_diag_pred`,
+NaN without filling) and a boolean `LST_init_filled` per init and pixel. The evaluation drops lead 0,
+so scores are unchanged, and older stores remain readable. Compare filling runs to observation-
+anchored runs in the `init_obs` window (`--windows all init_obs init_gap init_filled`), and read the
+dependence on the gap length from the `gap_*` windows (tables `scores_gap`, `skill_gap`).
+
 ## 8. Workflow: training on a new spatial selection
 
 The loop for any sampling ablation. Call the new selection `<sel>`.

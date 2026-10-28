@@ -1,7 +1,8 @@
 # @package _global_
-# v18 baseline (no. 0): full minus the ERA5 static fields tvh, tvl, lsm, slt.
-# Same modality_ids/load as full -> reuses its preload cache; only the model roles change.
-_data: noera5static
+# v18 joint head: full with LST as prognostic AND diagnostic. The diagnostic copy is the nowcast
+# used by init_fill at inference (written as LST_diag); LST history reaches the window through
+# the prognostic channel, so diagnostic_history stays off. Shares full's preload cache.
+_data: full_joint
 
 train_dataset:
   era5:
@@ -13,7 +14,7 @@ train_dataset:
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
     prognostics: [LST]
-    diagnostics: []
+    diagnostics: [LST]
     context_vars: [LST]
 
 val_dataset:
@@ -26,7 +27,7 @@ val_dataset:
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
     prognostics: [LST]
-    diagnostics: []
+    diagnostics: [LST]
     context_vars: [LST]
 
 test_dataset:
@@ -39,5 +40,5 @@ test_dataset:
   seviri:
     inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
     prognostics: [LST]
-    diagnostics: []
+    diagnostics: [LST]
     context_vars: [LST]

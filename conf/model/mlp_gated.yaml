@@ -1,0 +1,12 @@
+# @package _global_
+# mlp_rollout trained with init_fill gated: the analysis head and the rollout started from it
+# (the observation where present, else the analysis).
+# Run with data=full_joint. The variant sits in the run name through _model_name.
+defaults:
+  - mlp_rollout
+  - _self_
+
+_model_name: mlp_gated
+
+model:
+  init_fill: gated

@@ -21,6 +21,15 @@ PATHS = ExperimentPaths()
 _SPARSE_FILL_THRESHOLD = 1.1
 
 
+def _state_window(state, history_diag, start, lookback, n_prognostic):
+    """State window of the lookback hours start .. start + lookback - 1: the prognostic channels
+    of the rollout buffer plus, with diagnostic_history, the diagnostics' observed past."""
+    window = state[:, start : lookback + start, ..., :n_prognostic]
+    if history_diag is not None:
+        window = torch.cat([window, history_diag[:, start : lookback + start]], dim=-1)
+    return window
+
+
 class Forecast:
     """Runs model inference and writes predictions to a forecast.zarr store."""
 
@@ -36,6 +45,8 @@ class Forecast:
         non_land: np.ndarray,
         prediction_mode: str = "diagnostic",
         apply_lw_mask: bool = True,
+        init_fill: str = "none",
+        nowcast: str = "history",
     ):
         self.model = model
         self.device = device
@@ -44,6 +55,8 @@ class Forecast:
         self.config = config
         self.prediction_mode = prediction_mode
         self.apply_lw_mask = apply_lw_mask
+        self.init_fill = init_fill
+        self.nowcast = nowcast
 
         self.normaliser = StatsZarrNormalizer(PATHS.stats_zarr_path("seviri", stats_spatial(self.config)))
 
@@ -80,7 +93,6 @@ class Forecast:
         predict_fn = predict_dispatch.get(self.prediction_mode)
         if predict_fn is None:
             raise ValueError(f"Unknown prediction_mode: {self.prediction_mode}. Known: {list(predict_dispatch)}")
-        is_rollout = self.prediction_mode == "RolloutLoss"
 
         gen = predict_fn(
             self.model,
@@ -88,6 +100,8 @@ class Forecast:
             self.loader,
             self.td_keys,
             normaliser=self.normaliser,
+            init_fill=self.init_fill,
+            nowcast=self.nowcast,
             **self.config["seviri"],
         )
 
@@ -99,8 +113,10 @@ class Forecast:
 
         first_var = next(iter(first_batch[0]))
         time_horizon = first_batch[0][first_var].shape[1]
-        t_out = time_horizon + 1 if is_rollout else time_horizon
-        lead_offset = 1 if is_rollout else 0
+        # Both generators yield the store's whole lead axis: the rollout one leads 0..H (lead 0 =
+        # the start state and the init observation), the diagnostic one its own single step.
+        t_out = time_horizon
+        lead_offset = 0
 
         n_spatial = len(self.unique_spatial_idx)
         unique_time_idx = np.unique(time_idx)
@@ -118,21 +134,26 @@ class Forecast:
             spatial_shape = (int(H), int(W))
 
         all_vars = list(first_batch[0].keys())
+        filled_vars = list(first_batch[2].keys())  # prognostics: <var>_init_filled per init and pixel
         self._create_zarr_store(
-            path, all_vars, n_time, t_out, spatial_shape, init_times, lead_times, pixel_lats, pixel_lons
+            path, all_vars, n_time, t_out, spatial_shape, init_times, lead_times, pixel_lats, pixel_lons, filled_vars
         )
         store = zarr.open_group(str(path), mode="r+")
         zarr_arrays = {var: (store[f"{var}_pred"], store[f"{var}_obs"]) for var in all_vars}
+        filled_arrays = {var: store[f"{var}_init_filled"] for var in filled_vars}
 
         carry_p = {var: [] for var in all_vars}
         carry_o = {var: [] for var in all_vars}
+        carry_f = {var: [] for var in filled_vars}
         carry_count = 0
         ti_cursor = 0
 
-        for preds_b, obs_b in chain([first_batch], gen):
+        for preds_b, obs_b, filled_b in chain([first_batch], gen):
             for var in all_vars:
                 carry_p[var].append(preds_b[var])
                 carry_o[var].append(obs_b[var])
+            for var in filled_vars:
+                carry_f[var].append(filled_b[var])
             carry_count += preds_b[first_var].shape[0]
 
             n_complete = carry_count // n_spatial
@@ -141,6 +162,7 @@ class Forecast:
             cut = n_complete * n_spatial
             block_p = {var: np.concatenate(carry_p[var], axis=0) for var in all_vars}
             block_o = {var: np.concatenate(carry_o[var], axis=0) for var in all_vars}
+            block_f = {var: np.concatenate(carry_f[var], axis=0) for var in filled_vars}
             if self.apply_lw_mask:
                 # The first `cut` rows are n_complete whole init-times of n_spatial pixels each,
                 # in unique_spatial_idx order — so tiling non_land to length cut aligns row-for-row.
@@ -148,6 +170,8 @@ class Forecast:
                 for var in all_vars:
                     block_p[var][:cut][non_land_rows] = np.nan
                     block_o[var][:cut][non_land_rows] = np.nan
+                for var in filled_vars:
+                    block_f[var][:cut][non_land_rows] = False
             self._write_init_times(
                 zarr_arrays,
                 {var: a[:cut] for var, a in block_p.items()},
@@ -159,10 +183,13 @@ class Forecast:
                 self.local_cols,
                 self.grid_shape,
                 self.sparse,
+                filled_arrays,
+                {var: a[:cut] for var, a in block_f.items()},
             )
             ti_cursor += n_complete
             carry_p = {var: [a[cut:]] for var, a in block_p.items()}
             carry_o = {var: [a[cut:]] for var, a in block_o.items()}
+            carry_f = {var: [a[cut:]] for var, a in block_f.items()}
             carry_count -= cut
 
         if carry_count != 0 or ti_cursor != n_time:
@@ -176,7 +203,7 @@ class Forecast:
 
     @staticmethod
     def _create_zarr_store(
-        path, pred_vars, n_time, t_out, spatial_shape, init_times, lead_times, pixel_lats, pixel_lons
+        path, pred_vars, n_time, t_out, spatial_shape, init_times, lead_times, pixel_lats, pixel_lons, filled_vars=()
     ):
         """Create empty zarr store with coordinates and NaN-filled data arrays.
 
@@ -245,6 +272,19 @@ class Forecast:
                 fill_value=float("nan"),
                 dimension_names=dim_names,
             )
+        # <var>_init_filled: True where the rollout started from the model's own estimate (init_fill).
+        flag_shape = (array_shape[0],) + array_shape[2:]
+        flag_chunks = (chunk_shape[0],) + chunk_shape[2:]
+        flag_dims = [dim_names[0]] + dim_names[2:]
+        for var in filled_vars:
+            store.require_array(
+                f"{var}_init_filled",
+                shape=flag_shape,
+                dtype="bool",
+                chunks=flag_chunks,
+                fill_value=False,
+                dimension_names=flag_dims,
+            )
         zarr.consolidate_metadata(str(path))
         print(f"Created zarr store at {path} ({n_time} init times, {len(pred_vars)} variable(s))")
 
@@ -255,8 +295,15 @@ class Forecast:
 
         path = Path(path)
         ds = xr.open_zarr(path)
-        sample = ds[next(iter(ds.data_vars))]
-        other = int(np.prod([sample.sizes[d] for d in sample.dims if d != "init_time"]))
+        # Size the init chunk by the heaviest variable per init (the float cubes, not the boolean
+        # init_filled flags), so every variable's chunks stay near target_bytes.
+        bytes_per_init = {}
+        for name in ds.data_vars:
+            da = ds[name]
+            bytes_per_init[name] = int(np.prod([da.sizes[d] for d in da.dims if d != "init_time"])) * da.dtype.itemsize
+        heaviest = max(bytes_per_init, key=bytes_per_init.get)
+        sample = ds[heaviest]
+        other = bytes_per_init[heaviest] // sample.dtype.itemsize
         init_chunk = int(max(1, min(sample.sizes["init_time"], target_bytes // (other * sample.dtype.itemsize))))
 
         enc = {}
@@ -295,6 +342,8 @@ class Forecast:
         local_cols,
         grid_shape,
         sparse,
+        filled_arrays=None,
+        filled=None,
     ):
         """Scatter (k * n_spatial, t) prediction blocks into k whole init_time slots.
 
@@ -319,6 +368,9 @@ class Forecast:
                     buf_o[:] = np.nan
                     buf_o[0, lead_offset:, :] = obs[var][rows].T
                     oa[ti : ti + 1] = buf_o
+                if filled_arrays:
+                    for var, fa in filled_arrays.items():
+                        fa[ti : ti + 1] = filled[var][rows][None, :]
         else:
             H, W = grid_shape
             dense_p = np.full((1, t_out, H, W), np.nan, dtype=np.float32)
@@ -333,6 +385,12 @@ class Forecast:
                     dense_o[:] = np.nan
                     dense_o[0, lead_offset:, local_rows, local_cols] = obs[var][rows]
                     oa[ti : ti + 1] = dense_o
+                if filled_arrays:
+                    dense_f = np.zeros((1, H, W), dtype=bool)
+                    for var, fa in filled_arrays.items():
+                        dense_f[:] = False
+                        dense_f[0, local_rows, local_cols] = filled[var][rows]
+                        fa[ti : ti + 1] = dense_f
 
     def _pixel_coords(self):
         """Per-pixel lat/lon for sparse output or bbox lat/lon arrays for dense."""
@@ -342,7 +400,8 @@ class Forecast:
 
     @staticmethod
     def _predict_diagnostic(model, device, loader, td_keys, normaliser=None, **kwargs):
-        """Single-step generator: yields per-batch (preds, obs) dicts, denormalised."""
+        """Single-step generator: yields per-batch (preds, obs, filled) dicts, denormalised;
+        filled is empty (no prognostic, nothing is started from an estimate)."""
         diag_keys = td_keys["diagnostic_keys"]
 
         with torch.no_grad():
@@ -367,22 +426,46 @@ class Forecast:
 
                     preds_b[var] = pred_batch
                     obs_b[var] = obs_batch
-                yield preds_b, obs_b
+                yield preds_b, obs_b, {}
 
     @staticmethod
     def _predict_rollout(model, device, loader, td_keys, normaliser=None, **kwargs):
         """Autoregressive rollout generator over the packed tensors. Mirrors the training
         rollout loop: carry the predicted state back into the window. Yields per-batch
-        (preds, obs) dicts of shape (B, horizon), denormalised, one entry per variable."""
+        (preds, obs, filled) dicts, denormalised, one entry per variable: preds and obs of
+        shape (B, horizon + 1), lead 0 being the state the rollout starts from and the init
+        observation (for a diagnostic var: the nowcast, NaN without init_fill); filled of
+        shape (B,) per prognostic, True where the start state is the model's own estimate."""
         prog_keys = td_keys["prognostic_keys"]
         diag_keys = td_keys.get("diagnostic_keys", [])
         nP = len(prog_keys)
         prog_vars = [key[1] for key in prog_keys]
-        diag_vars = [key[1] for key in diag_keys]
+        # A diagnostic copy of a prognostic (the joint head) gets its own label in the store.
+        diag_vars = [f"{key[1]}_diag" if key in prog_keys else key[1] for key in diag_keys]
+        source_var = dict(zip(diag_vars, [key[1] for key in diag_keys]))
+        source_var.update({var: var for var in prog_vars})
         all_vars = prog_vars + diag_vars
 
         lookback = kwargs.get("lookback", 0)
         horizon = kwargs.get("horizon", 0)  # reads the modality-overwritten horizon, not infer.yaml
+        diagnostic_history = getattr(model.model, "diagnostic_history", True)
+        history_channels = [d for d, key in enumerate(diag_keys) if key not in prog_keys]  # not prognostics as well
+
+        # init_fill: gated = inits without an observation start from the nowcast; always = every
+        # init starts from it. nowcast: history = window ending at t0-1 with the forcings at t0
+        # (the lead-1 diagnostic one hour early, any joint model); analysis = window ending at t0
+        # with the init observation inside it (models trained with init_fill gated or always).
+        init_fill = kwargs.get("init_fill", "none")
+        nowcast = kwargs.get("nowcast", "history")
+        if init_fill not in ("none", "gated", "always"):
+            raise ValueError(f"init_fill must be none, gated or always, got {init_fill!r}")
+        if init_fill == "always" and nowcast != "analysis":
+            raise ValueError("init_fill=always needs the analysis nowcast (a model trained with init_fill)")
+        # For each prognostic, the output channel of its diagnostic copy (the nowcast).
+        fill_channels = [(c, nP + diag_keys.index(key)) for c, key in enumerate(prog_keys) if key in diag_keys]
+        if init_fill != "none" and len(fill_channels) < nP:
+            raise ValueError("init_fill needs a diagnostic copy of every prognostic (conf/data/*_joint.yaml)")
+        nowcast_start = 1 if nowcast == "analysis" else 0  # first window hour of the nowcast forward
 
         with torch.no_grad():
             for batch in tqdm(loader, desc="Predicting (rollout)"):
@@ -392,11 +475,43 @@ class Forecast:
                 X_dyn_ctx = batch["X_dyn_ctx"]
 
                 state_rollout = y_prog.clone()
+                history_diag = None
+                if diagnostic_history and history_channels:  # the diagnostics' observed past; their future is unknown
+                    history_diag = y_prog[..., nP:][..., history_channels].clone()
+                    history_diag[:, lookback + 1 :] = float("nan")
                 batch_preds = {var: [] for var in all_vars}
                 batch_obs = {var: [] for var in all_vars}
 
+                # ---------- lead 0: the state the rollout starts from ----------
+                observed_init = y_prog[:, lookback, ..., :nP]
+                start_state = observed_init.clone()
+                filled = torch.zeros_like(observed_init, dtype=torch.bool)
+                nowcast = None
+                if init_fill != "none":
+                    window = _state_window(state_rollout, history_diag, nowcast_start, lookback, nP)
+                    with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+                        out0 = model.model(
+                            window, X_dyn_ctx[:, nowcast_start : lookback + nowcast_start], X_dyn[:, lookback]
+                        )
+                    nowcast = out0.float()
+                    for c, d in fill_channels:
+                        missing = torch.isnan(observed_init[..., c])
+                        filled[..., c] = missing if init_fill == "gated" else torch.ones_like(missing)
+                        start_state[..., c] = torch.where(filled[..., c], nowcast[..., d], observed_init[..., c])
+                    state_rollout[:, lookback, ..., :nP] = start_state  # prior and window end of step 1
+
+                for c, var in enumerate(prog_vars):
+                    batch_preds[var].append(start_state[..., c].squeeze((-2, -1)))
+                    batch_obs[var].append(observed_init[..., c].squeeze((-2, -1)))
+                for c, var in enumerate(diag_vars):
+                    target0 = y_prog[:, lookback, ..., nP + c]
+                    lead0 = nowcast[..., nP + c] if nowcast is not None else torch.full_like(target0, float("nan"))
+                    batch_preds[var].append(lead0.squeeze((-2, -1)))
+                    batch_obs[var].append(target0.squeeze((-2, -1)))
+
+                # ---------- leads 1..H ----------
                 for t in range(1, horizon + 1):
-                    state_window = state_rollout[:, t : lookback + t, ..., :nP]
+                    state_window = _state_window(state_rollout, history_diag, t, lookback, nP)
                     with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
                         out = model.model(state_window, X_dyn_ctx[:, t : lookback + t], X_dyn[:, lookback + t])
 
@@ -422,8 +537,9 @@ class Forecast:
                     p = torch.stack(batch_preds[var], dim=1).cpu().numpy()
                     o = torch.stack(batch_obs[var], dim=1).cpu().numpy()
                     if normaliser:
-                        p = normaliser.denormalise(p, var)
-                        o = normaliser.denormalise(o, var)
+                        p = normaliser.denormalise(p, source_var[var])
+                        o = normaliser.denormalise(o, source_var[var])
                     preds_b[var] = p
                     obs_b[var] = o
-                yield preds_b, obs_b
+                filled_b = {var: filled[..., c].squeeze((-2, -1)).cpu().numpy() for c, var in enumerate(prog_vars)}
+                yield preds_b, obs_b, filled_b

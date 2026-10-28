@@ -6,12 +6,28 @@ from deep_lst.models.transformer.tokenizer import Tokenizer
 
 
 class Transformer(nn.Module):
-    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config, static_spec=None):
+    def __init__(
+        self,
+        n_prognostic,
+        n_diagnostic,
+        n_input,
+        n_forcing_context,
+        lookback,
+        config,
+        static_spec=None,
+        n_diagnostic_history=None,
+    ):
         super().__init__()
 
         self.n_prognostic = n_prognostic
         self.lookback = lookback
         self.target_size = n_prognostic + n_diagnostic
+        # With diagnostic_history (default) the window also carries the observed past of the
+        # diagnostics that are not prognostics as well (n_diagnostic_history of them), hidden from
+        # t0+1 on by the loss and the inference loop.
+        self.diagnostic_history = config.get("diagnostic_history", True)
+        n_history = n_diagnostic if n_diagnostic_history is None else n_diagnostic_history
+        n_window = n_prognostic + n_history if self.diagnostic_history else n_prognostic
 
         # Same static block as the MLP, applied to the query token's forcing vector, so both
         # backbones see an identical feature vector (models/static_embeddings.py).
@@ -25,7 +41,7 @@ class Transformer(nn.Module):
 
         self.dropout_p = config["dropout"]
 
-        self.tokenizer = Tokenizer(n_forcing_context, n_prognostic, self.input_size, self.d_model)
+        self.tokenizer = Tokenizer(n_forcing_context, n_window, self.input_size, self.d_model)
         self.positional_encoding = PositionalEncoding(lookback + 1, self.d_model)
 
         # local template only: nn.TransformerEncoder deep-copies it n_layers times,

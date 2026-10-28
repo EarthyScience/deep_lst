@@ -185,6 +185,8 @@ def main(cfg: DictConfig) -> None:
         teacher_forcing_loss=config["model"].get("teacher_forcing_loss", True),
         incremental_loss=config["model"].get("incremental_loss", False),
         rollout_loss=config["model"].get("rollout_loss", True),
+        init_fill=config["model"].get("init_fill", "none"),
+        init_hide_fraction=config["model"].get("init_hide_fraction", 0.5),
     )
 
     state = torch.load(ckpt_path, map_location="cpu")

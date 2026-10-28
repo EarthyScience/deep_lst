@@ -148,6 +148,42 @@ def attach_coverage(initilised, obs, lookback):
     return initilised
 
 
+def attach_init_observation(initilised, obs, lookback, forecast=None):
+    """Per (init, pixel): init_observed (an observation exists at the init hour), hours_since_obs
+    (hours since the last one at or before init within the lookback; NaN when the whole lookback
+    is cloudy) and init_filled (the rollout started from the model's own estimate, init_fill).
+    The init observation and the filled flag are read from the store's lead 0 when it has them
+    (uniform lead-0 layout); older stores derive the observation from the observation series
+    (then the first init counts as unobserved, the series starts one hour after it) and get
+    init_filled False. Runs that need an observation at init have init_observed True wherever a
+    forecast exists, so their observed-init window reproduces their plain scores."""
+    init_times = initilised["init"].values
+    window_times = init_times[:, None] + np.arange(-lookback, 1)[None, :] * np.timedelta64(1, "h")
+
+    observed = payload(obs).values
+    times = obs["valid_time"].values if "valid_time" in obs.coords else obs["time"].values
+    gathered = hourly_gather(times, observed, window_times)  # (init, lookback + 1, pixel)
+    finite = np.isfinite(gathered)
+
+    init_filled = np.zeros((finite.shape[0], finite.shape[2]), dtype=bool)
+    if forecast is not None:
+        lead0_obs = forecast["LST_obs"].isel(lead_time=0).values
+        if np.isfinite(lead0_obs).any():  # the store carries the init observation itself
+            finite[:, -1] = np.isfinite(lead0_obs)
+        if "LST_init_filled" in forecast:
+            init_filled = forecast["LST_init_filled"].values.astype(bool)
+
+    positions = np.arange(lookback + 1)[None, :, None]
+    last_position = np.where(finite, positions, -1).max(axis=1)  # (init, pixel); -1 = none
+    hours_since_obs = (lookback - last_position).astype(np.float32)
+    hours_since_obs[last_position < 0] = np.nan
+
+    initilised = initilised.assign_coords(init_observed=(("init", "pixel"), finite[:, -1]))
+    initilised = initilised.assign_coords(hours_since_obs=(("init", "pixel"), hours_since_obs))
+    initilised = initilised.assign_coords(init_filled=(("init", "pixel"), init_filled))
+    return initilised
+
+
 def attach_init_state(initilised, state_path, variables=("relative_greenness",)):
     """States of each pixel on its init day from a (site, time) asset file
     (assets/static/fvc_init_state_<selection>.nc from scripts/assets/fvc_init_state.py, or

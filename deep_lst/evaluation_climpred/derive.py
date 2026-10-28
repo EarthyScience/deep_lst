@@ -258,3 +258,64 @@ def derive_verif_products(args):
     pooled.to_netcdf(scores_dir / "skill_daily.nc")
 
     return out, pooled, fc_limit, pixel_daily
+
+
+def _by_valid_hour(field, solar_offset):
+    """(init_hour, lead[, ...]) -> (valid_hour, lead[, ...]). The UTC hour of the valid time
+    is init hour + lead mod 24, so every valid hour collects the (init hour, lead) pairs
+    that reach it; NaN at the leads no init hour reaches. The `solar_hour` coordinate adds
+    the region's longitude offset, for colouring."""
+    init_hours = field["init_hour"].values
+    leads = field["lead"].values
+    valid_hours = np.arange(24)
+    needed_init = (valid_hours[:, None] - leads[None, :]) % 24
+    reachable = np.isin(needed_init, init_hours)
+    init_position = np.searchsorted(init_hours, np.where(reachable, needed_init, init_hours[0]))
+    lead_position = np.broadcast_to(np.arange(leads.size), needed_init.shape)
+    other_dims = [dim for dim in field.dims if dim not in ("init_hour", "lead")]
+    values = field.transpose("init_hour", "lead", *other_dims).values[init_position, lead_position]
+    values = np.where(reachable.reshape(reachable.shape + (1,) * len(other_dims)), values, np.nan)
+    coords = {dim: field[dim].values for dim in other_dims}
+    coords["valid_hour"] = valid_hours
+    coords["lead"] = leads
+    coords["solar_hour"] = ("valid_hour", (valid_hours + solar_offset) % 24)
+    return xr.DataArray(values, dims=["valid_hour", "lead", *other_dims], coords=coords)
+
+
+def solar_hour_scores(by_init, solar_offset):
+    """Error growth and skill by lead, one series per hour of the valid time, pooled over
+    the inits: the hourly curve of skill.nc without the diurnal cycle folded into it. Each
+    valid hour is reached by one init hour per day, so on the 6-hourly init grid a series
+    has a point every sixth lead, and the pooled curve is the count-weighted mix of the
+    four series reaching a lead.
+
+    `by_init` is the by_init.nc product of one window, `solar_offset` the region's mean
+    longitude / 15 in hours. Meaningful for regions compact in longitude only, where the
+    pixels share one offset (the continental sets mix solar hours within a UTC hour).
+    -> (valid_hour, lead[, baseline]) with the coordinate solar_hour, plus the pooled
+    curves over all hours."""
+    init_hour = by_init["init"].dt.hour.rename("init_hour")
+    counts = by_init["n"]
+    mse_model = pooled_mean(by_init["mse_model"], counts, dim="init", group=init_hour)
+    mse_baseline = pooled_mean(by_init["mse_baseline"], counts, dim="init", group=init_hour)
+    rmse_model = np.sqrt(_by_valid_hour(mse_model, solar_offset))
+    rmse_baseline = np.sqrt(_by_valid_hour(mse_baseline, solar_offset))
+    rmse_model_pooled = np.sqrt(pooled_mean(by_init["mse_model"], counts, dim="init"))
+    rmse_baseline_pooled = np.sqrt(pooled_mean(by_init["mse_baseline"], counts, dim="init"))
+    return xr.Dataset(
+        {
+            "rmse_model": rmse_model,
+            "rmse_ss": 1.0 - rmse_model / rmse_baseline,
+            "rmse_model_pooled": rmse_model_pooled,
+            "rmse_ss_pooled": 1.0 - rmse_model_pooled / rmse_baseline_pooled,
+        }
+    )
+
+
+def solar_hour_month_scores(by_init, solar_offset):
+    """solar_hour_scores per month of the init -- not of the valid time, so every series
+    rests on one fixed set of forecasts along the lead. -> extra dim month (1-12)."""
+    init_month = by_init["init"].dt.month.values
+    months = np.unique(init_month)
+    per_month = [solar_hour_scores(by_init.isel(init=init_month == month), solar_offset) for month in months]
+    return xr.concat(per_month, dim="month").assign_coords(month=months)

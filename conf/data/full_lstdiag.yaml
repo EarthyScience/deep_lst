@@ -1,10 +1,9 @@
 # @package _global_
-# v18 no. 4: LST as the only diagnostic, no prognostic, no LST history. The model regresses
-# LST at t0+h from the drivers' window, the drivers at t0+h and the statics (inputs as
-# noera5static, the v18 baseline). seviri context_vars is empty on purpose: LST would
-# otherwise enter the forcing-context window, which carries no validity mask.
-# Same modality_ids/load as full -> reuses its preload cache; only the model roles change.
-_data: noera5static_lstdiag
+# v18 no. 4: LST as the only diagnostic, no prognostic: the diagnostic regression, an immediate
+# estimate at every lead with the LST history as context (model.diagnostic_history) and the
+# inputs of full, the v18 baseline. seviri context_vars is empty on purpose: LST would otherwise
+# enter the forcing-context window, which carries no validity mask. Shares full's preload cache.
+_data: full_lstdiag
 
 train_dataset:
   era5:
