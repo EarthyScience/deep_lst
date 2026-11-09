@@ -6,7 +6,6 @@ import pandas as pd
 import torch
 import xarray as xr
 import zarr
-from eodata.grids import T1H
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -85,6 +84,8 @@ class Forecast:
         so each flush writes whole init_time chunks. Memory stays bounded at ~one batch
         plus a sub-init_time carry buffer, independent of the dataset size.
         """
+        from eodata.grids import T1H
+
         predict_dispatch = {
             "DiagnosticMSE": self._predict_diagnostic,
             "DiagnosticCRPS": self._predict_diagnostic,
