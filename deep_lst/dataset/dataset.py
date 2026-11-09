@@ -14,6 +14,7 @@ from eodata.sample import Mask, mask_name
 from tensordict import TensorDict
 from torch.utils.data import Dataset
 
+from deep_lst.dataset.transforms import with_transform
 from deep_lst.utils import features
 from deep_lst.utils.io import ExperimentPaths, load_computed_stats, stats_spatial
 from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
@@ -44,13 +45,6 @@ PATHS = ExperimentPaths()
 STORE_EPOCH_OFFSET = T1H.date_to_index("2016-01-01")  # 403224 hours = 16801 days
 PRELOAD_START_DAY = STORE_EPOCH_OFFSET // 24  # 2016-01-01
 PRELOAD_END_DAY = T1H.date_to_index("2026-01-01") // 24  # exclusive
-
-
-def _spatial_idx_from_npz(path) -> np.ndarray:
-    # Non-preload fallback: base zarrs have no spatial_idx array, so derive it from the npz.
-    data = np.load(path)
-    order = np.argsort(data["src_indices"], kind="stable")
-    return data["mapping"][order]
 
 
 def load_samples(
@@ -314,12 +308,16 @@ class MultimodalDataset(Dataset):
         return self.samples
 
     def _add_computed(self, channels, modality, lonlat, hour, lookback, horizon):
-        """Attach computed features: solar_zenith per grid; doy/hod only on the anchor modality."""
+        """Attach computed features: solar_zenith + hod per grid; doy only on the anchor modality.
+
+        Only solar_zenith is standardised; the cyclic cos/sin encodings stay raw in [-1, 1].
+        """
         hours = np.arange(hour - lookback, hour + horizon + 1)
-        zenith = features.solar_zenith(float(lonlat[1]), float(lonlat[0]), hours)
+        solar = features.solar_features(float(lonlat[1]), float(lonlat[0]), hours)
         mean, std = self.computed_stats[modality]["solar_zenith"]
-        zenith = (zenith - mean) / std
-        channels["solar_zenith"] = torch.as_tensor(zenith, dtype=torch.float32).reshape(-1, 1, 1, 1)
+        solar["solar_zenith"] = (solar["solar_zenith"] - mean) / std
+        for name, values in solar.items():
+            channels[name] = torch.as_tensor(values, dtype=torch.float32).reshape(-1, 1, 1, 1)
         if modality == _ANCHOR_MODALITY:
             for name, values in features.time_features(hours).items():
                 channels[name] = torch.as_tensor(values, dtype=torch.float32).reshape(-1, 1, 1, 1)
@@ -405,6 +403,10 @@ class MultimodalDataset(Dataset):
                 for modality in modality_ids
             },
         }
+        for modality in modality_ids:
+            transform = kwargs[modality].get("transform")
+            if transform is not None:  # only when set, so caches built before the key existed stay valid
+                fingerprint_spec["modalities"][modality]["transform"] = transform
         fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True).encode()).hexdigest()[:16]
         cache_path = PATHS.preload_cache_path(fingerprint, spatial_name)
         if cache_path.exists():
@@ -435,6 +437,7 @@ class MultimodalDataset(Dataset):
             normalizer = ModalityNormalizer.from_spec(
                 f"zscore:{PATHS.stats_zarr_path(modality, stats_tag)}", reader.schema
             )
+            normalizer = with_transform(normalizer, kwargs[modality].get("transform"))
             # Channel indices of the config variables within each data type's full store variable order.
             select = {
                 data_type: [list(getattr(reader, DATA_TYPES[data_type]).dtype.fields).index(var) for var in names]

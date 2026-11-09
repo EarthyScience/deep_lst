@@ -9,6 +9,8 @@ train_dataset:
     horizon: 12
   seviri:
     horizon: 12
+  glofas_v4:
+    horizon: 12
 
 val_dataset:
   era5:
@@ -17,6 +19,8 @@ val_dataset:
     horizon: 12
   seviri:
     horizon: 12
+  glofas_v4:
+    horizon: 12
 
 test_dataset:
   era5:
@@ -24,4 +28,6 @@ test_dataset:
   era5_land:
     horizon: 12
   seviri:
+    horizon: 12
+  glofas_v4:
     horizon: 12

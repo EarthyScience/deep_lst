@@ -7,8 +7,17 @@ import yaml
 
 from deep_lst.utils.io import ExperimentPaths
 
-from .cubes import anomaly_ensemble, attach_classes, attach_coverage, baseline_cube, obs_series, prepare_initialised
-from .masks import MASKS, register_month_windows, stack_windows
+from .cubes import (
+    anomaly_ensemble,
+    attach_classes,
+    attach_coverage,
+    attach_init_observation,
+    attach_init_state,
+    baseline_cube,
+    obs_series,
+    prepare_initialised,
+)
+from .masks import MASKS, MONTHLY_WINDOWS, register_month_windows, stack_windows
 
 VERIFY_KWARGS = {"metric": "mse", "comparison": "e2o", "alignment": "maximize", "skipna": True}
 
@@ -55,7 +64,8 @@ def lookback_hours(paths, experiment, version):
     return max(found)
 
 
-def build_parser():
+def build_parser(extra_windows=()):
+    """extra_windows: window names a verifier computes itself, beyond the masks (verif_cell's "amplitude")."""
     parser = argparse.ArgumentParser(description="Verify model and baselines with climpred.")
     parser.add_argument("--experiment", type=str, required=True, help="Experiment name (results/<experiment>/...).")
     parser.add_argument("--version", type=str, default="version_0", help="Experiment version.")
@@ -66,9 +76,17 @@ def build_parser():
         help="Eval name (results subfolder holding forecast.zarr); the spatial selection is derived from it.",
     )
     parser.add_argument(
+        "--init_fill",
+        type=str,
+        default=None,
+        choices=["none", "gated", "always"],
+        help="Verify the store of an inference whose init_fill deviated from the trained one "
+        "(forecast_<init_fill>.zarr); outputs go to <kind>_<init_fill>.",
+    )
+    parser.add_argument(
         "--windows",
         nargs="+",
-        choices=list(MASKS),
+        choices=list(MASKS) + list(extra_windows),
         default=["all", "day", "night"],
         help="Solar windows to stack along the 'window' dim; one shared verify pass.",
     )
@@ -81,6 +99,11 @@ def build_parser():
         metavar="M",
         help="Months to filter by (1-12); if given, the 'month' mask is applied.",
     )
+    parser.add_argument(
+        "--monthly",
+        action="store_true",
+        help="Add the twelve single-month windows m01-m12 (month-by-month maps); verif_pixel then writes by_pixel_monthly.nc.",
+    )
     return parser
 
 
@@ -92,28 +115,47 @@ def baseline_files(paths, spatial):
     }
 
 
-def setup_verif():
-    args = build_parser().parse_args()
+def setup_verif(extra_windows=()):
+    args = build_parser(extra_windows).parse_args()
     args.windows = args.windows + register_month_windows(args.months)
+    if args.monthly:
+        args.windows = args.windows + MONTHLY_WINDOWS
     args.paths = ExperimentPaths()
     args.spatial = args.paths.baseline_spatial(args.eval_name)
+    args.suffix = f"_{args.init_fill}" if getattr(args, "init_fill", None) else ""
 
-    forecast = xr.open_dataset(args.paths.forecast_path(args.experiment, args.version, args.eval_name))
+    forecast = xr.open_dataset(args.paths.forecast_path(args.experiment, args.version, args.eval_name, args.suffix))
     initilised = prepare_initialised(forecast)
     initilised = attach_classes(initilised, args.paths.spatial_indices_path(args.spatial))
     obs = obs_series(forecast)
     lookback = lookback_hours(args.paths, args.experiment, args.version)
     initilised = attach_coverage(initilised, obs, lookback)
+    initilised = attach_init_observation(initilised, obs, lookback, forecast)
+    state_path = args.paths.assets_root / "static" / f"fvc_init_state_{args.spatial}.nc"
+    if state_path.exists():  # only the selections with a state file get the greenness windows
+        initilised = attach_init_state(initilised, state_path, variables=None)  # greenness + lookback states
+    hydro_path = args.paths.assets_root / "static" / f"hydro_init_state_{args.spatial}.nc"
+    if hydro_path.exists():  # hydrological states at init (wetness, ...) as coords for the per-cell product
+        initilised = attach_init_state(initilised, hydro_path, variables=None)
     return args, initilised, obs
 
 
 def verification_dir(args, kind):
-    return args.paths.verification_dir(args.experiment, args.version, args.eval_name, kind)
+    return args.paths.verification_dir(
+        args.experiment, args.version, args.eval_name, kind + getattr(args, "suffix", "")
+    )
 
 
 def build_ensembles(args, initilised, obs):
     files = baseline_files(args.paths, args.spatial)
     cubes = np.stack([baseline_cube(path, initilised) for path in files.values()])
+    # Score the baselines on the model's samples only. The rollout issues no forecast from a
+    # cloudy init hour (NaN seed state), so without this mask climpred averages each baseline
+    # over every observed hour -- a superset the model is never scored on -- and the skill
+    # score compares two different sample sets. Climatology and persistence are valid wherever
+    # the model is, so their sample set becomes identical to the model's and the joint counts
+    # (per_init_counts / per_pixel_counts) remain the exact pooling weights.
+    cubes = np.where(np.isfinite(initilised["LST"].values), cubes, np.nan)
     baseline_init = xr.Dataset(
         {"LST": (("baseline", "init", "lead", "pixel"), cubes)},
         coords=dict(initilised.coords) | {"baseline": list(files)},

@@ -79,14 +79,22 @@ def obs_cube(obs, initilised):
     return xr.DataArray(cube, dims=("init", "lead", "pixel"), coords=initilised.coords)
 
 
-def anomaly_ensemble(initilised, obs, clim_path, windows):
-    """Anomalies w.r.t. the smoothed climatology on both sides, for the centered ACC."""
+def anomaly_pair(initilised, obs, clim_path):
+    """Forecast and obs anomalies w.r.t. the smoothed climatology: the forecast as an
+    (init, lead, pixel) cube, the obs as a continuous (time, pixel) series."""
     clim = baseline_cube(clim_path, initilised)
-    anomaly_init = initilised.copy()
-    anomaly_init["LST"] = initilised["LST"] - clim
+    anomaly_forecast = initilised["LST"] - clim
     clim_series = xr.open_dataset(clim_path)
     clim_obs = payload(clim_series).rename({"valid_time": "time"})
     anomaly_obs = (obs["LST"] - clim_obs).to_dataset(name="LST")
+    return anomaly_forecast, anomaly_obs
+
+
+def anomaly_ensemble(initilised, obs, clim_path, windows):
+    """Anomalies w.r.t. the smoothed climatology on both sides, for the centered ACC."""
+    anomaly_forecast, anomaly_obs = anomaly_pair(initilised, obs, clim_path)
+    anomaly_init = initilised.copy()
+    anomaly_init["LST"] = anomaly_forecast
     return stack_windows(anomaly_init, windows), anomaly_obs
 
 
@@ -97,7 +105,26 @@ def attach_classes(initilised, npz_path):
     order = np.argsort(npz["src_indices"], kind="stable")
     initilised = initilised.assign_coords(kg_class=("pixel", npz["kg_classes"][order]))
     initilised = initilised.assign_coords(lc_class=("pixel", npz["modis_lc_classes"][order]))
+    if "fvc_classes" in npz.files:  # annual-mean FVC decile, written by scripts/assets/fvc_site_classes.py
+        initilised = initilised.assign_coords(fvc_class=("pixel", npz["fvc_classes"][order]))
     return initilised
+
+
+def pixel_attributes(npz_path):
+    """Per-pixel FVC (annual mean + decile) and landcover class in forecast pixel order, for
+    the FVC scatter; None when the selection npz predates scripts/assets/fvc_site_classes.py."""
+    npz = np.load(npz_path)
+    if "fvc_classes" not in npz.files:
+        return None
+    order = np.argsort(npz["src_indices"], kind="stable")
+    attributes = {
+        "fvc_mean": npz["fvc_annual_mean"][order],
+        "fvc_class": npz["fvc_classes"][order],
+        "lc_class": npz["modis_lc_classes"][order],
+    }
+    if "lst_validity_annual_mean" in npz.files:
+        attributes["lst_validity"] = npz["lst_validity_annual_mean"][order]
+    return attributes
 
 
 def attach_coverage(initilised, obs, lookback):
@@ -118,4 +145,61 @@ def attach_coverage(initilised, obs, lookback):
 
     initilised = initilised.assign_coords(lookback_coverage=(("init", "pixel"), coverage))
 
+    return initilised
+
+
+def attach_init_observation(initilised, obs, lookback, forecast=None):
+    """Per (init, pixel): init_observed (an observation exists at the init hour), hours_since_obs
+    (hours since the last one at or before init within the lookback; NaN when the whole lookback
+    is cloudy) and init_filled (the rollout started from the model's own estimate, init_fill).
+    The init observation and the filled flag are read from the store's lead 0 when it has them
+    (uniform lead-0 layout); older stores derive the observation from the observation series
+    (then the first init counts as unobserved, the series starts one hour after it) and get
+    init_filled False. Runs that need an observation at init have init_observed True wherever a
+    forecast exists, so their observed-init window reproduces their plain scores."""
+    init_times = initilised["init"].values
+    window_times = init_times[:, None] + np.arange(-lookback, 1)[None, :] * np.timedelta64(1, "h")
+
+    observed = payload(obs).values
+    times = obs["valid_time"].values if "valid_time" in obs.coords else obs["time"].values
+    gathered = hourly_gather(times, observed, window_times)  # (init, lookback + 1, pixel)
+    finite = np.isfinite(gathered)
+
+    init_filled = np.zeros((finite.shape[0], finite.shape[2]), dtype=bool)
+    if forecast is not None:
+        lead0_obs = forecast["LST_obs"].isel(lead_time=0).values
+        if np.isfinite(lead0_obs).any():  # the store carries the init observation itself
+            finite[:, -1] = np.isfinite(lead0_obs)
+        if "LST_init_filled" in forecast:
+            init_filled = forecast["LST_init_filled"].values.astype(bool)
+
+    positions = np.arange(lookback + 1)[None, :, None]
+    last_position = np.where(finite, positions, -1).max(axis=1)  # (init, pixel); -1 = none
+    hours_since_obs = (lookback - last_position).astype(np.float32)
+    hours_since_obs[last_position < 0] = np.nan
+
+    initilised = initilised.assign_coords(init_observed=(("init", "pixel"), finite[:, -1]))
+    initilised = initilised.assign_coords(hours_since_obs=(("init", "pixel"), hours_since_obs))
+    initilised = initilised.assign_coords(init_filled=(("init", "pixel"), init_filled))
+    return initilised
+
+
+def attach_init_state(initilised, state_path, variables=("relative_greenness",)):
+    """States of each pixel on its init day from a (site, time) asset file
+    (assets/static/fvc_init_state_<selection>.nc from scripts/assets/fvc_init_state.py, or
+    hydro_init_state_<selection>.nc from hydro_init_state.py) as (init, pixel) coords named
+    like the variables; NaN where the state is unknown, so the init drops out of every state
+    window but stays in all/day/night. variables=None attaches every data variable of the file."""
+    state = xr.open_dataset(state_path)
+    # Positional alignment, like attach_classes: the forecast pixels and the state file's sites
+    # both follow the sorted src_indices order (the forecast's pixel coordinate is a plain
+    # 0..N-1 position, not the MTG ids, so the values themselves cannot be compared).
+    if state.sizes["site"] != initilised.sizes["pixel"]:
+        raise ValueError(f"{state_path}: {state.sizes['site']} sites but {initilised.sizes['pixel']} forecast pixels")
+    init_days = initilised["init"].values.astype("datetime64[D]")
+    if variables is None:
+        variables = list(state.data_vars)
+    for variable in variables:
+        values = state[variable].reindex(time=init_days).values  # (pixel, init), NaN outside the file's year
+        initilised = initilised.assign_coords({variable: (("init", "pixel"), values.T)})
     return initilised

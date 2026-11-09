@@ -1,0 +1,7 @@
+# @package _global_
+eval_name: eval_mtg
+
+test_dataset:
+  spatial: eval_mtg         # 400-site MTG training-distribution holdout
+  temporal: test
+  anchor: mtg

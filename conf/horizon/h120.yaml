@@ -1,0 +1,33 @@
+# @package _global_
+
+_horizon: h120
+
+train_dataset:
+  era5:
+    horizon: 120
+  era5_land:
+    horizon: 120
+  seviri:
+    horizon: 120
+  glofas_v4:
+    horizon: 120
+
+val_dataset:
+  era5:
+    horizon: 120
+  era5_land:
+    horizon: 120
+  seviri:
+    horizon: 120
+  glofas_v4:
+    horizon: 120
+
+test_dataset:
+  era5:
+    horizon: 120
+  era5_land:
+    horizon: 120
+  seviri:
+    horizon: 120
+  glofas_v4:
+    horizon: 120

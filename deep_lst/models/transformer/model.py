@@ -6,12 +6,28 @@ from deep_lst.models.transformer.tokenizer import Tokenizer
 
 
 class Transformer(nn.Module):
-    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config, static_spec=None):
+    def __init__(
+        self,
+        n_prognostic,
+        n_diagnostic,
+        n_input,
+        n_forcing_context,
+        lookback,
+        config,
+        static_spec=None,
+        n_diagnostic_history=None,
+    ):
         super().__init__()
 
         self.n_prognostic = n_prognostic
         self.lookback = lookback
         self.target_size = n_prognostic + n_diagnostic
+        # With diagnostic_history (default) the window also carries the observed past of the
+        # diagnostics that are not prognostics as well (n_diagnostic_history of them), hidden from
+        # t0+1 on by the loss and the inference loop.
+        self.diagnostic_history = config.get("diagnostic_history", True)
+        n_history = n_diagnostic if n_diagnostic_history is None else n_diagnostic_history
+        n_window = n_prognostic + n_history if self.diagnostic_history else n_prognostic
 
         # Same static block as the MLP, applied to the query token's forcing vector, so both
         # backbones see an identical feature vector (models/static_embeddings.py).
@@ -25,7 +41,7 @@ class Transformer(nn.Module):
 
         self.dropout_p = config["dropout"]
 
-        self.tokenizer = Tokenizer(n_forcing_context, n_prognostic, self.input_size, self.d_model)
+        self.tokenizer = Tokenizer(n_forcing_context, n_window, self.input_size, self.d_model)
         self.positional_encoding = PositionalEncoding(lookback + 1, self.d_model)
 
         # local template only: nn.TransformerEncoder deep-copies it n_layers times,
@@ -42,7 +58,17 @@ class Transformer(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.n_layers)
         self.head = nn.Linear(self.d_model, n_prognostic + n_diagnostic)
 
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(lookback + 1)
+        # causal: token t attends to tokens <= t. The query token is last and sees the whole
+        # window either way, so the mask only restricts how the history tokens build their
+        # own representations in layers 1..n_layers-1. full: bidirectional over the window
+        # (a None buffer is passed as mask=None below).
+        attention = config.get("attention", "causal")
+        if attention == "causal":
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(lookback + 1)
+        elif attention == "full":
+            causal_mask = None
+        else:
+            raise ValueError(f"model.attention must be 'causal' or 'full', got {attention!r}")
         self.register_buffer("causal_mask", causal_mask)
 
     def name(self):

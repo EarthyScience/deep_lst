@@ -1,13 +1,16 @@
+import calendar
+
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import BoundaryNorm, Normalize
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap, Normalize
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from .masks import KG_GROUPS
+from .masks import KG_GROUPS, LC_GROUPS, MONTHLY_WINDOWS
 
 # Baseline hues, muted so the regime hues of the summary figures lead. Checked
 # 2026-09-16: contrast on white 6.9 / 4.1 / 4.4; min pairwise dE 36 (normal vision),
@@ -49,7 +52,13 @@ REGION_STYLES = {
     "kg_arid": ("Arid", "#b8860b", "#725306"),
     "kg_temperate": ("Temperate", "#7b3294", "#4c1f5b"),
 }
-REGION_COLORS = {label: color for label, color, dark in REGION_STYLES.values()}
+# The styles the summary and bar figures draw their groups with: the regimes plus the
+# whole-domain "All" group (window 'all') they fall back to when no regime window was
+# verified (dense case studies, holdouts). Kept apart from REGION_STYLES, whose keys
+# evaluate uses to detect the regime windows.
+GROUP_STYLES = dict(REGION_STYLES)
+GROUP_STYLES["all"] = ("All", "#404040", "#1a1a1a")
+REGION_COLORS = {label: color for label, color, dark in GROUP_STYLES.values()}
 # Column order of the per-regime example forecasts.
 REGIME_COLUMNS = ("kg_arid", "kg_tropical", "kg_temperate")
 
@@ -73,6 +82,28 @@ def apply_print_style():
     plt.rcParams.update(PRINT_RC)
 
 
+# Text sizes of the per-pixel maps -- the static pixel_map figures and the gif frames
+# alike: smaller than PRINT_RC so the panels get the space, on paper and on a slide.
+MAP_RC = {
+    "font.size": 11,
+    "axes.titlesize": 14,
+    "figure.titlesize": 16,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+}
+MAP_PANEL_INCHES = 7.0
+# Colorbar labels of the per-pixel maps by variable (map_scale's names); the skill maps
+# name their baseline at the call site.
+MAP_LABELS = {
+    "rmse": "RMSE [K]",
+    "nrmse": "Normalised RMSE [%]  (RMSE / 5-95 % range of the site)",
+    "bias": "Bias [K]  (forecast − observed)",
+    "nse": "Nash-Sutcliffe efficiency",
+    "acc": "Anomaly correlation",
+}
+EFFICIENCY_CMAP = "YlGnBu"  # the efficiencies: dark = close to the perfect score of 1
+
+
 def _map_extent(lon, lat, margin_fraction=0.005):
     """Extent hugging the drawn pixels: continent-wide for the training selections,
     the tile itself for a dense box region. The margin is a fraction of the span,
@@ -84,13 +115,13 @@ def _map_extent(lon, lat, margin_fraction=0.005):
     return [lon_low - margin, lon_high + margin, lat_low - margin, lat_high + margin]
 
 
-def _map_ax(ax, extent):
-    """Coastlines and borders, no frame; lon/lat labels on the left and bottom only."""
+def _map_ax(ax, extent, label_sides=("left", "bottom")):
+    """Coastlines and borders, no frame; lon/lat labels on `label_sides` only."""
     ax.coastlines(lw=0.5)
     ax.add_feature(cfeature.BORDERS, lw=0.3, edgecolor="grey")
     ax.set_extent(extent, crs=ccrs.PlateCarree())
     ax.spines["geo"].set_visible(False)
-    gridlines = ax.gridlines(draw_labels=["left", "bottom"])
+    gridlines = ax.gridlines(draw_labels=list(label_sides))
     gridlines.xlines = False
     gridlines.ylines = False
     gridlines.xlabel_style = {"size": plt.rcParams["xtick.labelsize"], "color": "#52514e"}
@@ -107,27 +138,31 @@ def _diverging_scale(limit, red_high=False):
     return cmap, Normalize(-limit, limit)
 
 
-def _limit(field, days):
-    """Shared symmetric colour limit across the drawn days."""
-    return float(abs(field.sel(day=days)).quantile(0.98))
+def map_scale(variable, field, limit=None):
+    """Colour map, norm and colorbar extension of a per-pixel map of `variable` over the
+    drawn `field`: viridis from zero for the errors (rmse, nrmse), the diverging scales
+    for the skill (red low) and the bias (red warm), a sequential scale up to the perfect
+    score of 1 for the efficiencies (nse, acc). The data-driven range is the 98th
+    percentile of the drawn values (the 2nd for the efficiencies' floor); `limit`
+    overrides it (shared across the case studies)."""
+    if variable in ("rmse", "nrmse"):
+        high = limit or float(field.quantile(0.98))
+        return plt.get_cmap("viridis"), Normalize(0.0, high), "max"
+    if variable in ("nse", "acc"):
+        low = limit or float(field.quantile(0.02))
+        return plt.get_cmap(EFFICIENCY_CMAP), Normalize(low, 1.0), "min"
+    cmap, norm = _diverging_scale(limit or float(abs(field).quantile(0.98)), red_high=variable == "bias")
+    return cmap, norm, "both"
 
 
-def plot_rmse_maps(field, days, out_dir, suffix):
-    norm = Normalize(0.0, float(field.sel(day=days).quantile(0.98)))
-    _plot_pixel_day_maps(field, days, out_dir, f"_rmse{suffix}", "RMSE [K]", "viridis", norm, "max")
-
-
-def plot_skill_maps(field, days, out_dir, suffix, label, per_day=False, limit=None):
-    """`limit` fixes the colour range (shared across case studies); None = data-driven."""
-    cmap, norm = _diverging_scale(limit or _limit(field, days))
-    _plot_pixel_day_maps(field, days, out_dir, f"_skill{suffix}", label, cmap, norm, "both", per_day)
-
-
-def plot_bias_maps(field, days, out_dir, suffix, per_day=False, limit=None):
-    """`limit` fixes the colour range in K (shared across case studies); None = data-driven."""
-    cmap, norm = _diverging_scale(limit or _limit(field, days), red_high=True)
-    label = "Bias [K]  (forecast − observed)"
-    _plot_pixel_day_maps(field, days, out_dir, f"_bias{suffix}", label, cmap, norm, "both", per_day)
+def plot_pixel_maps(field, days, out_dir, variable, suffix, label=None, limit=None, per_day=False):
+    """The `days` maps of a per-pixel (day, pixel) `field` of `variable` (map_scale's
+    names) on one colour scale, to pixel_map_<variable><suffix>.pdf; the colorbar label
+    defaults to MAP_LABELS, `limit` fixes the colour range (shared across case studies)."""
+    cmap, norm, extend = map_scale(variable, field.sel(day=days), limit)
+    if label is None:
+        label = MAP_LABELS[variable]
+    _plot_pixel_day_maps(field, days, out_dir, f"_{variable}{suffix}", label, cmap, norm, extend, per_day)
 
 
 def _draw_pixel_day(ax, field, day, extent, cmap, norm):
@@ -139,30 +174,69 @@ def _draw_pixel_day(ax, field, day, extent, cmap, norm):
     return sc
 
 
+def draw_pixel_panels(panels, extent, cmap, norm, extend, label, title=None):
+    """`panels` = [(panel title, per-pixel values with lon/lat coords), ...] side by side
+    on one colour scale, the thin horizontal colorbar beneath them. Fixed margins, no
+    tight bbox, so every figure of n panels has the same size and panel placement (the
+    gif frames stack on each other). Latitude labels on the first panel only. Returns
+    the figure; the caller saves and closes it inside the MAP_RC context it drew in."""
+    n_panels = len(panels)
+    fig, axes = plt.subplots(
+        1,
+        n_panels,
+        figsize=(MAP_PANEL_INCHES * n_panels, MAP_PANEL_INCHES + 0.8),
+        subplot_kw={"projection": ccrs.PlateCarree()},
+    )
+    axes_list = list(np.atleast_1d(axes))
+    fig.subplots_adjust(left=0.05, right=0.98, top=0.93, bottom=0.08, wspace=0.04)
+    for index, (ax, (panel_title, values)) in enumerate(zip(axes_list, panels)):
+        label_sides = ("left", "bottom") if index == 0 else ("bottom",)
+        _map_ax(ax, extent, label_sides=label_sides)
+        sc = ax.scatter(values["lon"], values["lat"], c=values, s=8, cmap=cmap, norm=norm, transform=ccrs.PlateCarree())
+        if panel_title:
+            ax.set_title(panel_title)
+    if title:
+        fig.suptitle(title)
+    # A thin bar (fraction) close to the maps (pad): both are taken from the panel
+    # height, and the maps are height-limited at this aspect.
+    fig.colorbar(
+        sc,
+        ax=axes_list,
+        orientation="horizontal",
+        fraction=0.04,
+        shrink=0.5,
+        pad=0.06,
+        aspect=40,
+        extend=extend,
+        format="%.2f",
+        label=label,
+    )
+    return fig
+
+
 def _plot_pixel_day_maps(field, days, out_dir, suffix, label, cmap, norm, extend="neither", per_day=False):
     """The `days` panels side by side on one colour scale (day 1 and the last day are
-    the nowcast and medium-range windows). With `per_day`, also one figure per
-    forecast day on that same scale in out_dir/days/ (2.6 s each -- requested for
-    the total-window skill and bias only)."""
+    the nowcast and medium-range windows), in the gif frame layout (draw_pixel_panels,
+    MAP_RC). With `per_day`, also one figure per forecast day on that same scale in
+    out_dir/days/ (requested for the total-window skill and bias only)."""
     extent = _map_extent(field["lon"], field["lat"])
-    fig, axes = plt.subplots(1, len(days), figsize=(8.5 * len(days), 8), subplot_kw={"projection": ccrs.PlateCarree()})
-    axes_list = list(np.atleast_1d(axes))
-    for ax, day in zip(axes_list, days):
-        sc = _draw_pixel_day(ax, field, day, extent, cmap, norm)
-    fig.colorbar(sc, ax=axes_list, label=label, shrink=0.7, extend=extend, format="%.2f")
-    fig.savefig(out_dir / f"pixel_map{suffix}.pdf", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    if not per_day:
-        return
-    day_dir = out_dir / "days"
-    day_dir.mkdir(exist_ok=True)
-    for day in field["day"].values:
-        fig, ax = plt.subplots(figsize=(8.5, 8), subplot_kw={"projection": ccrs.PlateCarree()})
-        sc = _draw_pixel_day(ax, field, day, extent, cmap, norm)
-        fig.colorbar(sc, ax=ax, label=label, shrink=0.7, extend=extend, format="%.2f")
-        fig.savefig(day_dir / f"pixel_map{suffix}_day{int(day):02d}.pdf", dpi=150, bbox_inches="tight")
+    with plt.rc_context(MAP_RC):
+        panels = []
+        for day in days:
+            panels.append((f"Day {int(day)}", field.sel(day=day)))
+        fig = draw_pixel_panels(panels, extent, cmap, norm, extend, label)
+        fig.savefig(out_dir / f"pixel_map{suffix}.pdf")
         plt.close(fig)
+
+        if not per_day:
+            return
+        day_dir = out_dir / "days"
+        day_dir.mkdir(exist_ok=True)
+        for day in field["day"].values:
+            panels = [(f"Day {int(day)}", field.sel(day=day))]
+            fig = draw_pixel_panels(panels, extent, cmap, norm, extend, label)
+            fig.savefig(day_dir / f"pixel_map{suffix}_day{int(day):02d}.pdf")
+            plt.close(fig)
 
 
 def _draw_forecast_limit(ax, limit_days, horizon, extent):
@@ -214,7 +288,7 @@ def plot_skill_limit_maps(skill_field, limit_days, days, horizon, out_dir, suffi
     to the forecast-limit map with its own colorbar beneath it. The skill scale is
     the one plot_skill_maps uses (same `limit`), so the two figures agree."""
     extent = _map_extent(skill_field["lon"], skill_field["lat"])
-    cmap, norm = _diverging_scale(limit or _limit(skill_field, days))
+    cmap, norm, _ = map_scale("skill", skill_field.sel(day=days), limit)
     fig, axes = plt.subplots(1, 3, figsize=(19, 7), subplot_kw={"projection": ccrs.PlateCarree()})
     for ax, day in zip(axes[:2], days):
         sc_skill = _draw_pixel_day(ax, skill_field, day, extent, cmap, norm)
@@ -244,6 +318,9 @@ def plot_skill_limit_maps(skill_field, limit_days, days, horizon, out_dir, suffi
     plt.close(fig)
 
 
+LEAD_LEGEND_LINE_WIDTH = 6.0  # line handles of the error/skill-by-lead legend
+
+
 def plot_error_and_skill(
     x,
     rmse_model,
@@ -252,14 +329,14 @@ def plot_error_and_skill(
     out_dir,
     suffix,
     xlabel="Lead [h]",
-    ci=None,
     dispersion=None,
     rmse_dispersion_model=None,
     rmse_dispersion_baseline=None,
 ):
     """Left: RMSE of the model and of every baseline, each with its 95 % spread across
-    pixels. Right: pooled skill per baseline with its sampling CI and the 95 % spread
-    across pixels (2.5-97.5).
+    pixels. Right: pooled skill per baseline with the 95 % spread across pixels
+    (2.5-97.5). Drawn by lead hour, so the diurnal cycle of error and skill stays
+    visible (the day buckets of skill_daily.nc average it out).
 
     The baselines are valid-time series, so their RMSE is flat over the lead up to
     the lead-dependent init population (year-end truncation under maximize).
@@ -271,14 +348,32 @@ def plot_error_and_skill(
     fill colour already says which baseline it belongs to."""
     fig, (ax_rmse, ax_skill) = plt.subplots(1, 2, figsize=(14, 6))
     _draw_error(ax_rmse, x, rmse_model, rmse_baseline, xlabel, rmse_dispersion_model, rmse_dispersion_baseline)
-    _draw_skill(ax_skill, x, skill, xlabel, ci, dispersion)
+    _draw_skill(ax_skill, x, skill, xlabel, dispersion)
+    # One legend below both panels: the hourly curves and their bands fill the panels
+    # to the top, so an inside legend covers data. The error panel lists every series
+    # and the spread band; the skill panel adds only the pixel median.
+    handles, labels = ax_rmse.get_legend_handles_labels()
+    skill_handles, skill_labels = ax_skill.get_legend_handles_labels()
+    handles += [handle for handle, label in zip(skill_handles, skill_labels) if label == "Pixel median"]
+    labels += ["Pixel median"]
+    ax_rmse.get_legend().remove()
+    ax_skill.get_legend().remove()
+    # Long, very thick legend lines: readable from the back of a room, and long enough
+    # that the dashed median keeps its pattern at that width.
+    legend = fig.legend(
+        handles, labels, frameon=False, loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.0), handlelength=3.0
+    )
+    for handle in legend.legend_handles:
+        if isinstance(handle, Line2D):
+            handle.set_linewidth(LEAD_LEGEND_LINE_WIDTH)
+    fig.tight_layout()
     fig.savefig(out_dir / f"error_skill_by_lead{suffix}.pdf", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
 def _draw_error(ax, x, rmse_model, rmse_baseline, xlabel, rmse_dispersion_model=None, rmse_dispersion_baseline=None):
     """RMSE of the model and of every baseline, each with its 95 % spread across pixels."""
-    ax.plot(x, rmse_model, color=MODEL_LINE, lw=1.6, label=MODEL_LABEL)
+    ax.plot(x, rmse_model, color=MODEL_LINE, lw=2.0, label=MODEL_LABEL)
     top = max(float(rmse_model.max()), float(rmse_baseline.max()))
     if rmse_dispersion_model is not None:
         low_px = rmse_dispersion_model.sel(quantile=0.025)
@@ -286,7 +381,7 @@ def _draw_error(ax, x, rmse_model, rmse_baseline, xlabel, rmse_dispersion_model=
         ax.fill_between(x, low_px, high_px, color=MODEL_LINE, alpha=0.08, lw=0, label="95 % Pixel spread")
         top = max(top, float(high_px.max()))
     for kind, color in COLORS.items():
-        ax.plot(x, rmse_baseline.sel(baseline=kind), color=color, lw=1.4, label=BASELINE_LABELS[kind])
+        ax.plot(x, rmse_baseline.sel(baseline=kind), color=color, lw=1.8, label=BASELINE_LABELS[kind])
         if rmse_dispersion_baseline is not None:
             low_px = rmse_dispersion_baseline.sel(baseline=kind, quantile=0.025)
             high_px = rmse_dispersion_baseline.sel(baseline=kind, quantile=0.975)
@@ -299,25 +394,17 @@ def _draw_error(ax, x, rmse_model, rmse_baseline, xlabel, rmse_dispersion_model=
     ax.legend(frameon=False, loc="upper left")
 
 
-def _draw_skill(ax, x, skill, xlabel, ci=None, dispersion=None):
-    """Pooled skill per baseline with its sampling CI and the 95 % spread across pixels."""
+def _draw_skill(ax, x, skill, xlabel, dispersion=None):
+    """Pooled skill per baseline with the 95 % spread across pixels."""
     spread = []
     for kind, color in COLORS.items():
-        ax.plot(x, skill.sel(baseline=kind), color=color, lw=1.4, label=BASELINE_LABELS[kind])
-        if ci is not None:
-            # 0.013-0.030 wide against a unit axis -- thinner than the line drawn on
-            # top of it. Kept at full strength so it resolves where it can; that it
-            # stays invisible IS the result (sampling noise is an order of magnitude
-            # below the spatial spread).
-            low = ci.sel(baseline=kind, quantile=0.025)
-            high = ci.sel(baseline=kind, quantile=0.975)
-            ax.fill_between(x, low, high, color=color, alpha=0.45, lw=0)
+        ax.plot(x, skill.sel(baseline=kind), color=color, lw=1.8, label=BASELINE_LABELS[kind])
         if dispersion is not None:
             low_px = dispersion.sel(baseline=kind, quantile=0.025)
             high_px = dispersion.sel(baseline=kind, quantile=0.975)
             band = ax.fill_between(x, low_px, high_px, color=color, alpha=0.08, lw=0)
             median_px = dispersion.sel(baseline=kind, quantile=0.5)
-            (median,) = ax.plot(x, median_px, color=color, ls="--", lw=0.9, alpha=0.6)
+            (median,) = ax.plot(x, median_px, color=color, ls="--", lw=1.2, alpha=0.7)
             if kind == SPATIAL_BASELINE:
                 band.set_label("95 % Pixel spread")
                 median.set_label("Pixel median")
@@ -329,7 +416,7 @@ def _draw_skill(ax, x, skill, xlabel, ci=None, dispersion=None):
     ax.legend(handles=spread, frameon=False, loc="upper right")
 
 
-def plot_error_skill_anomaly(pooled, window, regions, bootstrap_daily, out_dir, xlabel="Lead time [day]"):
+def plot_error_skill_anomaly(pooled, window, regions, out_dir, xlabel="Lead time [day]"):
     """The daily error and skill panels of `window` next to the daily anomaly scores
     per region: ACC^2 solid, R^2 dashed, ACC dotted, the shaded gap = calibration
     penalty. All three read skill_daily.nc, so the x axis is the forecast day
@@ -350,7 +437,6 @@ def plot_error_skill_anomaly(pooled, window, regions, bootstrap_daily, out_dir, 
         x,
         pooled["rmse_ss"].sel(window=window),
         xlabel,
-        bootstrap_daily.sel(window=window),
         pooled["rmse_ss_dispersion"].sel(window=window),
     )
     _draw_anomaly_regions(ax_anomaly, x, pooled["acc"], pooled["r2"], regions, xlabel)
@@ -384,6 +470,100 @@ def _share_limits(axes, symmetric=False):
         low = -high
     for ax in axes:
         ax.set_ylim(low, high)
+
+
+# Cyclic colours of the local solar hour: night navy, morning teal, noon amber, evening
+# crimson and back to navy, so midnight has one colour at both ends of the bar.
+SOLAR_HOUR_CMAP = LinearSegmentedColormap.from_list(
+    "solar_hour", [(0.0, "#1f2a60"), (0.25, "#2a9d8f"), (0.5, "#d99a00"), (0.75, "#a23b72"), (1.0, "#1f2a60")]
+)
+SOLAR_HOUR_NORM = Normalize(0, 24)
+
+
+def _draw_solar_hour_lines(ax, hourly, pooled):
+    """One line per hour of the valid time, coloured by its solar hour, and the pooled
+    curve over all hours in black (the series of the existing hourly figures)."""
+    for valid_hour in hourly["valid_hour"].values:
+        series = hourly.sel(valid_hour=valid_hour).dropna("lead")
+        colour = SOLAR_HOUR_CMAP(SOLAR_HOUR_NORM(float(series["solar_hour"])))
+        ax.plot(series["lead"], series, color=colour, lw=1.4)
+    ax.plot(pooled["lead"], pooled, color=MODEL_LINE, lw=2.2, label="All hours (pooled)")
+    ax.axhline(0.0, color="grey", lw=0.8)
+
+
+def _solar_hour_colorbar(fig, axes):
+    mappable = ScalarMappable(norm=SOLAR_HOUR_NORM, cmap=SOLAR_HOUR_CMAP)
+    colorbar = fig.colorbar(mappable, ax=axes, pad=0.02, ticks=[0, 6, 12, 18, 24])
+    colorbar.set_label("Local solar hour of the valid time")
+
+
+def plot_error_skill_by_solar_hour(scores, out_dir):
+    """Error growth (left) and the skill per baseline by lead, one line per hour of the
+    valid time, pooled over all inits (derive.solar_hour_scores). Compact regions only."""
+    fig, axes = plt.subplots(1, 4, figsize=(28, 6.5))
+    _draw_solar_hour_lines(axes[0], scores["rmse_model"], scores["rmse_model_pooled"])
+    axes[0].set_ylim(bottom=0.0)
+    axes[0].set_ylabel("RMSE [K]")
+    axes[0].set_title("Error growth")
+    for ax, (kind, label) in zip(axes[1:], BASELINE_LABELS.items()):
+        hourly = scores["rmse_ss"].sel(baseline=kind)
+        pooled = scores["rmse_ss_pooled"].sel(baseline=kind)
+        _draw_solar_hour_lines(ax, hourly, pooled)
+        ax.set_title(f"Skill against {label}")
+    _share_limits(axes[1:])
+    for ax in axes[1:]:
+        ax.set_ylim(top=1.0)
+    axes[1].set_ylabel("Skill improvement")
+    axes[1].legend(frameon=False, loc="upper right")
+    for ax in axes:
+        ax.set_xlabel("Lead [h]")
+    _solar_hour_colorbar(fig, axes.tolist())
+    fig.savefig(out_dir / "error_skill_by_solar_hour.pdf", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_solar_hour_months(scores, out_dir):
+    """The solar-hour figure per month of the init (derive.solar_hour_month_scores): one
+    3 x 4 grid for the error growth and one per baseline for the skill, into out_dir."""
+    out_dir.mkdir(exist_ok=True)
+    _plot_solar_hour_month_grid(
+        scores["rmse_model"],
+        scores["rmse_model_pooled"],
+        "RMSE [K]",
+        (0.0, None),
+        "Error growth",
+        out_dir / "rmse_by_solar_hour.pdf",
+    )
+    for kind, label in BASELINE_LABELS.items():
+        _plot_solar_hour_month_grid(
+            scores["rmse_ss"].sel(baseline=kind),
+            scores["rmse_ss_pooled"].sel(baseline=kind),
+            "Skill improvement",
+            (None, 1.0),
+            f"Skill against {label}",
+            out_dir / f"skill_by_solar_hour_{kind}.pdf",
+        )
+
+
+def _plot_solar_hour_month_grid(hourly, pooled, ylabel, ylim, title, path):
+    months = hourly["month"].values
+    fig, axes = plt.subplots(3, 4, figsize=(24, 15), sharex=True, sharey=True)
+    panels = axes.ravel()
+    for ax, month in zip(panels, months):
+        _draw_solar_hour_lines(ax, hourly.sel(month=month), pooled.sel(month=month))
+        ax.set_title(calendar.month_name[month])
+    for ax in panels[len(months) :]:  # seasonal runs leave months empty
+        ax.axis("off")
+    for ax in axes[-1]:
+        ax.set_xlabel("Lead [h]")
+    for ax in axes[:, 0]:
+        ax.set_ylabel(ylabel)
+    panels[0].set_ylim(*ylim)
+    panels[0].legend(frameon=False, loc="upper right")
+    _solar_hour_colorbar(fig, panels.tolist())
+    fig.suptitle(f"{title} by lead and solar hour, per init month", y=0.995)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_site(site, chosen, pred, observed, climatology, lookback_obs, lead, lookback, init_times, out_dir):
@@ -449,6 +629,73 @@ def plot_site(site, chosen, pred, observed, climatology, lookback_obs, lead, loo
     fig.legend(handles, labels, frameon=False, loc="upper center", ncol=len(labels), bbox_to_anchor=(0.5, 0.0))
     fig.suptitle(site, fontweight="bold")
     fig.savefig(out_dir / f"site_forecast_{site.lower()}.pdf", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+# The example pixel figure draws the forecast alone against the observations, so it
+# takes a hue no other figure uses for a series: a turquoise, dark enough for a line.
+EXAMPLE_FORECAST_COLOR = "#2a9d8f"
+LOOKBACK_SHADE = {"color": "#e1e0d9", "alpha": 0.45, "lw": 0}
+
+
+def plot_pixel_forecast(pick, out_dir, name):
+    """One pixel, one init: the forecast against the observations over the lookback
+    window and the horizon (top) and the forecast bias beneath (bottom), both over
+    valid time. The lookback window is shaded ahead of the init line and holds the
+    observed LST the model saw; observations are points joined by a hairline so the
+    cloud gaps stay visible. The bias row shows the departures the diurnal cycle hides
+    in the state row; where no observation exists it has a gap too. The location sits
+    in the upper left of the state row, the init time centred on the init line in the
+    bias row; everything else about the pick goes to stdout, not the figure.
+
+    `pick` holds valid_times, pred, observed (along lead), lookback_times and
+    lookback_obs (along lookback hour), lon, lat and init; `name` tags the file
+    (example_pixel_forecast_<name>.pdf)."""
+    fig, (ax, bias_ax) = plt.subplots(2, 1, figsize=(15, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1.5]})
+    x = pick["valid_times"]
+    lookback_x = pick["lookback_times"]
+    init = pick["init"]
+    for panel in (ax, bias_ax):
+        panel.axvspan(lookback_x[0], init, **LOOKBACK_SHADE)
+        panel.axvline(init, color=INK_SECONDARY, lw=0.8)
+
+    ax.plot(lookback_x, pick["lookback_obs"], color=OBS_COLOR, lw=0.9, alpha=0.8)
+    ax.scatter(lookback_x, pick["lookback_obs"], color=OBS_COLOR, s=10, zorder=3)
+    ax.plot(x, pick["pred"], color=EXAMPLE_FORECAST_COLOR, lw=2.2, label="Forecast")
+    ax.plot(x, pick["observed"], color=OBS_COLOR, lw=0.9, alpha=0.8, zorder=3)
+    ax.scatter(x, pick["observed"], color=OBS_COLOR, s=10, zorder=3, label="Observed")
+    ax.set_ylabel("LST [K]")
+    # Headroom above the diurnal peaks for the location text.
+    low, high = ax.get_ylim()
+    ax.set_ylim(low, high + 0.12 * (high - low))
+    ax.text(0.01, 0.96, f"({pick['lat']:.2f}, {pick['lon']:.2f})", transform=ax.transAxes, ha="left", va="top")
+
+    bias = pick["pred"] - pick["observed"]
+    bias_ax.axhline(0.0, color=INK_SECONDARY, lw=0.8)
+    bias_ax.plot(x, bias, color=EXAMPLE_FORECAST_COLOR, lw=1.6, alpha=0.8)
+    bias_ax.scatter(x, bias, color=EXAMPLE_FORECAST_COLOR, s=10, zorder=3)
+    _share_limits([bias_ax], symmetric=True)
+    bias_ax.text(
+        init,
+        0.94,
+        f"init {str(init)[:10]} {str(init)[11:13]} UTC",
+        transform=bias_ax.get_xaxis_transform(),
+        ha="center",
+        va="top",
+    )
+    bias_ax.set_ylabel("Bias [K]")
+    bias_ax.set_xlabel("Valid time [UTC]")
+    bias_ax.set_xlim(lookback_x[0] - np.timedelta64(1, "h"), x[-1])
+    bias_ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+    bias_ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+
+    # Below the panels, as in the site figure: inside the state panel the legend
+    # covers the diurnal peaks.
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(
+        handles, labels, frameon=False, loc="upper center", ncol=len(labels), bbox_to_anchor=(0.5, 0.0), markerscale=2
+    )
+    fig.savefig(out_dir / f"example_pixel_forecast_{name}.pdf", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -538,6 +785,7 @@ def plot_acc_r2(x, acc, r2, out_dir, suffix):
     ax.set_ylim(bottom=0.0, top=1.0)
     ax.legend(frameon=False, loc="lower left")
     fig.savefig(out_dir / f"acc_r2_by_lead{suffix}.pdf", dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_acc_r2_regions(out, out_dir, regions):
@@ -566,7 +814,7 @@ def _draw_anomaly_regions(ax, x, acc, r2, regions, xlabel):
     handles per region label, in the order ACC^2, R^2, ACC."""
     region_handles = {}
     for window in regions:
-        label, color, dark = REGION_STYLES[window]
+        label, color, dark = GROUP_STYLES[window]
         acc_window = acc.sel(window=window)
         r2_window = r2.sel(window=window)
         ax.fill_between(x, r2_window, acc_window**2, color=color, alpha=0.15)
@@ -574,7 +822,7 @@ def _draw_anomaly_regions(ax, x, acc, r2, regions, xlabel):
         (line_r2,) = ax.plot(x, r2_window, color=color, ls="--")
         region_handles[label] = [line_acc2, line_r2]
     for window in regions:
-        label, color, dark = REGION_STYLES[window]
+        label, color, dark = GROUP_STYLES[window]
         (line_acc,) = ax.plot(x, acc.sel(window=window), color=dark, ls=":")
         region_handles[label].append(line_acc)
     ax.set_xlabel(xlabel)
@@ -594,7 +842,409 @@ BAR_SCORES = [
 BAR_MEMBERS = ("day", "night")
 # Regions as a grey ramp in the bar figures (dark -> light in group_order); the region
 # hues stay reserved for the ACC/R2 lead figure.
-BAR_REGION_GREYS = {"Arid": "#404040", "Temperate": "#8c8c8c", "Tropical": "#c8c8c8"}
+BAR_REGION_GREYS = {"All": "#1a1a1a", "Arid": "#404040", "Temperate": "#8c8c8c", "Tropical": "#c8c8c8"}
+
+
+def _drawn_groups(groups, group_order):
+    """The groups the bar and summary figures draw: the regime groups of `group_order`
+    that were verified, else the "All" group alone (plain windows), so a verification
+    without regime windows still gets every figure."""
+    regions = [region for region in group_order if region in groups]
+    return regions or ["All"]
+
+
+FVC_DECILES = range(1, 11)
+# Total / day / night series of the decile curves: the model's neutral line plus one
+# warm and one cool hue, so the two solar windows read as a pair against the total.
+FVC_WINDOW_STYLES = {"total": ("All hours", MODEL_LINE), "day": ("Day", "#eda100"), "night": ("Night", "#2a78d6")}
+# Landcover groups of the pixel scatter (masks.LC_GROUPS membership): three categorical
+# hues that pass the all-pairs separation check, the sparse shrub/barren group in grey,
+# everything else in a lighter grey. Marker shapes repeat the identity for print.
+LC_STYLES = {
+    "lc_forest": ("Forest", "#2a78d6", "o"),
+    "lc_savanna": ("Savanna", "#eb6834", "s"),
+    "lc_grass_crop": ("Grass/Crop", "#1baf7a", "^"),
+    "lc_shrub_barren": ("Shrub/Barren", "#898781", "D"),
+    "other": ("Other", "#c3c2b7", "x"),
+}
+
+
+def plot_fvc_decile_curves(pooled, days, out_dir):
+    """Pooled scores along the FVC deciles: RMSE and the skill against climatology
+    (rows) at the nowcast and medium-range day (columns), one line per solar window.
+    Reads the fvc_d<k>(_day|_night) windows; deciles that were not verified leave gaps."""
+    available = {str(window) for window in pooled["window"].values}
+    rows = [
+        ("RMSE [K]", pooled["rmse_model"], "%.2f"),
+        ("Skill improvement (RMSE) vs climatology", pooled["rmse_ss"].sel(baseline="clim_smooth"), "%.2f"),
+    ]
+    fig, axes = plt.subplots(
+        len(rows), len(days), figsize=(5.0 * len(days), 3.0 * len(rows)), sharex=True, sharey="row"
+    )
+    axes = np.atleast_2d(axes)
+    for row_index, (ylabel, values, fmt) in enumerate(rows):
+        for column, day in enumerate(days):
+            ax = axes[row_index, column]
+            for suffix, (label, color) in FVC_WINDOW_STYLES.items():
+                series = []
+                for decile in FVC_DECILES:
+                    window = f"fvc_d{decile}" if suffix == "total" else f"fvc_d{decile}_{suffix}"
+                    series.append(float(values.sel(window=window, day=day)) if window in available else np.nan)
+                ax.plot(list(FVC_DECILES), series, color=color, lw=2, marker="o", ms=5, label=label)
+            ax.axhline(0.0, color="#c3c2b7", lw=0.6)
+            ax.set_xticks(list(FVC_DECILES))
+            ax.grid(axis="y", color="#e1e0d9", lw=0.5)
+            ax.spines[["top", "right"]].set_visible(False)
+            if row_index == 0:
+                ax.set_title(f"Day {day}", fontsize=12)
+            if row_index == len(rows) - 1:
+                ax.set_xlabel("Annual-mean FVC class (1 = bare, 2-10 = vegetated bins)")
+            if column == 0:
+                ax.set_ylabel(ylabel)
+    axes[0, 0].legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_dir / "fvc_decile_curves.pdf")
+    plt.close(fig)
+
+
+def _lc_group(lc_class):
+    for group_name, class_ids in LC_GROUPS.items():
+        if lc_class in class_ids:
+            return group_name
+    return "other"
+
+
+# x axes of the pixel scatter: attribute key in cubes.pixel_attributes -> (axis label, file prefix).
+SCATTER_AXES = {
+    "fvc_mean": ("Annual-mean FVC", "fvc"),
+    "lst_validity": ("Annual-mean LST observational validity [%]", "validity"),
+}
+
+
+def _scatter_bins(attributes, x_attribute, x_values):
+    """Per-pixel bin id for the median line: the shared FVC classes on the FVC axis, ten
+    equal-count bins of the finite values on any other axis (0 = unbinned)."""
+    if x_attribute == "fvc_mean":
+        return np.asarray(attributes["fvc_class"])
+    finite = np.isfinite(x_values)
+    edges = np.quantile(x_values[finite], np.linspace(0, 1, 11)[1:-1])
+    bins = 1 + np.searchsorted(edges, x_values, side="right")
+    bins[~finite] = 0
+    return bins
+
+
+def plot_fvc_pixel_scatter(
+    pixel_daily, attributes, days, out_dir, variable="rmse_ss", baseline="clim_smooth", x_attribute="fvc_mean"
+):
+    """One point per pixel: score at the nowcast / medium-range day (columns) in the
+    day / night windows (rows) against a per-pixel attribute (annual-mean FVC by default,
+    or the LST observational validity), coloured by landcover group, with the per-bin
+    median as a line: the shared FVC classes on the FVC axis, ten equal-count bins
+    otherwise. `attributes` is cubes.pixel_attributes output. variable: rmse_ss (needs a
+    baseline) or rmse_model."""
+    xlabel, prefix = SCATTER_AXES[x_attribute]
+    if variable == "rmse_ss":
+        field = pixel_daily["rmse_ss"].sel(baseline=baseline)
+        ylabel = f"Skill improvement (RMSE) vs {BASELINE_LABELS[baseline].lower()}"
+        name = f"{prefix}_pixel_scatter_skill_{baseline}.pdf"
+    else:
+        field = pixel_daily[variable]
+        ylabel = "RMSE [K]"
+        name = f"{prefix}_pixel_scatter_{variable}.pdf"
+    x_values = np.asarray(attributes[x_attribute], dtype=float)
+    bins = _scatter_bins(attributes, x_attribute, x_values)
+    groups = np.array([_lc_group(int(lc_class)) for lc_class in attributes["lc_class"]])
+    windows = ["day", "night"]
+
+    # One y range for the whole figure, from the central 99% of all panels: a handful of
+    # pixels with runaway scores would otherwise flatten the cloud (seen: a night skill of -27).
+    panels = {
+        (window, day): np.asarray(field.sel(window=window, day=day).values, dtype=float)
+        for window in windows
+        for day in days
+    }
+    pooled_values = np.concatenate([values[np.isfinite(values)] for values in panels.values()])
+    low, high = np.quantile(pooled_values, [0.005, 0.995])
+    margin = 0.05 * (high - low)
+
+    fig, axes = plt.subplots(
+        len(windows), len(days), figsize=(5.0 * len(days), 3.4 * len(windows)), sharex=True, sharey=True
+    )
+    axes = np.atleast_2d(axes)
+    for row_index, window in enumerate(windows):
+        for column, day in enumerate(days):
+            ax = axes[row_index, column]
+            values = panels[(window, day)]
+            shown = np.isfinite(values) & np.isfinite(x_values)
+            for group_name, (label, color, marker) in LC_STYLES.items():
+                members = shown & (groups == group_name)
+                if not members.any():
+                    continue
+                ax.scatter(
+                    x_values[members],
+                    values[members],
+                    s=9,
+                    color=color,
+                    marker=marker,
+                    alpha=0.55,
+                    linewidths=0,
+                    label=f"{label} ({int(members.sum())})",
+                )
+            decile_x, decile_y = [], []
+            for bin_id in range(1, 11):
+                members = shown & (bins == bin_id)
+                if members.sum() < 5:
+                    continue
+                decile_x.append(np.median(x_values[members]))
+                decile_y.append(np.median(values[members]))
+            ax.plot(decile_x, decile_y, color=MODEL_LINE, lw=2, marker="o", ms=5, label="Class median")
+            ax.axhline(0.0, color="#c3c2b7", lw=0.6)
+            ax.set_ylim(low - margin, high + margin)
+            ax.grid(axis="y", color="#e1e0d9", lw=0.5)
+            ax.spines[["top", "right"]].set_visible(False)
+            if row_index == 0:
+                ax.set_title(f"Day {day}", fontsize=12)
+            if row_index == len(windows) - 1:
+                ax.set_xlabel(xlabel)
+            if column == 0:
+                ax.set_ylabel(f"{ylabel}\n{window} window")
+    axes[0, 0].legend(frameon=False, fontsize=8, markerscale=1.8)
+    fig.tight_layout()
+    fig.savefig(out_dir / name)
+    plt.close(fig)
+
+
+# Reference scatter: the reference's per-pixel score (x) against the model's (y). Rows
+# are pixel_daily variable stems (<stem>_model / <stem>_baseline), columns the windows;
+# the month column stacks the twelve single-month windows of the monthly verification.
+REFERENCE_SCATTER_ROWS = (("rmse", "RMSE [K]"), ("bias", "Bias [K]"), ("nse", "NSE"))
+REFERENCE_SCATTER_COLUMNS = (("all", "Year"), ("month", "Months"), ("day", "Day peak"), ("night", "Night peak"))
+REFERENCE_SCATTER_POINT = {"s": 6, "color": "#52514e", "alpha": 0.35, "linewidths": 0}
+
+
+def _reference_scatter_panels(pixel_daily, month_fields, day, baseline):
+    """{(row stem, column label): (reference values, model values)} at forecast `day`;
+    columns whose window (or the monthly verification) is missing are left out."""
+    panels = {}
+    for window, column in REFERENCE_SCATTER_COLUMNS:
+        if window == "month":
+            if month_fields is None or "nse_baseline" not in month_fields:
+                continue
+            fields = month_fields.sel(window=MONTHLY_WINDOWS, day=day)
+        else:
+            if window not in pixel_daily["window"].values:
+                continue
+            fields = pixel_daily.sel(window=window, day=day)
+        for stem, _ in REFERENCE_SCATTER_ROWS:
+            reference = fields[f"{stem}_baseline"].sel(baseline=baseline).values.ravel()
+            model = fields[f"{stem}_model"].values.ravel()
+            panels[(stem, column)] = (reference, model)
+    return panels
+
+
+def plot_reference_scatter(pixel_daily, month_fields, days, out_dir, baseline="clim_smooth"):
+    """One point per pixel, the reference's score (x) against the model's (y): RMSE, bias
+    and NSE (rows) in the all-hours, single-month, day and night windows (columns), one
+    figure per forecast day. Axes share one range per row from the central 99 % of both
+    sides; the diagonal marks parity (below it the model has the lower RMSE, above it the
+    higher NSE), the bias and NSE panels add the zero lines. `month_fields` is
+    gifs.month_fields output (twelve points per pixel), None without the monthly verif."""
+    for day in days:
+        panels = _reference_scatter_panels(pixel_daily, month_fields, day, baseline)
+        columns = []
+        for _, column in REFERENCE_SCATTER_COLUMNS:
+            if any(key[1] == column for key in panels):
+                columns.append(column)
+        n_rows = len(REFERENCE_SCATTER_ROWS)
+        fig, axes = plt.subplots(n_rows, len(columns), figsize=(4.0 * len(columns), 4.0 * n_rows), squeeze=False)
+        for row_index, (stem, quantity) in enumerate(REFERENCE_SCATTER_ROWS):
+            finite_values = []
+            for column in columns:
+                reference, model = panels[(stem, column)]
+                finite_values.append(reference[np.isfinite(reference)])
+                finite_values.append(model[np.isfinite(model)])
+            low, high = np.quantile(np.concatenate(finite_values), [0.005, 0.995])
+            margin = 0.05 * (high - low)
+            limits = (low - margin, high + margin)
+            for column_index, column in enumerate(columns):
+                ax = axes[row_index, column_index]
+                reference, model = panels[(stem, column)]
+                ax.scatter(reference, model, **REFERENCE_SCATTER_POINT)
+                ax.plot(limits, limits, color="#c3c2b7", lw=0.8)
+                if stem != "rmse":
+                    ax.axhline(0.0, color="#e1e0d9", lw=0.6)
+                    ax.axvline(0.0, color="#e1e0d9", lw=0.6)
+                ax.set_xlim(limits)
+                ax.set_ylim(limits)
+                ax.set_aspect("equal")
+                ax.spines[["top", "right"]].set_visible(False)
+                if row_index == 0:
+                    ax.set_title(column, fontsize=12)
+                ax.set_xlabel(f"{BASELINE_LABELS[baseline]} {quantity}")
+                if column_index == 0:
+                    ax.set_ylabel(f"{MODEL_LABEL} {quantity}")
+        fig.tight_layout()
+        fig.savefig(out_dir / f"reference_scatter_{baseline}_day{int(day):02d}.pdf")
+        plt.close(fig)
+
+
+# Diurnal figures (derive.diurnal_scores): the cycle of a score over the local solar hour,
+# one line per forecast day from light (day 1) to dark (the horizon), the climatology's
+# own cycle dashed. Rows = (variable stem, axis label) of <stem>_model / <stem>_clim.
+DAY_GRADIENT = "viridis"
+DIURNAL_ERROR_ROWS = (("rmse", "RMSE [K]"), ("bias", "Bias [K]"))
+DIURNAL_EFFICIENCY_ROWS = (("nse", "NSE"), ("acc", "ACC"))
+HOUR_TICKS = (0, 6, 12, 18)
+# The reference forecasts of the diurnal figures (derive.DIURNAL_REFERENCES), dashed in the
+# baseline hues; drawn where the verif saved them.
+REFERENCE_STYLES = {
+    "clim": (BASELINE_LABELS["clim_smooth"], COLORS["clim_smooth"]),
+    "persistence": (BASELINE_LABELS["persistence"], COLORS["persistence"]),
+    "era5land": (BASELINE_LABELS["era5land"], COLORS["era5land"]),
+}
+DIURNAL_TITLE_SIZE = 15
+DIURNAL_LEGEND_SIZE = 12
+# The y range of a diurnal row follows the model's fan and these references; ERA5-Land
+# SKT, a different quantity with offsets of several K, is drawn but clipped where it
+# leaves that range, so it cannot squash the fan.
+DIURNAL_RANGE_REFERENCES = ("clim", "persistence")
+DIURNAL_RANGE_MARGIN = 0.08
+
+
+def _diurnal_row_limits(cells, stems, all_days=False):
+    """(low, high) over the model's curves of every group and the range references' curves,
+    of the first forecast day only unless `all_days` (the figure draws every day of the
+    references), widened by DIURNAL_RANGE_MARGIN of the span."""
+    values = []
+    for cell in cells:
+        for stem in stems:
+            values.append(cell[f"{stem}_model"].values.ravel())
+            for reference in DIURNAL_RANGE_REFERENCES:
+                if f"{stem}_{reference}" in cell:
+                    reference_curve = cell[f"{stem}_{reference}"]
+                    if not all_days:
+                        reference_curve = reference_curve.isel(day=0)
+                    values.append(reference_curve.values.ravel())
+    values = np.concatenate(values)
+    values = values[np.isfinite(values)]
+    low, high = float(values.min()), float(values.max())
+    margin = DIURNAL_RANGE_MARGIN * (high - low)
+    return low - margin, high + margin
+
+
+def _diurnal_panel_width(n_groups):
+    """A lone column (no regime windows) gets the room the print-size labels need."""
+    return 4.6 if n_groups > 1 else 6.0
+
+
+def _day_colours(days):
+    """Light to dark along the forecast days."""
+    return plt.get_cmap(DAY_GRADIENT)(np.linspace(0.95, 0.05, len(days)))
+
+
+def _day_colorbar(fig, axes, days, colours):
+    cmap = ListedColormap(colours)
+    norm = BoundaryNorm(np.arange(days[0] - 0.5, days[-1] + 1.5), len(days))
+    colorbar = fig.colorbar(ScalarMappable(cmap=cmap, norm=norm), ax=axes, ticks=days, shrink=0.6, pad=0.02)
+    colorbar.set_label("Forecast day")
+    colorbar.outline.set_visible(False)
+
+
+def plot_diurnal_cycles(scores, rows, out_dir, name):
+    """The diurnal cycle of the scores in `rows` fanned out by forecast day: local solar
+    hour on x, one line per forecast day, one column per pixel group (GROUP_STYLES
+    labels), the references' cycles dashed where they have one (no reference ACC: the
+    anomaly climatology's is zero by construction), drawn for the day-1 samples. The sample set
+    thins with the forecast day (clear skies at init persist for a while, so the joint
+    model-obs validity decays with lead); the model's fan carries that drift as well."""
+    groups = [str(group) for group in scores["group"].values]
+    days = [int(day) for day in scores["day"].values]
+    colours = _day_colours(days)
+    hours = scores["hour"].values
+    fig, axes = plt.subplots(
+        len(rows),
+        len(groups),
+        figsize=(_diurnal_panel_width(len(groups)) * len(groups), 3.4 * len(rows)),
+        sharex=True,
+        sharey="row",
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for row_index, (stem, label) in enumerate(rows):
+        for column, group in enumerate(groups):
+            ax = axes[row_index, column]
+            cell = scores.sel(group=group)
+            for day, colour in zip(days, colours):
+                ax.plot(hours, cell[f"{stem}_model"].sel(day=day), color=colour, lw=1.4)
+            for reference, (reference_label, colour) in REFERENCE_STYLES.items():
+                if f"{stem}_{reference}" in cell:
+                    reference_cycle = cell[f"{stem}_{reference}"].sel(day=days[0])
+                    ax.plot(hours, reference_cycle, color=colour, lw=1.4, ls="--", label=reference_label)
+            if stem != "rmse":
+                ax.axhline(0.0, color="#c3c2b7", lw=0.6)
+            ax.set_xticks(HOUR_TICKS)
+            ax.set_xlim(hours[0], hours[-1])
+            ax.grid(axis="y", color="#e1e0d9", lw=0.5)
+            ax.spines[["top", "right"]].set_visible(False)
+            if row_index == 0:
+                ax.set_title(GROUP_STYLES[group][0], fontsize=DIURNAL_TITLE_SIZE)
+            if row_index == len(rows) - 1:
+                ax.set_xlabel("Local solar hour")
+            if column == 0:
+                ax.set_ylabel(label)
+        row_cells = [scores.sel(group=group) for group in groups]
+        axes[row_index, 0].set_ylim(_diurnal_row_limits(row_cells, [stem]))
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:  # the day lines carry no label: the references alone, above the panels
+        ncol = min(len(handles), 2 * len(groups))  # a lone column wraps the legend
+        fig.legend(handles, labels, loc="outside upper center", ncol=ncol, frameon=False, fontsize=DIURNAL_LEGEND_SIZE)
+    _day_colorbar(fig, axes.ravel().tolist(), days, colours)
+    fig.savefig(out_dir / name)
+    plt.close(fig)
+
+
+def plot_amplitude_error(scores, out_dir):
+    """The diurnal amplitude error by forecast day per pixel group: RMSE (top) and bias
+    (bottom) of the daily max - min of the model (solid) and of the references (dashed)
+    against the observed one; the mean observed amplitude in the panel title. The
+    references' curves are not flat: the sample set thins with the forecast day (see
+    plot_diurnal_cycles), and the model's curve carries the same drift."""
+    groups = [str(group) for group in scores["group"].values]
+    days = [int(day) for day in scores["day"].values]
+    width = _diurnal_panel_width(len(groups)) * len(groups)
+    fig, axes = plt.subplots(
+        2, len(groups), figsize=(width, 6.4), sharex=True, sharey="row", squeeze=False, constrained_layout=True
+    )
+    for column, group in enumerate(groups):
+        cell = scores.sel(group=group)
+        rows = (
+            (axes[0, column], "amplitude_rmse", "Amplitude RMSE [K]"),
+            (axes[1, column], "amplitude_bias", "Amplitude bias [K]"),
+        )
+        for ax, stem, label in rows:
+            ax.plot(days, cell[f"{stem}_model"], color=MODEL_LINE, lw=2, marker="o", ms=5, label=MODEL_LABEL)
+            for reference, (reference_label, colour) in REFERENCE_STYLES.items():
+                if f"{stem}_{reference}" in cell:
+                    ax.plot(days, cell[f"{stem}_{reference}"], color=colour, lw=1.6, ls="--", label=reference_label)
+            if stem == "amplitude_bias":
+                ax.axhline(0.0, color="#c3c2b7", lw=0.6)
+            ax.set_xticks(days)
+            ax.grid(axis="y", color="#e1e0d9", lw=0.5)
+            ax.spines[["top", "right"]].set_visible(False)
+            if column == 0:
+                ax.set_ylabel(label)
+        observed_amplitude = float(cell["amplitude_obs"].mean())
+        title = f"{GROUP_STYLES[group][0]}  (observed {observed_amplitude:.1f} K)"
+        axes[0, column].set_title(title, fontsize=DIURNAL_TITLE_SIZE)
+        axes[1, column].set_xlabel("Forecast day")
+    all_cells = [scores.sel(group=group) for group in groups]
+    axes[0, 0].set_ylim(_diurnal_row_limits(all_cells, ["amplitude_rmse"], all_days=True))
+    axes[1, 0].set_ylim(_diurnal_row_limits(all_cells, ["amplitude_bias"], all_days=True))
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    ncol = min(len(handles), 2 * len(groups))  # a lone column wraps the legend
+    fig.legend(handles, labels, loc="outside upper center", ncol=ncol, frameon=False, fontsize=DIURNAL_LEGEND_SIZE)
+    fig.savefig(out_dir / "diurnal_amplitude_error.pdf")
+    plt.close(fig)
 
 
 def plot_score_bars(pooled, days, groups, out_dir, group_order=("Arid", "Temperate", "Tropical")):
@@ -626,8 +1276,8 @@ def _plot_region_bars(rows, days, groups, path, group_order, shared_ylabel=None)
     read the same cells. `shared_ylabel` adds an outer y label spanning all rows,
     with the row labels as the inner level."""
     nowcast, medium = days
-    regions = [region for region in group_order if region in groups]
-    if not regions or not rows:
+    regions = _drawn_groups(groups, group_order)
+    if not rows:
         return
     available = {str(window) for window in rows[0][1]["window"].values}
 
@@ -707,8 +1357,8 @@ SUMMARY_REGIONS = ("Arid", "Temperate", "Tropical")
 
 
 def _region_windows(labels):
-    """REGION_STYLES window names for the display labels, in that order."""
-    by_label = {label: window for window, (label, color, dark) in REGION_STYLES.items()}
+    """GROUP_STYLES window names for the display labels, in that order."""
+    by_label = {label: window for window, (label, color, dark) in GROUP_STYLES.items()}
     return [by_label[label] for label in labels]
 
 
@@ -716,7 +1366,7 @@ def _draw_regime_error(ax, x, rmse_model, rmse_clim, regions, xlabel):
     """Model RMSE (solid) and the climatology RMSE (dashed) per regime window in the
     region hue: the error growth reads against the ceiling each regime approaches."""
     for window in regions:
-        label, color, dark = REGION_STYLES[window]
+        label, color, dark = GROUP_STYLES[window]
         ax.plot(x, rmse_model.sel(window=window), color=color, lw=SUMMARY_LINE_WIDTH)
         ax.plot(x, rmse_clim.sel(window=window), color=color, ls="--", lw=0.8 * SUMMARY_LINE_WIDTH)
     ax.set_ylim(bottom=0.0)
@@ -840,7 +1490,7 @@ def plot_regime_summary(
     the tables print. `font_size` is the base text size (ticks, in-panel text),
     `axis_font_size` the axis labels, legends and row letters, `value_label_size`
     the bar value labels; font_size None keeps the rc default for the base text."""
-    regions = [label for label in SUMMARY_REGIONS if label in groups]
+    regions = _drawn_groups(groups, SUMMARY_REGIONS)
     windows = _region_windows(regions)
     if resolution == "hourly":
         x = scores["lead"]
@@ -893,8 +1543,6 @@ def plot_regime_summary(
 def plot_skill_summary(
     scores,
     pooled,
-    bootstrap_hourly,
-    bootstrap_daily,
     groups,
     out_dir,
     resolution="hourly",
@@ -905,28 +1553,26 @@ def plot_skill_summary(
     figsize=SUMMARY_FIGSIZE,
 ):
     """Top row: skill improvement against the three baselines by lead for the
-    daytime peak (left) and the nighttime peak (right), each with its bootstrap CI
-    and the pixel spread of the climatology skill (the skill panel of the lead
-    figures). Bottom row: the day `days[1]` minus day `days[0]` change of the skill
-    against each baseline per region and time of day, regions in their hues, one y
-    range across the three panels; the grid is the regime summary's, the panels take
-    its first three quarters and the region legend the fourth, beside them. Baseline
-    legend above the figure.
+    daytime peak (left) and the nighttime peak (right), each with the pixel spread
+    of the climatology skill (the skill panel of the lead figures). Bottom row: the
+    day `days[1]` minus day `days[0]` change of the skill against each baseline per
+    region and time of day, regions in their hues, one y range across the three
+    panels; the grid is the regime summary's, the panels take its first three
+    quarters and the region legend the fourth, beside them. Baseline legend above
+    the figure.
 
-    `resolution` "hourly" reads the curves from `scores` (skill.nc) and
-    `bootstrap_hourly`, "daily" from `pooled` (skill_daily.nc) and `bootstrap_daily`;
-    the bars always come from `pooled`. Text sizes as in plot_regime_summary."""
-    regions = [label for label in SUMMARY_REGIONS if label in groups]
+    `resolution` "hourly" reads the curves from `scores` (skill.nc), "daily" from
+    `pooled` (skill_daily.nc); the bars always come from `pooled`. Text sizes as in
+    plot_regime_summary."""
+    regions = _drawn_groups(groups, SUMMARY_REGIONS)
     if resolution == "hourly":
         x = scores["lead"]
         skill = scores["rmse_ss"]
-        ci = bootstrap_hourly
         dispersion = scores["rmse_ss_dispersion"]
         xlabel = "Lead [h]"
     else:
         x = pooled["day"]
         skill = pooled["rmse_ss"]
-        ci = bootstrap_daily
         dispersion = pooled["rmse_ss_dispersion"]
         xlabel = "Lead time [day]"
 
@@ -938,7 +1584,7 @@ def plot_skill_summary(
         ax_day = fig.add_subplot(grid[0, :half])
         ax_night = fig.add_subplot(grid[0, half:])
         for ax, window, title in ((ax_day, "day", "Daytime peak"), (ax_night, "night", "Nighttime peak")):
-            _draw_skill(ax, x, skill.sel(window=window), xlabel, ci.sel(window=window), dispersion.sel(window=window))
+            _draw_skill(ax, x, skill.sel(window=window), xlabel, dispersion.sel(window=window))
             ax.set_title(title)
         ax_night.get_legend().remove()  # the spread legend once is enough
 

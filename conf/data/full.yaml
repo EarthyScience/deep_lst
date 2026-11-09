@@ -1,9 +1,12 @@
 # @package _global_
+# full since v18 (2026-10-23, formerly noera5static): the pre-v18 full (full_era5static.yaml)
+# minus the ERA5 static fields tvh, tvl, lsm, slt, which contribute nothing (v18 ablation no. 0).
+# Same modality_ids/load as full_era5static -> shares its preload cache; only the model roles change.
 _data: full
 
 train_dataset:
   era5:
-    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
     context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
   era5_land:
     inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
@@ -16,7 +19,7 @@ train_dataset:
 
 val_dataset:
   era5:
-    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
     context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
   era5_land:
     inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
@@ -29,7 +32,7 @@ val_dataset:
 
 test_dataset:
   era5:
-    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
+    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
     context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
   era5_land:
     inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]

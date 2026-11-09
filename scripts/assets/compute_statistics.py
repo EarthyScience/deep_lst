@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from deep_lst.dataset.dataset import DATA_TYPES, UnimodalDataset
+from deep_lst.dataset.transforms import transform_function
 from deep_lst.utils import features
 from deep_lst.utils.io import ExperimentPaths
 from deep_lst.utils.spatial import store_grid
@@ -43,13 +44,19 @@ def _flatten_channels(values: torch.Tensor) -> torch.Tensor:
 
 
 @torch.no_grad()
-def compute_statistics(dataset, prognostic_channels, device, num_workers):
-    """Base per-data-type statistics + optional prognostic increment statistics (NaN ignored)."""
+def compute_statistics(dataset, prognostic_channels, device, num_workers, transform=None):
+    """Base per-data-type statistics + optional prognostic increment statistics (NaN ignored).
+
+    `transform` names the modality's value transform (see dataset/transforms.py); the moments
+    are then accumulated on the transformed values, matching what the normalizer z-scores."""
     loader = DataLoader(dataset, batch_size=8, num_workers=num_workers, drop_last=False)
     base: dict[str, WelfordMetric] = {}
     increment = _welford(device) if prognostic_channels else None
+    transform_values = transform_function(transform)
 
     for batch in tqdm(loader):
+        if transform_values is not None:
+            batch = {data_type: transform_values(values) for data_type, values in batch.items()}
         for data_type, values in batch.items():
             values = values.to(device)
             base.setdefault(data_type, _welford(device)).update(_flatten_channels(values).to(torch.float64))
@@ -71,7 +78,7 @@ def computed_feature_statistics(rows, stat_days, modality) -> ArrayStatistics:
     """
     centers = store_grid(modality).centers[np.asarray(rows)]  # (n_rows, 2) lon/lat
     hours = (np.asarray(stat_days)[:, None] * 24 + np.arange(24)).ravel()
-    zenith = np.stack([features.solar_zenith(float(lat), float(lon), hours) for lon, lat in centers])
+    zenith = np.stack([features.solar_features(float(lat), float(lon), hours)["solar_zenith"] for lon, lat in centers])
     values = zenith.astype(np.float64)
     stats = {
         "mean": np.atleast_1d(values.mean()),
@@ -87,6 +94,7 @@ def main(cfg: DictConfig) -> None:
     config = OmegaConf.to_container(cfg, resolve=True)
     modality = config["modality"]
     prognostics = config[modality].get("prognostics", [])
+    transform = config[modality].get("transform")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset = UnimodalDataset.from_config(
@@ -98,9 +106,14 @@ def main(cfg: DictConfig) -> None:
     )
     data_fields = list(dataset.reader.data_arr.dtype.fields)
     prognostic_channels = [data_fields.index(var) for var in prognostics]
-    print(f"modality={modality}  pixels={len(dataset.rows)}  days={len(dataset.stat_days)}  prognostics={prognostics}")
+    print(
+        f"modality={modality}  pixels={len(dataset.rows)}  days={len(dataset.stat_days)}  "
+        f"prognostics={prognostics}  transform={transform}"
+    )
 
-    base_stats, increment_stats = compute_statistics(dataset, prognostic_channels, device, config["num_workers"])
+    base_stats, increment_stats = compute_statistics(
+        dataset, prognostic_channels, device, config["num_workers"], transform=transform
+    )
 
     # Base statistics per data type, plus (if any) the prognostic increments — all stored as the
     # same ArrayStatistics (mean/std/min/max). load_inc_variances derives (std_increment/std_var)^2 later.
@@ -121,6 +134,8 @@ def main(cfg: DictConfig) -> None:
     # Record variable names next to the positional statistics: base data types carry the
     # full store variable order, the computed group its feature names.
     root = zarr.open_group(str(out_path), mode="a")
+    if transform is not None:  # the moments describe transformed values; say so in the file
+        root.attrs["transform"] = transform
     for data_type in base_stats:
         root[data_type].attrs["variables"] = list(getattr(dataset.reader, DATA_TYPES[data_type]).dtype.fields)
     root["computed"].attrs["variables"] = list(COMPUTED_VARIABLES)

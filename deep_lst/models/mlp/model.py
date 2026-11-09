@@ -10,16 +10,32 @@ ACTIVATIONS = {
 
 
 class MultiModalMLP(nn.Module):
-    def __init__(self, n_prognostic, n_diagnostic, n_input, n_forcing_context, lookback, config, static_spec=None):
+    def __init__(
+        self,
+        n_prognostic,
+        n_diagnostic,
+        n_input,
+        n_forcing_context,
+        lookback,
+        config,
+        static_spec=None,
+        n_diagnostic_history=None,
+    ):
         super().__init__()
 
         self.n_prognostic = n_prognostic
         self.lookback = lookback
+        # With diagnostic_history (default) the window also carries the observed past of the
+        # diagnostics that are not prognostics as well (n_diagnostic_history of them), hidden from
+        # t0+1 on by the loss and the inference loop.
+        self.diagnostic_history = config.get("diagnostic_history", True)
+        n_history = n_diagnostic if n_diagnostic_history is None else n_diagnostic_history
+        n_window = n_prognostic + n_history if self.diagnostic_history else n_prognostic
         # Categorical statics sit in the step-forcing block; with embeddings their n raw code
         # channels are replaced by sum(dim) embedded channels (models/static_embeddings.py).
         self.static_embedder = build_embedder(n_input, config, static_spec)
         n_step_input = n_input if self.static_embedder is None else self.static_embedder.out_dim
-        self.input_size = n_step_input + 2 * lookback * n_prognostic + lookback * n_forcing_context
+        self.input_size = n_step_input + 2 * lookback * n_window + lookback * n_forcing_context
         self.target_size = n_prognostic + n_diagnostic
         self.hidden_sizes = config["hidden_sizes"]
         self.dropout_p = config["dropout"]

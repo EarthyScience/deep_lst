@@ -16,14 +16,20 @@ class LitDataModule(pl.LightningDataModule):
         if hasattr(self, "train_dataset"):
             return
 
-        # Preload the pixel columns once (same pixels/stores for every split) and share
-        # the RAM cache across train/val/test; only the temporal anchors differ.
-        modality_ids = self.kwargs["modality_ids"]
-        shared = MultimodalDataset.preload_shared(modality_ids, **self.kwargs["train_dataset"])
+        # Preload the pixel columns once per spatial selection and share the RAM cache
+        # between the splits on it; val/test may hold out different pixels than train.
+        self._shared_by_spatial = {}
+        self.train_dataset = self._build_split(self.kwargs["train_dataset"])
+        self.val_dataset = self._build_split(self.kwargs["val_dataset"])
+        self.test_dataset = self._build_split(self.kwargs["test_dataset"])
 
-        self.train_dataset = MultimodalDataset.from_modalities(modality_ids, shared, **self.kwargs["train_dataset"])
-        self.val_dataset = MultimodalDataset.from_modalities(modality_ids, shared, **self.kwargs["val_dataset"])
-        self.test_dataset = MultimodalDataset.from_modalities(modality_ids, shared, **self.kwargs["test_dataset"])
+    def _build_split(self, split_kwargs):
+        modality_ids = self.kwargs["modality_ids"]
+        spatial = split_kwargs["spatial"]
+        if spatial not in self._shared_by_spatial:
+            self._shared_by_spatial[spatial] = MultimodalDataset.preload_shared(modality_ids, **split_kwargs)
+        shared = self._shared_by_spatial[spatial]
+        return MultimodalDataset.from_modalities(modality_ids, shared, **split_kwargs)
 
     def train_dataloader(self):
         return DataLoader(

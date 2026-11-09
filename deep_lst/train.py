@@ -37,11 +37,10 @@ def _git_hash() -> str:
 
 @hydra.main(config_path="../conf", config_name="train", version_base="1.3")
 def main(cfg: DictConfig) -> None:
-    pl.seed_everything(42, workers=True)
-
     paths = ExperimentPaths()
 
     config = OmegaConf.to_container(cfg, resolve=True)
+    pl.seed_everything(config["seed"], workers=True)
 
     smoke = config.pop("smoke", False)
     tag = config.pop("tag", None)
@@ -70,7 +69,7 @@ def main(cfg: DictConfig) -> None:
                 print(f"WARNING: hpo_best was tuned for horizon={expected}, running with {actual}")
         print(f">>> HPO params loaded from {hpo_path} (val_loss={hpo.get('val_loss', '?'):.4f})")
 
-    name = f"{config['_model_name']}_{config['_experiment']}"
+    name = config["_experiment"]
     if tag:
         name = f"{name}_{tag}"
 
@@ -102,6 +101,7 @@ def main(cfg: DictConfig) -> None:
             "config": config["_model_name"],
             "smoke": smoke,
             "tag": tag,
+            "seed": config["seed"],
             "git_hash": _git_hash(),
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
@@ -166,6 +166,8 @@ def main(cfg: DictConfig) -> None:
         teacher_forcing_loss=config["model"].get("teacher_forcing_loss", True),
         incremental_loss=config["model"].get("incremental_loss", False),
         rollout_loss=config["model"].get("rollout_loss", True),
+        init_fill=config["model"].get("init_fill", "none"),
+        init_hide_fraction=config["model"].get("init_hide_fraction", 0.5),
     )
 
     ngpu = torch.cuda.device_count()

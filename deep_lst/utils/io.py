@@ -10,8 +10,10 @@ class ExperimentPaths:
     experiment_root: Path = field(default_factory=lambda: Path("./experiments"))
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
-    plots_root: Path = field(default_factory=lambda: Path("./plots"))
-    eozarr_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/weathergenerator/"))
+    # Full eodata stores. Moved off tscratch (90-day purge) in October 2026.
+    eozarr_root: Path = field(
+        default_factory=lambda: Path("/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old")
+    )
     preload_cache_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/tmp"))
 
     def experiment_dir(self, experiment: str) -> Path:
@@ -19,12 +21,6 @@ class ExperimentPaths:
 
     def checkpoint_dir(self, experiment: str, version: str) -> Path:
         return self.experiment_root / experiment / version / "checkpoints"
-
-    def predictions_dir(self, experiment: str, version: str) -> Path:
-        return self.experiment_dir(experiment) / version / "results"
-
-    def experiment_plots_dir(self, experiment: str, version: str) -> Path:
-        return self.experiment_dir(experiment) / version / "plots"
 
     def latest_checkpoint(self, experiment: str, version: str) -> Path:
         """Return the most recent .ckpt file by alphabetical sort (last.ckpt wins)."""
@@ -50,10 +46,9 @@ class ExperimentPaths:
     def eozarr_store_path(self, store_name: str) -> Path:
         """Resolve a full eodata .eozarr store from its config-provided name.
 
-        Falls back to the .zip sibling when the directory store is unusable. On 2026-08-22 the
-        per-group zarr.json files were removed from era5_2014_2025.eozarr (8 of 9 groups), which
-        makes every read fail with ArrayNotFoundError while the chunks themselves are also gone.
-        The zip mirrors are intact, so prefer them rather than failing."""
+        Prefers the directory store when it is readable and falls back to the .zip sibling:
+        under eozarr_root the era5, era5_land, glofas and swe stores exist only as zips, while
+        seviri is a directory store."""
         directory = self.eozarr_root / f"{store_name}.eozarr"
         archive = self.eozarr_root / f"{store_name}.eozarr.zip"
         directory_is_readable = (directory / "data" / "zarr.json").exists()
@@ -82,15 +77,6 @@ class ExperimentPaths:
         them to its own full-store rows at preload, so there is one file per selection."""
         return self.assets_root / "spatial" / f"indices_{name}.npz"
 
-    def eval_indices_path(self, name: str) -> Path:
-        """Resolve the dense evaluation pixel index file for *eval name*."""
-        if name.startswith("train_"):
-            return self.assets_root / "spatial" / f"indices_{name.removeprefix('train_')}.npz"
-        return self.assets_root / "spatial" / f"indices_eval_{name}.npz"
-
-    def eval_meta_path(self) -> Path:
-        return self.assets_root / "spatial" / "eval_meta.json"
-
     @staticmethod
     def baseline_spatial(eval_name: str) -> str:
         """Spatial-selection name (indices_<name>.npz) whose baselines an eval name refers to:
@@ -104,9 +90,6 @@ class ExperimentPaths:
 
     def persistence_path(self, spatial: str) -> Path:
         return self.assets_root / "baselines" / "persistence" / f"{spatial}.nc"
-
-    def baseline_path(self, spatial: str) -> Path:
-        return self.assets_root / "baselines" / "era5" / f"{spatial}.nc"
 
     def modality_baseline_path(self, modality: str, spatial: str) -> Path:
         """Cross-modality reference baseline (e.g. era5_land skt) under its own modality folder."""
@@ -123,10 +106,6 @@ class ExperimentPaths:
         Key inside the file: ``time_indices`` (int64 T1H positions).
         """
         return self.assets_root / "temporal" / f"time_indices_{split}.npz"
-
-    def metadata_path(self, experiment: str, version: str) -> Path:
-        """Resolve the run-metadata JSON written at the start of each training run."""
-        return self.experiment_dir(experiment) / version / "metadata.json"
 
     # --- results paths (separate from experiment dir, keyed by eval name) ---
 
@@ -155,12 +134,6 @@ class ExperimentPaths:
     def tables_dir(self, experiment: str, version: str, kind: str) -> Path:
         """Evaluation tables grouped by family: kind in {scores, fc_limits, validity}."""
         d = self.results_root / "tables" / f"{experiment}_{version}" / kind
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-
-    def figures_dir(self, experiment: str, version: str) -> Path:
-        """Per-model figure directory, parallel to the tables tree."""
-        d = self.results_root / "plots" / f"{experiment}_{version}"
         d.mkdir(parents=True, exist_ok=True)
         return d
 

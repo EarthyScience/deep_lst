@@ -15,14 +15,28 @@ model:
   learning_rate: 3.7e-4
   dropout: 0.005
   activation: gelu
-  # integer = raw class codes (v13 reference); embedding = learnable static embeddings
-  static_encoding: embedding
+  # causal = history tokens attend to their past only (v16 reference); full = bidirectional
+  attention: causal
+  # integer = raw class codes (campaign default since v16); embedding = learnable static embeddings
+  static_encoding: integer
+  # A diagnostic's observed past enters the state window like a prognostic's, hidden (NaN) from
+  # t0+1 on since it is never carried; skipped for diagnostics that are prognostics as well.
+  # Off = the window holds the prognostics only (a diagnostic then regresses from the drivers).
+  diagnostic_history: true
+  # init_fill mirrors the inference key: where the training rollout takes its first prior.
+  # none = the init observation (cloudy inits drop out of the rollout term); gated = the
+  # observation where present, else the analysis; always = the analysis for every sample.
+  # gated and always train the analysis head (the diagnostic copy of the prognostic at t0 from
+  # the window ending at t0), with the t0 slot hidden in init_hide_fraction of the samples so
+  # filling has a target. Needs LST in both lists (conf/data/full_joint.yaml).
+  init_fill: none
+  init_hide_fraction: 0.5
   step_loss: RolloutLoss
   loss_fn: smooth_l1
   checkpoint_monitor: val_loss_step_epoch_log
   detach_rollout: false
   teacher_forcing_loss: true
-  incremental_loss: true
+  incremental_loss: false
   rollout_loss: true
   probabilistic: false
   scheduler_T0: 80000

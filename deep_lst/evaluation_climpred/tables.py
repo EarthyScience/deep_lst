@@ -8,13 +8,16 @@ for the paper), so the two can never disagree.
 
 import csv
 
-from .masks import COV_BINS, WINDOW_LABELS
+from .masks import COV_BINS, GAP_BINS, WINDOW_LABELS
 
 MISSING = "--"  # window registered in MASKS but never verified
 
 SHORT_BASELINE_LABELS = {"clim_smooth": "Clim.", "persistence": "Persis.", "era5land": "SKT"}
 
 PLAIN_WINDOWS = ("all", "day", "night", "diurnal")  # time-of-day only, no row group
+
+# Per-pixel scores of skill_daily.nc (quantile, day, window) the efficiency table reports.
+EFFICIENCY_SCORES = ("acc_pixel", "r2_pixel", "nse_pixel")
 
 # Short row labels for the standalone coverage tables (one group, one row per bin).
 COVERAGE_ROW_LABELS = {
@@ -24,6 +27,15 @@ COVERAGE_ROW_LABELS = {
     "cov_50_75": r"50-75\%",
     "cov_75_90": r"75-90\%",
     "cov_gt90": r"$>$ 90\%",
+}
+
+# Short row labels for the standalone gap tables (hours since the last observation at init).
+GAP_ROW_LABELS = {
+    "gap_0": "0 h (observed)",
+    "gap_1_6": "1-6 h",
+    "gap_7_24": "7-24 h",
+    "gap_25_72": "25-72 h",
+    "gap_gt72": r"$>$ 72 h",
 }
 
 
@@ -37,7 +49,11 @@ def _row_groups(pooled):
     bases = [
         w
         for w in available
-        if w not in PLAIN_WINDOWS and w not in COV_BINS and not w.endswith("_day") and not w.endswith("_night")
+        if w not in PLAIN_WINDOWS
+        and w not in COV_BINS
+        and w not in GAP_BINS
+        and not w.endswith("_day")
+        and not w.endswith("_night")
     ]
     ordered = [w for w in WINDOW_LABELS if w in bases]
     ordered += sorted(w for w in bases if w not in WINDOW_LABELS)
@@ -128,6 +144,30 @@ def _anomaly_rows(pooled, days, groups):
     return rows
 
 
+def _efficiency_rows(pooled, days, groups):
+    """(group, label, values): per-pixel median ACC, anomaly R2 and NSE at both days,
+    then the absolute changes."""
+    nowcast, medium = days
+    available = _available(pooled)
+    rows = []
+    for group, members in groups.items():
+        for label, window in members.items():
+            if window not in available:
+                rows.append((group, label, [None] * 9))
+                continue
+            at_nowcast = []
+            at_medium = []
+            for name in EFFICIENCY_SCORES:
+                median = pooled[name].sel(quantile=0.5, window=window)
+                at_nowcast.append(float(median.sel(day=nowcast)))
+                at_medium.append(float(median.sel(day=medium)))
+            changes = []
+            for nowcast_value, medium_value in zip(at_nowcast, at_medium):
+                changes.append(medium_value - nowcast_value)
+            rows.append((group, label, at_nowcast + at_medium + changes))
+    return rows
+
+
 def _emit_csv(path, columns, rows):
     """One flat file: group, row, then the raw values at full precision."""
     with open(path, "w", newline="") as handle:
@@ -197,6 +237,15 @@ def _anomaly_cells(values):
     return scores + changes
 
 
+def _efficiency_cells(values):
+    """Two-decimal per-pixel medians, then the signed absolute changes."""
+    if values[0] is None:
+        return [MISSING] * 9
+    scores = [f"{value:.2f}" for value in values[:6]]
+    changes = [f"{value:+.2f}" for value in values[6:]]
+    return scores + changes
+
+
 def write_score_table(pooled, days, tables_dir):
     """RMSE and bias per region x time of day, at both lead windows plus their change."""
     nowcast, medium = days
@@ -261,30 +310,60 @@ def write_skill_table(pooled, days, tables_dir, baselines):
 
 
 def write_coverage_tables(pooled, days, tables_dir, baselines):
-    """Standalone scores and skill across the lookback-coverage bins (one group,
-    total windows only); skipped entirely when no bin was verified."""
-    if not any(window in _available(pooled) for window in COV_BINS):
+    """Standalone scores and skill across the lookback-coverage bins."""
+    _write_bin_tables(
+        pooled,
+        days,
+        tables_dir,
+        baselines,
+        COV_BINS,
+        COVERAGE_ROW_LABELS,
+        "Coverage (total)",
+        "coverage",
+        "clear-sky coverage of the lookback window",
+    )
+
+
+def write_gap_tables(pooled, days, tables_dir, baselines):
+    """Standalone scores and skill across the gap-at-init bins (hours since the last observation)."""
+    _write_bin_tables(
+        pooled,
+        days,
+        tables_dir,
+        baselines,
+        GAP_BINS,
+        GAP_ROW_LABELS,
+        "Gap at init (total)",
+        "gap",
+        "hours since the last clear-sky observation at init",
+    )
+
+
+def _write_bin_tables(pooled, days, tables_dir, baselines, bins, row_labels, group_name, stem, what):
+    """Standalone scores and skill across one family of bins (one group, total windows only);
+    skipped entirely when no bin was verified."""
+    if not any(window in _available(pooled) for window in bins):
         return
     nowcast, medium = days
-    groups = {"Coverage (total)": {label: window for window, label in COVERAGE_ROW_LABELS.items()}}
+    groups = {group_name: {label: window for window, label in row_labels.items()}}
 
     score_rows = [(group, label, values[:4]) for group, label, values in _score_rows(pooled, days, groups)]
     columns = [f"rmse_d{nowcast}", f"bias_d{nowcast}", f"rmse_d{medium}", f"bias_d{medium}"]
-    _emit_csv(tables_dir / "scores_coverage.csv", columns, score_rows)
+    _emit_csv(tables_dir / f"scores_{stem}.csv", columns, score_rows)
     header = (
         "& \\multicolumn{2}{c}{Nowcast range} & \\multicolumn{2}{c}{Medium range} \\\\\n"
         "& RMSE [K] & Bias [K] & RMSE [K] & Bias [K] \\\\"
     )
     caption = (
-        "Forecast scores by clear-sky coverage of the lookback window, pooled over the same "
+        f"Forecast scores by {what}, pooled over the same "
         f"nowcasting (day {nowcast}) and medium-range (day {medium}) windows as the main score table."
     )
-    _emit_latex(tables_dir / "scores_coverage.tex", "lrrrr", header, score_rows, caption, _score_cells_nodiff)
+    _emit_latex(tables_dir / f"scores_{stem}.tex", "lrrrr", header, score_rows, caption, _score_cells_nodiff)
 
     skill_rows = _skill_rows(pooled, days, baselines, groups)
     skill_columns = [f"{name}_d{day}" for day in days for name in baselines]
     skill_columns += [f"{name}_diff_pct" for name in baselines]
-    _emit_csv(tables_dir / "skill_coverage.csv", skill_columns, skill_rows)
+    _emit_csv(tables_dir / f"skill_{stem}.csv", skill_columns, skill_rows)
     per_group = " & ".join(SHORT_BASELINE_LABELS[name] for name in baselines)
     n_baselines = len(baselines)
     skill_header = (
@@ -294,12 +373,12 @@ def write_coverage_tables(pooled, days, tables_dir, baselines):
         f"& {per_group} & {per_group} & {per_group} \\\\"
     )
     skill_caption = (
-        "RMSE skill score against the three baselines by clear-sky coverage of the lookback "
-        "window, at the same lead windows as the main skill table. The percentage difference "
+        f"RMSE skill score against the three baselines by {what}, "
+        "at the same lead windows as the main skill table. The percentage difference "
         "is computed relative to the nowcast."
     )
     _emit_latex(
-        tables_dir / "skill_coverage.tex",
+        tables_dir / f"skill_{stem}.tex",
         "l" + "|".join(["r" * n_baselines] * 3),
         skill_header,
         skill_rows,
@@ -332,8 +411,47 @@ def write_anomaly_table(pooled, days, tables_dir):
     _emit_latex(tables_dir / "anomaly.tex", "lrrrr|rr", header, rows, caption, _anomaly_cells, highlight=True)
 
 
+def write_efficiency_table(pooled, days, tables_dir):
+    """Per-pixel centered ACC, anomaly R2 and Nash-Sutcliffe efficiency per region x time
+    of day at both lead windows: the median over the pixels of each window, so the three
+    columns share one convention (the anomaly table pools the samples of every pixel
+    instead). Skipped when the verif predates the per-pixel sums."""
+    if "nse_pixel" not in pooled:
+        return
+    nowcast, medium = days
+    columns = [f"{name}_d{day}" for day in days for name in ("acc", "r2", "nse")]
+    columns += ["acc_diff", "r2_diff", "nse_diff"]
+    rows = _efficiency_rows(pooled, days, _row_groups(pooled))
+    _emit_csv(tables_dir / "efficiency.csv", columns, rows)
+    header = (
+        "& \\multicolumn{3}{c}{Nowcast range} & \\multicolumn{3}{c}{Medium range}"
+        " & \\multicolumn{3}{c}{Difference} \\\\\n"
+        "& ACC & $R^2$ & NSE & ACC & $R^2$ & NSE & ACC & $R^2$ & NSE \\\\"
+    )
+    caption = (
+        "Per-pixel centered anomaly correlation (ACC), anomaly $R^2$ and Nash-Sutcliffe "
+        "efficiency (NSE) by Koeppen-Geiger group and time of day: the median over the pixels "
+        f"of each group, pooled over the same nowcasting (day {nowcast}) and medium-range "
+        f"(day {medium}) windows as the score table. ACC and $R^2$ are computed on the departures "
+        "from the smoothed diurnal climatology, the NSE on the observed temperature itself, every "
+        "pixel centred on the mean of its own scored samples. The difference displays medium "
+        "range $-$ nowcast range."
+    )
+    _emit_latex(
+        tables_dir / "efficiency.tex",
+        "lrrrrrr|rrr",
+        header,
+        rows,
+        caption,
+        _efficiency_cells,
+        highlight=True,
+    )
+
+
 def write_verif_tables(pooled, days, tables_dir, baselines):
     write_score_table(pooled, days, tables_dir)
     write_skill_table(pooled, days, tables_dir, baselines)
     write_coverage_tables(pooled, days, tables_dir, baselines)
+    write_gap_tables(pooled, days, tables_dir, baselines)
     write_anomaly_table(pooled, days, tables_dir)
+    write_efficiency_table(pooled, days, tables_dir)

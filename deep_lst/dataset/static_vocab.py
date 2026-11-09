@@ -9,7 +9,7 @@ those map to the reserved id instead of crashing or silently aliasing onto a rea
 The mapping is part of the model contract, like the normalisation statistics: it is
 persisted next to the other assets and loaded again at train and inference time.
 
-Build:  python -m deep_lst.preprocessing.static_vocab --spatial mtg_new
+Build:  python -m deep_lst.dataset.static_vocab --spatial mtg_new
 """
 
 import argparse
@@ -90,7 +90,7 @@ def load_vocab(paths: ExperimentPaths, spatial: str) -> dict:
     if not path.exists():
         raise FileNotFoundError(
             f"No static vocabulary at {path}. Build it once with "
-            f"`python -m deep_lst.preprocessing.static_vocab --spatial {spatial}`."
+            f"`python -m deep_lst.dataset.static_vocab --spatial {spatial}`."
         )
     return json.loads(path.read_text())
 

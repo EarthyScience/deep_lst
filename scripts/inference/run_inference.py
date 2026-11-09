@@ -28,6 +28,17 @@ def run_inference(cfg: DictConfig) -> None:
     paths = ExperimentPaths()
     config = load_run_config(cfg, paths)
     td_keys = get_keys_from_config(config["test_dataset"])
+    # init_fill: as trained unless overridden. The nowcast source follows the model (the analysis
+    # head exists when it was trained with init_fill gated or always); a deviating init_fill
+    # writes forecast_<init_fill>.zarr next to the canonical store.
+    trained_fill = config["model"].get("init_fill", "none")
+    init_fill = cfg.init_fill if cfg.init_fill is not None else trained_fill
+    nowcast = "analysis" if trained_fill != "none" else "history"
+    if init_fill == "always" and nowcast != "analysis":
+        raise ValueError(
+            "init_fill=always needs a model trained with model.init_fill gated or always (the analysis head)"
+        )
+    suffix = "" if init_fill == trained_fill else f"_{init_fill}"
 
     lit_module, device = load_model(
         config, td_keys, experiment=cfg.experiment, version=cfg.version, prefer_best=cfg.best
@@ -38,6 +49,7 @@ def run_inference(cfg: DictConfig) -> None:
     dataset = MultimodalDataset.from_modalities(modality_ids, shared, **config["test_dataset"])
     print(f"Experiment : {cfg.experiment} / {cfg.version}")
     print(f"Eval       : {cfg.eval_name}")
+    print(f"init_fill  : {init_fill} (trained {trained_fill}, nowcast {nowcast})")
     print(f"Dataset    : {len(dataset.spatial_idx)} pixels × {len(dataset.time_idx)} init times")
 
     # The streaming zarr write assumes time-major iteration in sorted pixel and time order
@@ -77,9 +89,11 @@ def run_inference(cfg: DictConfig) -> None:
         non_land=dataset.non_land_mask(),
         prediction_mode=config["model"]["step_loss"],
         apply_lw_mask=cfg.land_water_mask,
+        init_fill=init_fill,
+        nowcast=nowcast,
     )
 
-    output_path = paths.forecast_path(cfg.experiment, cfg.version, cfg.eval_name)
+    output_path = paths.forecast_path(cfg.experiment, cfg.version, cfg.eval_name, suffix)
     forecast.predict_and_save(output_path, dataset.time_idx)
     Forecast.rechunk_store(output_path)
 

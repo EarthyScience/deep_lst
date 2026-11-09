@@ -1,6 +1,6 @@
 CLEANUP_PLAN.md
 
-assets/
+/assets/
 results/
 plots/
 tables
@@ -11,14 +11,11 @@ nas/hpo.db
 
 scripts/out
 scripts/bin
-scripts/**/*.sh
 scripts/resubmit
 
 experiments/
 experiments_archived/
 notebooks/
-
-configs/
 
 deep_lst/raw
 
@@ -42,6 +39,13 @@ wheels/
 
 # experiments
 outputs/
+/data/
 *.ckpt
 .ipynb_checkpoints/
 __pycache__/
+
+/*.log
+
+# local artefacts
+nas/hpo.db
+*.ipynb
