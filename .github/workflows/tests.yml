@@ -19,12 +19,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # CPU-only torch to keep install fast; eodata is a local path dep not
-          # available on CI — tests that need it are skipped via importorskip.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install pytorch-lightning tensordict omegaconf numpy pytest
-          pip install --no-deps -e .
-          pip install uv && uv sync --no-install-package eodata
+          pip install uv
+          uv sync --frozen --no-install-package eodata
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: uv run --no-sync pytest tests/ -v
