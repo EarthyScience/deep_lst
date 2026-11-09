@@ -7,7 +7,7 @@
 Multi-modal and light-weight land surface temperature forecasting
 
 > **Status:** this is `develop`, the working branch; interfaces and configs change. The
-> last publication snapshot is the tag `DeepLST_v1.0`; reproduce the paper from there. The latest tag DeepLST_v2.0 has moved forward from there.
+> last publication snapshot is the tag `DeepLST_v1.0.0`; reproduce the paper from there. The latest tag DeepLST_v2.0.0 has moved forward from there.
 
 Multi-modal machine learning for forecasting of land surface temperature (LST) over Africa from geostationary satellite observations (SEVIRI) and reanalysis (ERA5, ERA5-Land). An autoregressive MLP or transformer
 rolls the hourly LST incrementes forward over a customized forecast horizon. The state is driven by the large-scale atmospheric forcing. Forecasts are verified against climatology, persistence and ERA5-Land skin temperature. The code builds on PyTorch Lightning, is configured with Hydra and logs to Weights & Biases.

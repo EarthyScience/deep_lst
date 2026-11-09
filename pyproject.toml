@@ -7,7 +7,7 @@ maintainers=[
         { name = "Ramin Yazdani", email = "ryazdani@bgc-jena.mpg.de"},
 ]
 name = "deep_lst"
-version = "1.0.0"
+version = "2.0.0"
 description = "Multi-modal and light-weight land surface temperature forecasting"
 readme = "README.md"
 

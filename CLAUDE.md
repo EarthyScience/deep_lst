@@ -22,7 +22,7 @@ The ground truth of what a run did is `experiments/<run>/version_N/config.yml`, 
 - Network needs `ml proxy` (git, uv, wandb).
 - Do not switch branches in `../eodata_slim`; it is an editable install (`docs/ARCHITECTURE.md`,
   section 3).
-- Do not run checkpoints of the publication snapshot `DeepLST_v1.0` from `develop`
+- Do not run checkpoints of the publication tag `DeepLST_v1.0.0` from `develop`
   (`docs/ARCHITECTURE.md`, section 2).
 - `assets/`, `experiments/`, `results/`, `plots/`, `tables/`, `notebooks/` and `scripts/out/` are
   gitignored. Don't propose committing them.
