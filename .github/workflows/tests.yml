@@ -20,7 +20,10 @@ jobs:
       - name: Install dependencies
         run: |
           pip install uv
-          uv sync --frozen --no-install-package eodata
+          uv export --frozen --prune eodata --no-emit-project --no-hashes -o ci-requirements.txt
+          uv venv
+          uv pip install -r ci-requirements.txt
+          uv pip install --no-deps -e .
 
       - name: Run tests
-        run: uv run --no-sync pytest tests/ -v
+        run: .venv/bin/python -m pytest tests/ -v

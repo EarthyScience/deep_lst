@@ -2,20 +2,18 @@
 authors=[
     { name = "Marieke Wesselkamp", email = "mwessel@bgc-jena.mpg.de"},
 ]
-maintainers={
+maintainers=[
         { name = "Marieke Wesselkamp", email = "mwessel@bgc-jena.mpg.de"},
         { name = "Ramin Yazdani", email = "ryazdani@bgc-jena.mpg.de"},
-}
+]
 name = "deep_lst"
 version = "1.0.0"
 description = "Multi-modal and light-weight land surface temperature forecasting"
 readme = "README.md"
-dynamic = ["version"]
 
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastparquet>=2024.11.0",
-    "flatdict>=4.0.1",
     "geopandas>=1.1.1",
     "ipykernel>=7.0.1",
     "matplotlib>=3.10.7",
@@ -26,6 +24,7 @@ dependencies = [
     "pandas>=2.3.3",
     "pyarrow>=21.0.0",
     "pytorch-lightning>=2.5.5",
+    "tensordict>=0.10.0",
     "torch>=2.9.0",
     "tqdm>=4.67.1",
     "wandb>=0.22.3",
