@@ -1,8 +1,17 @@
 [project]
+authors=[
+    { name = "Marieke Wesselkamp", email = "mwessel@bgc-jena.mpg.de"},
+]
+maintainers={
+        { name = "Marieke Wesselkamp", email = "mwessel@bgc-jena.mpg.de"},
+        { name = "Ramin Yazdani", email = "ryazdani@bgc-jena.mpg.de"},
+}
 name = "deep_lst"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "Multi-modal and light-weight land surface temperature forecasting"
 readme = "README.md"
+dynamic = ["version"]
+
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastparquet>=2024.11.0",

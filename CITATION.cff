@@ -1,0 +1,28 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: DeepLST
+message: >-
+  Multi-modal and light-weight land surface temperature
+  forecasting
+type: software
+authors:
+  - given-names: Marieke
+    family-names: Wesselkamp
+    email: mwessel@bgc-jena.mpg.de
+    affiliation: Max Planck Institute for Biogeochemistry
+    orcid: 'https://orcid.org/0009-0008-2742-319X'
+abstract: >-
+  Neural forecasting of land surface temperature (LST) over
+  Africa from geostationary satellite observations (SEVIRI)
+  and reanalysis (ERA5, ERA5-Land). An autoregressive MLP or
+  transformer rolls the hourly LST state forward for up to
+  ten days, driven by the large-scale atmospheric forcing.
+  Forecasts are verified against climatology, persistence
+  and ERA5-Land skin temperature.
+keywords:
+  - land surface forecasting
+  - land surface temperature
+  - autoregressive learning
+license: BSD-3-Clause
