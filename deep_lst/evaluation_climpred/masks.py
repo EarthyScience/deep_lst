@@ -30,6 +30,15 @@ COV_BINS = {
     "cov_75_90": (0.75, 0.90),
     "cov_gt90": (0.90, 1.0),
 }
+# Hours since the last clear-sky observation at or before init, [lo, hi), None = open above:
+# the gap the forecast starts from (cubes.attach_init_observation). gap_0 = observed at init.
+GAP_BINS = {
+    "gap_0": (0, 1),
+    "gap_1_6": (1, 7),
+    "gap_7_24": (7, 25),
+    "gap_25_72": (25, 73),
+    "gap_gt72": (73, None),
+}
 # Display names for the class-group windows; tables and plots fall back to the
 # raw window string for anything not listed here.
 WINDOW_LABELS = {
@@ -46,6 +55,14 @@ WINDOW_LABELS = {
     "cov_50_75": "Coverage 50-75%",
     "cov_75_90": "Coverage 75-90%",
     "cov_gt90": "Coverage > 90%",
+    "init_obs": "Observed at init",
+    "init_gap": "Gap at init",
+    "init_filled": "Filled at init",
+    "gap_0": "Gap 0 h",
+    "gap_1_6": "Gap 1-6 h",
+    "gap_7_24": "Gap 7-24 h",
+    "gap_25_72": "Gap 25-72 h",
+    "gap_gt72": "Gap > 72 h",
 }
 WINDOW_LABELS.update({f"green_d{k}": f"Greenness {(k - 1) * 10}-{k * 10}%" for k in range(1, 11)})
 WINDOW_LABELS["fvc_d1"] = "FVC bare"
@@ -115,6 +132,32 @@ def coverage_mask(coord, bounds):
     return mask
 
 
+def init_observed_mask(df):
+    return df["init_observed"]
+
+
+def init_gap_mask(df):
+    return ~df["init_observed"]
+
+
+def init_filled_mask(df):
+    return df["init_filled"]
+
+
+def range_mask(coord, bounds):
+    """MASKS-style function keeping samples whose coord is in [lo, hi); hi None = open above."""
+    lo, hi = bounds
+
+    def mask(df):
+        values = df[coord]
+        inside = values >= lo
+        if hi is not None:
+            inside = inside & (values < hi)
+        return inside
+
+    return mask
+
+
 def month_mask(months):
     """MASKS-style function keeping samples whose valid time falls in months."""
 
@@ -166,6 +209,18 @@ for bin_name, bounds in HOUR_BINS.items():
     MASKS[bin_name] = solar_hour_mask(bounds)
 for bin_name, bounds in COV_BINS.items():
     MASKS[bin_name] = coverage_mask("lookback_coverage", bounds)
+MASKS["init_obs"] = init_observed_mask
+MASKS["init_gap"] = init_gap_mask
+MASKS["init_filled"] = init_filled_mask
+for init_name, init_mask in (
+    ("init_obs", init_observed_mask),
+    ("init_gap", init_gap_mask),
+    ("init_filled", init_filled_mask),
+):
+    for tod_name, tod_mask in (("day", day_mask), ("night", night_mask)):
+        MASKS[f"{init_name}_{tod_name}"] = combined_mask(init_mask, tod_mask)
+for bin_name, bounds in GAP_BINS.items():
+    MASKS[bin_name] = range_mask("hours_since_obs", bounds)
 for bin_name, bounds in GREEN_BINS.items():
     MASKS[bin_name] = coverage_mask("relative_greenness", bounds)
     for tod_name, tod_mask in (("day", day_mask), ("night", night_mask)):

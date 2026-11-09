@@ -47,13 +47,6 @@ PRELOAD_START_DAY = STORE_EPOCH_OFFSET // 24  # 2016-01-01
 PRELOAD_END_DAY = T1H.date_to_index("2026-01-01") // 24  # exclusive
 
 
-def _spatial_idx_from_npz(path) -> np.ndarray:
-    # Non-preload fallback: base zarrs have no spatial_idx array, so derive it from the npz.
-    data = np.load(path)
-    order = np.argsort(data["src_indices"], kind="stable")
-    return data["mapping"][order]
-
-
 def load_samples(
     spatial_idx: np.ndarray,
     start_time: str | None = None,

@@ -13,7 +13,7 @@ from deep_lst.utils.io import ExperimentPaths
 
 from .common import build_parser, verification_dir
 from .cubes import pixel_attributes
-from .derive import derive_verif_products, diurnal_scores
+from .derive import derive_verif_products, diurnal_scores, solar_hour_month_scores, solar_hour_scores
 from .gifs import month_fields, monthly_verif_path, render_standard_gifs
 from .masks import register_month_windows
 from .plots import (
@@ -28,6 +28,7 @@ from .plots import (
     plot_diurnal_cycles,
     plot_error_and_skill,
     plot_error_skill_anomaly,
+    plot_error_skill_by_solar_hour,
     plot_forecast_limit_map,
     plot_fvc_decile_curves,
     plot_fvc_pixel_scatter,
@@ -39,6 +40,7 @@ from .plots import (
     plot_skill_bars,
     plot_skill_limit_maps,
     plot_skill_summary,
+    plot_solar_hour_months,
 )
 from .tables import _row_groups, write_verif_tables
 from .timeseries import plot_example_forecasts, plot_regime_forecasts, plot_site_forecasts
@@ -55,6 +57,9 @@ LEAD_WINDOWS = ("all", "day", "night")
 # Per-pixel efficiency maps next to the RMSE, skill and bias maps, drawn where the verif
 # saved the per-pixel sums (pixel_daily <variable>_model).
 EFFICIENCY_MAPS = ("nse", "acc", "nrmse")
+# The hour-of-day decomposition of the hourly curves needs one solar offset for all pixels:
+# dense regions spanning at most one hour of longitude (the continental sets span 4.5 h).
+SOLAR_HOUR_MAX_LON_SPAN = 15.0  # degrees
 
 
 def main():
@@ -117,6 +122,21 @@ def main():
             rmse_dispersion_model=out["rmse_model_dispersion"].sel(window=window),
             rmse_dispersion_baseline=out["rmse_baseline_dispersion"].sel(window=window),
         )
+    # Error growth and skill by solar hour of the valid time, pooled over the year and per
+    # init month (plots/months): from by_init.nc, no climpred.
+    lon = pixel_daily["lon"]
+    lon_span = float(lon.max() - lon.min())
+    if lon_span <= SOLAR_HOUR_MAX_LON_SPAN:
+        by_init = xr.open_dataset(verification_dir(args, "verif") / "by_init.nc", decode_timedelta=False)
+        solar_offset = float(lon.mean()) / 15.0
+        by_hour = solar_hour_scores(by_init.sel(window="all"), solar_offset)
+        by_hour_month = solar_hour_month_scores(by_init.sel(window="all"), solar_offset)
+        by_hour.to_netcdf(verification_dir(args, "scores") / "solar_hour.nc")
+        by_hour_month.to_netcdf(verification_dir(args, "scores") / "solar_hour_monthly.nc")
+        plot_error_skill_by_solar_hour(by_hour, plots_dir)
+        plot_solar_hour_months(by_hour_month, plots_dir / "months")
+    else:
+        print(f"Skipping the solar-hour figures: longitude span {lon_span:.1f} deg > {SOLAR_HOUR_MAX_LON_SPAN:.0f} deg")
     regions = [w for w in REGION_STYLES if w in windows]
     if regions:
         plot_acc_r2_regions(out, plots_dir, regions)

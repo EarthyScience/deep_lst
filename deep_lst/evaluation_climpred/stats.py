@@ -179,11 +179,6 @@ def per_init_counts(initilised, obs, windows, masks=None):
     return xr.concat(counts, dim="window").assign_coords(window=windows)
 
 
-def window_counts(initilised, obs, windows, masks=None):
-    """Jointly valid samples per (window, lead) -- the weights for day-bucket pooling."""
-    return per_init_counts(initilised, obs, windows, masks).sum("init")
-
-
 OBS_RANGE_QUANTILES = [0.05, 0.95]  # robust span of a site's observed LST: the nRMSE normaliser
 
 

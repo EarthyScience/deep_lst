@@ -1,5 +1,5 @@
 # @package _global_
-# v18 no. 1: noera5static minus the ERA5-Land soil temperatures stl1, stl2.
+# v18 no. 1: full (the former noera5static) minus the ERA5-Land soil temperatures stl1, stl2.
 # Same modality_ids/load as full -> reuses its preload cache; only the model roles change.
 _data: noera5static_nostl
 

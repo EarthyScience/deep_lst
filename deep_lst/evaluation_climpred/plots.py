@@ -1,10 +1,12 @@
+import calendar
+
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap, Normalize
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
@@ -316,6 +318,9 @@ def plot_skill_limit_maps(skill_field, limit_days, days, horizon, out_dir, suffi
     plt.close(fig)
 
 
+LEAD_LEGEND_LINE_WIDTH = 6.0  # line handles of the error/skill-by-lead legend
+
+
 def plot_error_and_skill(
     x,
     rmse_model,
@@ -353,7 +358,14 @@ def plot_error_and_skill(
     labels += ["Pixel median"]
     ax_rmse.get_legend().remove()
     ax_skill.get_legend().remove()
-    fig.legend(handles, labels, frameon=False, loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.0))
+    # Long, very thick legend lines: readable from the back of a room, and long enough
+    # that the dashed median keeps its pattern at that width.
+    legend = fig.legend(
+        handles, labels, frameon=False, loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.0), handlelength=3.0
+    )
+    for handle in legend.legend_handles:
+        if isinstance(handle, Line2D):
+            handle.set_linewidth(LEAD_LEGEND_LINE_WIDTH)
     fig.tight_layout()
     fig.savefig(out_dir / f"error_skill_by_lead{suffix}.pdf", dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -361,7 +373,7 @@ def plot_error_and_skill(
 
 def _draw_error(ax, x, rmse_model, rmse_baseline, xlabel, rmse_dispersion_model=None, rmse_dispersion_baseline=None):
     """RMSE of the model and of every baseline, each with its 95 % spread across pixels."""
-    ax.plot(x, rmse_model, color=MODEL_LINE, lw=1.6, label=MODEL_LABEL)
+    ax.plot(x, rmse_model, color=MODEL_LINE, lw=2.0, label=MODEL_LABEL)
     top = max(float(rmse_model.max()), float(rmse_baseline.max()))
     if rmse_dispersion_model is not None:
         low_px = rmse_dispersion_model.sel(quantile=0.025)
@@ -369,7 +381,7 @@ def _draw_error(ax, x, rmse_model, rmse_baseline, xlabel, rmse_dispersion_model=
         ax.fill_between(x, low_px, high_px, color=MODEL_LINE, alpha=0.08, lw=0, label="95 % Pixel spread")
         top = max(top, float(high_px.max()))
     for kind, color in COLORS.items():
-        ax.plot(x, rmse_baseline.sel(baseline=kind), color=color, lw=1.4, label=BASELINE_LABELS[kind])
+        ax.plot(x, rmse_baseline.sel(baseline=kind), color=color, lw=1.8, label=BASELINE_LABELS[kind])
         if rmse_dispersion_baseline is not None:
             low_px = rmse_dispersion_baseline.sel(baseline=kind, quantile=0.025)
             high_px = rmse_dispersion_baseline.sel(baseline=kind, quantile=0.975)
@@ -386,13 +398,13 @@ def _draw_skill(ax, x, skill, xlabel, dispersion=None):
     """Pooled skill per baseline with the 95 % spread across pixels."""
     spread = []
     for kind, color in COLORS.items():
-        ax.plot(x, skill.sel(baseline=kind), color=color, lw=1.4, label=BASELINE_LABELS[kind])
+        ax.plot(x, skill.sel(baseline=kind), color=color, lw=1.8, label=BASELINE_LABELS[kind])
         if dispersion is not None:
             low_px = dispersion.sel(baseline=kind, quantile=0.025)
             high_px = dispersion.sel(baseline=kind, quantile=0.975)
             band = ax.fill_between(x, low_px, high_px, color=color, alpha=0.08, lw=0)
             median_px = dispersion.sel(baseline=kind, quantile=0.5)
-            (median,) = ax.plot(x, median_px, color=color, ls="--", lw=0.9, alpha=0.6)
+            (median,) = ax.plot(x, median_px, color=color, ls="--", lw=1.2, alpha=0.7)
             if kind == SPATIAL_BASELINE:
                 band.set_label("95 % Pixel spread")
                 median.set_label("Pixel median")
@@ -458,6 +470,100 @@ def _share_limits(axes, symmetric=False):
         low = -high
     for ax in axes:
         ax.set_ylim(low, high)
+
+
+# Cyclic colours of the local solar hour: night navy, morning teal, noon amber, evening
+# crimson and back to navy, so midnight has one colour at both ends of the bar.
+SOLAR_HOUR_CMAP = LinearSegmentedColormap.from_list(
+    "solar_hour", [(0.0, "#1f2a60"), (0.25, "#2a9d8f"), (0.5, "#d99a00"), (0.75, "#a23b72"), (1.0, "#1f2a60")]
+)
+SOLAR_HOUR_NORM = Normalize(0, 24)
+
+
+def _draw_solar_hour_lines(ax, hourly, pooled):
+    """One line per hour of the valid time, coloured by its solar hour, and the pooled
+    curve over all hours in black (the series of the existing hourly figures)."""
+    for valid_hour in hourly["valid_hour"].values:
+        series = hourly.sel(valid_hour=valid_hour).dropna("lead")
+        colour = SOLAR_HOUR_CMAP(SOLAR_HOUR_NORM(float(series["solar_hour"])))
+        ax.plot(series["lead"], series, color=colour, lw=1.4)
+    ax.plot(pooled["lead"], pooled, color=MODEL_LINE, lw=2.2, label="All hours (pooled)")
+    ax.axhline(0.0, color="grey", lw=0.8)
+
+
+def _solar_hour_colorbar(fig, axes):
+    mappable = ScalarMappable(norm=SOLAR_HOUR_NORM, cmap=SOLAR_HOUR_CMAP)
+    colorbar = fig.colorbar(mappable, ax=axes, pad=0.02, ticks=[0, 6, 12, 18, 24])
+    colorbar.set_label("Local solar hour of the valid time")
+
+
+def plot_error_skill_by_solar_hour(scores, out_dir):
+    """Error growth (left) and the skill per baseline by lead, one line per hour of the
+    valid time, pooled over all inits (derive.solar_hour_scores). Compact regions only."""
+    fig, axes = plt.subplots(1, 4, figsize=(28, 6.5))
+    _draw_solar_hour_lines(axes[0], scores["rmse_model"], scores["rmse_model_pooled"])
+    axes[0].set_ylim(bottom=0.0)
+    axes[0].set_ylabel("RMSE [K]")
+    axes[0].set_title("Error growth")
+    for ax, (kind, label) in zip(axes[1:], BASELINE_LABELS.items()):
+        hourly = scores["rmse_ss"].sel(baseline=kind)
+        pooled = scores["rmse_ss_pooled"].sel(baseline=kind)
+        _draw_solar_hour_lines(ax, hourly, pooled)
+        ax.set_title(f"Skill against {label}")
+    _share_limits(axes[1:])
+    for ax in axes[1:]:
+        ax.set_ylim(top=1.0)
+    axes[1].set_ylabel("Skill improvement")
+    axes[1].legend(frameon=False, loc="upper right")
+    for ax in axes:
+        ax.set_xlabel("Lead [h]")
+    _solar_hour_colorbar(fig, axes.tolist())
+    fig.savefig(out_dir / "error_skill_by_solar_hour.pdf", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_solar_hour_months(scores, out_dir):
+    """The solar-hour figure per month of the init (derive.solar_hour_month_scores): one
+    3 x 4 grid for the error growth and one per baseline for the skill, into out_dir."""
+    out_dir.mkdir(exist_ok=True)
+    _plot_solar_hour_month_grid(
+        scores["rmse_model"],
+        scores["rmse_model_pooled"],
+        "RMSE [K]",
+        (0.0, None),
+        "Error growth",
+        out_dir / "rmse_by_solar_hour.pdf",
+    )
+    for kind, label in BASELINE_LABELS.items():
+        _plot_solar_hour_month_grid(
+            scores["rmse_ss"].sel(baseline=kind),
+            scores["rmse_ss_pooled"].sel(baseline=kind),
+            "Skill improvement",
+            (None, 1.0),
+            f"Skill against {label}",
+            out_dir / f"skill_by_solar_hour_{kind}.pdf",
+        )
+
+
+def _plot_solar_hour_month_grid(hourly, pooled, ylabel, ylim, title, path):
+    months = hourly["month"].values
+    fig, axes = plt.subplots(3, 4, figsize=(24, 15), sharex=True, sharey=True)
+    panels = axes.ravel()
+    for ax, month in zip(panels, months):
+        _draw_solar_hour_lines(ax, hourly.sel(month=month), pooled.sel(month=month))
+        ax.set_title(calendar.month_name[month])
+    for ax in panels[len(months) :]:  # seasonal runs leave months empty
+        ax.axis("off")
+    for ax in axes[-1]:
+        ax.set_xlabel("Lead [h]")
+    for ax in axes[:, 0]:
+        ax.set_ylabel(ylabel)
+    panels[0].set_ylim(*ylim)
+    panels[0].legend(frameon=False, loc="upper right")
+    _solar_hour_colorbar(fig, panels.tolist())
+    fig.suptitle(f"{title} by lead and solar hour, per init month", y=0.995)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_site(site, chosen, pred, observed, climatology, lookback_obs, lead, lookback, init_times, out_dir):

@@ -88,6 +88,9 @@ def build_model(config: dict, dataset_config: dict, lookback: int, paths=None):
     from deep_lst.dataset.static_vocab import build_static_spec
 
     packing = get_packing_keys(dataset_config)
+    prognostic_keys = packing["state_keys"][: packing["n_prognostic"]]
+    diagnostic_keys = packing["state_keys"][packing["n_prognostic"] :]
+    n_diagnostic_history = len([key for key in diagnostic_keys if key not in prognostic_keys])
     static_spec = None
     if config["model"].get("static_encoding", "embedding") == "embedding":
         static_spec = build_static_spec(dataset_config, paths or ExperimentPaths(), packing["input_keys"])
@@ -101,6 +104,7 @@ def build_model(config: dict, dataset_config: dict, lookback: int, paths=None):
         lookback=lookback,
         config=config["model"],
         static_spec=static_spec,
+        n_diagnostic_history=n_diagnostic_history,
     )
 
 

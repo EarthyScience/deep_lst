@@ -19,11 +19,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # CPU-only torch to keep install fast; eodata is a local path dep not
-          # available on CI — tests that need it are skipped via importorskip.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install pytorch-lightning tensordict omegaconf numpy pytest
-          pip install --no-deps -e .
+          pip install uv
+          uv export --frozen --prune eodata --no-emit-project --no-hashes -o ci-requirements.txt
+          uv venv
+          uv pip install -r ci-requirements.txt
+          uv pip install --no-deps -e .
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: .venv/bin/python -m pytest tests/ -v

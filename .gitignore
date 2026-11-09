@@ -11,14 +11,11 @@ nas/hpo.db
 
 scripts/out
 scripts/bin
-scripts/**/*.sh
 scripts/resubmit
 
 experiments/
 experiments_archived/
 notebooks/
-
-configs/
 
 deep_lst/raw
 

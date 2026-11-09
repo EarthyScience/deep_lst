@@ -15,7 +15,6 @@ def paths(tmp_path):
         experiment_root=tmp_path / "experiments",
         config_root=tmp_path / "configs",
         assets_root=tmp_path / "assets",
-        plots_root=tmp_path / "plots",
     )
 
 
@@ -28,14 +27,6 @@ def test_experiment_dir(paths, tmp_path):
 
 def test_checkpoint_dir(paths, tmp_path):
     assert paths.checkpoint_dir("run_01", "v0") == (tmp_path / "experiments" / "run_01" / "v0" / "checkpoints")
-
-
-def test_predictions_dir(paths, tmp_path):
-    assert paths.predictions_dir("run_01", "v0") == (tmp_path / "experiments" / "run_01" / "v0" / "results")
-
-
-def test_experiment_plots_dir(paths, tmp_path):
-    assert paths.experiment_plots_dir("run_01", "v0") == (tmp_path / "experiments" / "run_01" / "v0" / "plots")
 
 
 # ── file resolution ───────────────────────────────────────────────────────────
@@ -55,16 +46,8 @@ def test_spatial_indices_path(paths, tmp_path):
     assert paths.spatial_indices_path("mtg") == (tmp_path / "assets" / "spatial" / "indices_mtg.npz")
 
 
-def test_eval_indices_path(paths, tmp_path):
-    assert paths.eval_indices_path("dahra") == (tmp_path / "assets" / "spatial" / "indices_eval_dahra.npz")
-
-
 def test_temporal_indices_path(paths, tmp_path):
     assert paths.temporal_indices_path("train") == (tmp_path / "assets" / "temporal" / "time_indices_train.npz")
-
-
-def test_metadata_path(paths, tmp_path):
-    assert paths.metadata_path("run_01", "v0") == (tmp_path / "experiments" / "run_01" / "v0" / "metadata.json")
 
 
 # ── latest_checkpoint ─────────────────────────────────────────────────────────

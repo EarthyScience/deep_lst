@@ -11,6 +11,7 @@ from .cubes import (
     anomaly_ensemble,
     attach_classes,
     attach_coverage,
+    attach_init_observation,
     attach_init_state,
     baseline_cube,
     obs_series,
@@ -75,6 +76,14 @@ def build_parser(extra_windows=()):
         help="Eval name (results subfolder holding forecast.zarr); the spatial selection is derived from it.",
     )
     parser.add_argument(
+        "--init_fill",
+        type=str,
+        default=None,
+        choices=["none", "gated", "always"],
+        help="Verify the store of an inference whose init_fill deviated from the trained one "
+        "(forecast_<init_fill>.zarr); outputs go to <kind>_<init_fill>.",
+    )
+    parser.add_argument(
         "--windows",
         nargs="+",
         choices=list(MASKS) + list(extra_windows),
@@ -113,13 +122,15 @@ def setup_verif(extra_windows=()):
         args.windows = args.windows + MONTHLY_WINDOWS
     args.paths = ExperimentPaths()
     args.spatial = args.paths.baseline_spatial(args.eval_name)
+    args.suffix = f"_{args.init_fill}" if getattr(args, "init_fill", None) else ""
 
-    forecast = xr.open_dataset(args.paths.forecast_path(args.experiment, args.version, args.eval_name))
+    forecast = xr.open_dataset(args.paths.forecast_path(args.experiment, args.version, args.eval_name, args.suffix))
     initilised = prepare_initialised(forecast)
     initilised = attach_classes(initilised, args.paths.spatial_indices_path(args.spatial))
     obs = obs_series(forecast)
     lookback = lookback_hours(args.paths, args.experiment, args.version)
     initilised = attach_coverage(initilised, obs, lookback)
+    initilised = attach_init_observation(initilised, obs, lookback, forecast)
     state_path = args.paths.assets_root / "static" / f"fvc_init_state_{args.spatial}.nc"
     if state_path.exists():  # only the selections with a state file get the greenness windows
         initilised = attach_init_state(initilised, state_path, variables=None)  # greenness + lookback states
@@ -130,7 +141,9 @@ def setup_verif(extra_windows=()):
 
 
 def verification_dir(args, kind):
-    return args.paths.verification_dir(args.experiment, args.version, args.eval_name, kind)
+    return args.paths.verification_dir(
+        args.experiment, args.version, args.eval_name, kind + getattr(args, "suffix", "")
+    )
 
 
 def build_ensembles(args, initilised, obs):
