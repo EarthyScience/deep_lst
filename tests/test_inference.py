@@ -41,6 +41,8 @@ from tensordict import TensorDict
 
 from deep_lst.inference import Forecast
 
+pytest.importorskip("eodata")
+
 # ── shared constants ──────────────────────────────────────────────────────────
 
 B = 4  # batch size

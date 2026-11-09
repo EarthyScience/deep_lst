@@ -24,6 +24,7 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install pytorch-lightning tensordict omegaconf numpy pytest
           pip install --no-deps -e .
+          pip install uv && uv sync --no-install-package eodata
 
       - name: Run tests
         run: pytest tests/ -v
