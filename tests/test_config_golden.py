@@ -111,7 +111,7 @@ DROPPED_TOP_LEVEL = [
     "_sigma_prognostics",
     "_sigma_diagnostics",
 ]
-NEW_TOP_LEVEL = ["config_version", "objective", "optim", "window", "sources", "features", "splits"]
+NEW_TOP_LEVEL = ["config_version", "paths", "objective", "optim", "window", "sources", "features", "splits"]
 # the sections migrate_config has to rebuild exactly
 MIGRATED_SECTIONS = [
     "config_version",
@@ -201,6 +201,16 @@ def test_every_other_key_is_unchanged(case):
     for key in untouched:
         assert new[key] == legacy[key], key
     assert sorted(new) == sorted(untouched + ["model"] + NEW_TOP_LEVEL)
+
+
+def test_training_path_overrides_leave_scientific_config_unchanged():
+    default = _compose(NEW_OVERRIDES["default"])
+    overridden = _compose(
+        [*NEW_OVERRIDES["default"], "paths.eozarr_root=local-data", "paths.preload_cache_root=local-cache"]
+    )
+    assert default.pop("paths") == {"eozarr_root": None, "preload_cache_root": None}
+    assert overridden.pop("paths") == {"eozarr_root": "local-data", "preload_cache_root": "local-cache"}
+    assert overridden == default
 
 
 @pytest.mark.parametrize("case", CASES)

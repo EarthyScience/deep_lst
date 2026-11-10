@@ -11,6 +11,10 @@ defaults:
 
 config_version: 2
 
+paths:
+  eozarr_root: null
+  preload_cache_root: null
+
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new
 _spatial_val: eval_mtg_new_val
