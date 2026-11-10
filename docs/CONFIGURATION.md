@@ -56,6 +56,22 @@ be edited.
 
 ## 2. `conf/train.yaml`
 
+### Training data and cache paths
+
+`paths.eozarr_root` and `paths.preload_cache_root` override the data-store and preload-cache
+roots used by `deep_lst/train.py`, for all three training/validation/test splits. Both default
+to `null`, which keeps the existing `ExperimentPaths` defaults. Relative paths remain relative
+to the repository working directory. The overrides are saved in the run's `config.yml`.
+
+```
+uv run python deep_lst/train.py paths.eozarr_root=/data/eozarr paths.preload_cache_root=/scratch/deep_lst-cache
+```
+
+Cache keys are unchanged; use a separate cache root when the source data content differs.
+
+This first slice applies to training; standalone inference, statistics and fine-tuning entry
+points still use their existing paths. Model, loss and data-processing settings are unchanged.
+
 ### 2.1 Selections and splits
 
 | Key | Default | Meaning |

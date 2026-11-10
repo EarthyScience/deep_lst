@@ -108,8 +108,10 @@ assets/baselines/<kind>/<name>.nc         persistence / climatology / ERA5(-Land
 
 Two hard-coded paths need attention in a new clone:
 
-1. `ExperimentPaths.preload_cache_root` in `deep_lst/utils/io.py` points at the maintainer's
-   tscratch directory, which you cannot write to. Point it at your own tscratch directory.
+1. `ExperimentPaths.preload_cache_root` in `deep_lst/utils/io.py` defaults to the maintainer's
+   tscratch directory. For training, set `paths.preload_cache_root=<your-tscratch>` in the
+   command/config instead of editing Python; `paths.eozarr_root` can also override the store
+   root. Other entry points still use `ExperimentPaths` defaults. See `docs/CONFIGURATION.md`.
    The data stores (`ExperimentPaths.eozarr_root`,
    `/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old`) are group-readable and
    stay as they are.
