@@ -22,7 +22,7 @@ PREAMBLE="cd ${WORKDIR} && source ${WORKDIR}/.venv/bin/activate && \
     unset SLURM_MEM_PER_GPU SLURM_MEM_PER_CPU"
 
 for exp in ${EXPERIMENTS}; do
-    CMD="srun python3 ${WORKDIR}/scripts/inference/run_inference.py eval=${EVAL_NAME} experiment=${exp} version=version_0 best=true inference_horizon=${INFER_HORIZON} 'test_dataset.init_hours=[0, 6, 12, 18]'"
+    CMD="srun python3 ${WORKDIR}/scripts/inference/run_inference.py eval=${EVAL_NAME} experiment=${exp} version=version_0 best=true inference_horizon=${INFER_HORIZON} 'splits.test.init_hours=[0, 6, 12, 18]'"
     if $DRY_RUN; then
         echo "[dry] ${exp} (eval=${EVAL_NAME}):"; echo "    ${CMD}"
     else

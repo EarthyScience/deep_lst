@@ -1,0 +1,15 @@
+# @package objective
+
+_target_: deep_lst.losses.RolloutLoss
+kind: rollout
+
+terms:
+  teacher_forcing: 1.0
+  rollout: 1.0
+  increment: 0.0
+detach_rollout: false
+min_valid_fraction: 0.05
+
+init_fill: none
+init_hide_fraction: 0.5
+checkpoint_monitor: val_loss_step_epoch_log

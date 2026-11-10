@@ -18,6 +18,9 @@ Covered:
     - always starts every sample from the analysis
     - init_fill is validated at construction
     - a diagnostic that is also a prognostic adds no window channel
+  terms
+    - a weight multiplies its term; rollout 0 skips the rollout branch
+    - all weights 0 is refused
 """
 
 import pytest
@@ -51,10 +54,7 @@ class _StubModule:
 
     def __init__(self, model):
         self.model = model
-        self.config = {
-            "train_dataset": {"seviri": {"lookback": LOOKBACK, "horizon": HORIZON}},
-            "model": {"loss_fn": "smooth_l1"},
-        }
+        self.config = {"window": {"lookback": LOOKBACK, "horizon": HORIZON}}
         self.logged = {}
 
     def log(self, name, value, **kwargs):
@@ -71,14 +71,19 @@ def _batch(n_states, seed=0):
 
 
 def _loss(prognostic_keys, **extra):
-    return RolloutLoss(
-        prognostic_keys=prognostic_keys,
-        detach_rollout=False,
-        teacher_forcing_loss=True,
-        incremental_loss=False,
-        rollout_loss=True,
-        **extra,
-    )
+    """RolloutLoss with the values of conf/objective/rollout.yaml and loss=smoothl1."""
+    settings = {
+        "pointwise": F.smooth_l1_loss,
+        "terms": {"teacher_forcing": 1.0, "rollout": 1.0, "increment": 0.0},
+        "detach_rollout": False,
+        "min_valid_fraction": 0.05,
+        "init_fill": "none",
+        "init_hide_fraction": 0.5,
+        "kind": "rollout",
+        "checkpoint_monitor": "val_loss_step_epoch_log",
+    }
+    settings.update(extra)
+    return RolloutLoss(prognostic_keys=prognostic_keys, **settings)
 
 
 def test_zero_prognostics_gives_the_diagnostic_term_only():
@@ -219,3 +224,35 @@ def test_init_fill_is_validated():
         _loss(init_fill="sometimes", **JOINT_KEYS)
     with pytest.raises(ValueError, match="diagnostic copy"):
         _loss(prognostic_keys=[("seviri", "LST")], init_fill="gated")
+
+
+def test_a_weight_multiplies_its_term():
+    keys = [("seviri", "LST")]
+    reference = _StubModule(_ConstantModel(n_out=1))
+    _loss(prognostic_keys=keys)(reference, _batch(n_states=1), stage="train")
+    weighted = _StubModule(_ConstantModel(n_out=1))
+    terms = {"teacher_forcing": 2.0, "rollout": 0.5, "increment": 0.0}
+
+    total = _loss(prognostic_keys=keys, terms=terms)(weighted, _batch(n_states=1), stage="train")
+
+    assert weighted.logged["train_loss_logits"] == pytest.approx(2.0 * reference.logged["train_loss_logits"])
+    assert weighted.logged["train_loss_rollout"] == pytest.approx(0.5 * reference.logged["train_loss_rollout"])
+    expected = weighted.logged["train_loss_logits"] + weighted.logged["train_loss_rollout"]
+    assert float(total.detach()) == pytest.approx(expected)
+
+
+def test_rollout_weight_zero_skips_the_rollout_branch():
+    model = _RecordingModel(n_out=1, diagnostic_history=False)
+    module = _StubModule(model)
+    terms = {"teacher_forcing": 1.0, "rollout": 0.0, "increment": 0.0}
+
+    _loss(prognostic_keys=[("seviri", "LST")], terms=terms)(module, _batch(n_states=1), stage="train")
+
+    assert len(model.windows) == 1  # the folded teacher-forced forward only
+    assert module.logged["train_loss_rollout"] == 0.0
+
+
+def test_all_weights_zero_is_refused():
+    terms = {"teacher_forcing": 0.0, "rollout": 0.0, "increment": 0.0}
+    with pytest.raises(ValueError, match="weight 0"):
+        _loss(prognostic_keys=[("seviri", "LST")], terms=terms)

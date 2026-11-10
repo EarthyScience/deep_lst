@@ -1,7 +1,8 @@
 # @package _global_
 eval_name: train_mtg_new
 
-test_dataset:
-  spatial: mtg_new
-  temporal: test
-  anchor: mtg
+splits:
+  test:
+    spatial: mtg_new
+    temporal: test
+    anchor: mtg

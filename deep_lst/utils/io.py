@@ -149,6 +149,24 @@ def stats_spatial(dataset_cfg: dict) -> str:
     return dataset_cfg.get("stats_spatial", "mtg_new")
 
 
+def check_stats_transform(stats_zarr: Path, transform: str | None) -> None:
+    """Raise unless the statistics were computed under the transform the run applies.
+
+    compute_statistics.py records the modality's value transform in the zarr attrs (absent =
+    raw values). Statistics of raw values normalising transformed values, or the reverse, give
+    inputs on the wrong scale without any error further down.
+    """
+    import zarr
+
+    recorded = zarr.open_group(str(stats_zarr), mode="r").attrs.get("transform")
+    if recorded != transform:
+        raise ValueError(
+            f"{stats_zarr}: statistics computed with transform={recorded!r}, the run applies "
+            f"transform={transform!r} (sources.<modality>.transform). Recompute the statistics "
+            "or fix the transform."
+        )
+
+
 def load_inc_variances(stats_zarr: Path) -> dict[str, float]:
     """Return {var: sigma_inc_norm^2} from a statistics zarr's `increments` group.
 

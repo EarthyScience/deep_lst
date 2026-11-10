@@ -1,0 +1,13 @@
+# @package model
+name: transformer
+d_model: 256
+n_heads: 4
+n_layers: 4
+dim_feedforward: 512
+encoder_weights: None # Not active.
+dropout: 0.005
+activation: gelu
+attention: causal
+static_encoding: integer
+diagnostic_history: true
+norm_first: false # not active

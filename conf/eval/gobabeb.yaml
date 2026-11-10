@@ -1,7 +1,8 @@
 # @package _global_
 eval_name: gobabeb
 
-test_dataset:
-  spatial: eval_gobabeb
-  temporal: test
-  anchor: seviri
+splits:
+  test:
+    spatial: eval_gobabeb
+    temporal: test
+    anchor: seviri

@@ -169,7 +169,7 @@ One `assets/spatial/indices_<name>.npz` per selection. deep_lst reads a single k
   eodata); `anchor: mtg` in the config.
 - **Evaluation sets** are either MajorTom selections as well (a holdout of sites) or dense
   SEVIRI pixel ids for a region (`anchor: seviri`). Their config lives in `conf/eval/<name>.yaml`
-  and is selected with `eval=<name>` at inference; its `test_dataset.spatial` key names the
+  and is selected with `eval=<name>` at inference; its `splits.test.spatial` key names the
   selection, which `ExperimentPaths.spatial_indices_path` resolves to `indices_<spatial>.npz`
   (a training selection such as `mtg_new` is evaluated by naming it there).
 
@@ -202,6 +202,10 @@ Submit each as a SLURM job on the `gpu` partition (1 GPU, 8 CPUs, 32 GB, 2 h is 
 launcher for one modality, and `bash scripts/assets/launch_statistics_mtg.sh <name>` submits
 all three. Training resolves `stats_spatial` from `_spatial`, so all three zarrs must exist
 before you train on a selection, and a fourth from `modality=glofas_v4` for `data=full_glofas`.
+
+The store, the value transform and the variables that get increment statistics come from
+`conf/sources/eozarr.yaml`, the same file training composes. The transform is recorded in the
+zarr; training stops before the preload if it differs from the transform of the run's source.
 Recomputing statistics changes the preload fingerprint (below), so the cache is rebuilt
 afterwards.
 
@@ -209,7 +213,7 @@ afterwards.
 
 `assets/temporal/time_indices_<split>.npz`, key `time_indices` (hourly positions on the store
 time axis). The names used by the config are `_temporal_train`, `_temporal_val`,
-`test_dataset.temporal` in `conf/train.yaml` and `temporal: statistics` in
+`splits.test.temporal` in `conf/train.yaml` and `temporal: statistics` in
 `conf/statistics.yaml`. They are generated with the temporal-selection scripts in
 `eodata_slim/scripts/time_selection/` and provided together with the other assets; you should
 not need to regenerate them.
@@ -276,7 +280,7 @@ srun python3 ${WORKDIR}/deep_lst/train.py "$@"
 ```
 
 Everything after the script name is passed through as Hydra overrides:
-`sbatch scripts/training/train_mlp.sh model=mlp_rollout tag=<tag>`.
+`sbatch scripts/training/train_mlp.sh model=mlp tag=<tag>`.
 
 ### 5.1 Weights & Biases
 
@@ -299,7 +303,7 @@ Before anything else, check that your clone works end to end on a selection whos
 exist:
 
 ```
-sbatch scripts/training/train_mlp.sh model=mlp_rollout _spatial=<selection> smoke=true
+sbatch scripts/training/train_mlp.sh model=mlp _spatial=<selection> smoke=true
 squeue -u $USER
 tail -f scripts/out/train_mlp.<jobid>
 ```
@@ -311,16 +315,16 @@ so expect 30-60 min. Success is `experiments/<run>_smoke/version_0/` containing
 ### 5.3 Training
 
 ```
-sbatch scripts/training/train_mlp.sh model=mlp_rollout _spatial=<selection> \
+sbatch scripts/training/train_mlp.sh model=mlp _spatial=<selection> \
        training.max_epochs=40 tag=<tag>
-sbatch --gres=gpu:4 scripts/training/train_transformer.sh model=transformer_rollout _spatial=<selection> \
+sbatch --gres=gpu:4 scripts/training/train_transformer.sh model=transformer _spatial=<selection> \
        training.batch_size=128 training.max_epochs=40 tag=<tag>
 ```
 
 Conventions of the current campaigns: global batch 512 everywhere, the transformer as DDP on
 4 GPUs with per-rank batch 128 (it does not fit on one A40 at long lookbacks), the MLP on one
-GPU at 512. Since v18 the recipe (`_lookback=168`, `model.static_encoding=integer`,
-`model.incremental_loss=false`, `training.max_epochs=70`) is the config default; encode any
+GPU at 512. Since v18 the recipe (`window.lookback=168`, `model.static_encoding=integer`,
+`objective.terms.increment=0`, `training.max_epochs=70`) is the config default; encode any
 deviation from it in `tag`. Measured: ~28 min/epoch transformer, ~8 min/epoch MLP (~7 h for
 70 epochs with the preload cache present).
 
@@ -344,7 +348,7 @@ Roll a trained model out over an evaluation set (`conf/eval/<eval>.yaml`):
 
 ```
 python scripts/inference/run_inference.py eval=<eval> experiment=<run> version=version_0 \
-    best=true inference_horizon=240 'test_dataset.init_hours=[0, 6, 12, 18]'
+    best=true inference_horizon=240 'splits.test.init_hours=[0, 6, 12, 18]'
 ```
 
 Run it as a GPU job (1 GPU, 32 CPUs, 256 GB, a few hours). The existing inference launchers
@@ -390,12 +394,13 @@ on; off = drivers only), hidden from t0+1 on because it is never carried.
 
 - `prognostics: []`, `diagnostics: [LST]` (`conf/data/full_lstdiag.yaml`): the diagnostic
   regression, LST at every lead as an immediate estimate from the LST history and the drivers;
-  `deep_lst/losses/rollout.py` skips the state and rollout terms. Forecasts exist at every init.
+  `deep_lst/losses/rollout.py` skips the state and rollout terms (`objective=diagnostic` is the
+  rollout objective with the rollout term off, for this data option). Forecasts exist at every init.
 - LST in both lists (`conf/data/full_joint.yaml`): the joint head. The diagnostic copy is written
   as `LST_diag`; its history is not added to the window twice.
 - `init_fill` (`none | gated | always`) is one question asked in two phases: where does the
-  rollout take its first prior? In training (`model.init_fill`, variants `model=mlp_gated` and
-  `model=mlp_always`) gated starts from the observation where present and from the analysis
+  rollout take its first prior? In training (`objective.init_fill`, variants `objective=rollout_gated` and
+  `objective=rollout_always`) gated starts from the observation where present and from the analysis
   elsewhere, so cloudy inits enter the rollout term; always starts every sample from the
   analysis. Both train the analysis head, the diagnostic copy at t0 from the window ending at
   t0, with the t0 slot hidden in `init_hide_fraction` of the samples so filling has a target. At

@@ -41,6 +41,7 @@ from omegaconf import OmegaConf
 
 from deep_lst.dataset.dataset import MultimodalDataset
 from deep_lst.sensitivity.perturb import HOURS_PER_DAY, locate, preload_dates
+from deep_lst.utils.config import migrate_config, split_views
 from deep_lst.utils.init_state import lookback_mean, lookback_tendency
 from deep_lst.utils.io import ExperimentPaths
 
@@ -91,10 +92,11 @@ def main():
     parser.add_argument("--lookback_days", type=int, default=7, help="window of <name>_lookback / <name>_tendency")
     args = parser.parse_args()
 
-    config = OmegaConf.to_container(
+    saved = OmegaConf.to_container(
         OmegaConf.load(PATHS.experiment_dir(args.experiment) / args.version / "config.yml"), resolve=True
     )
-    dataset_config = dict(config["test_dataset"], spatial=args.selection)
+    config = migrate_config(saved)
+    dataset_config = dict(split_views(config)["test"], spatial=args.selection)
     shared = MultimodalDataset.preload_shared(config["modality_ids"], **dataset_config)
     sites = np.sort(np.load(PATHS.spatial_indices_path(args.selection))["src_indices"].astype(np.int64))
     if not np.array_equal(shared["anchor_ids"], sites):

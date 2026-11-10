@@ -28,8 +28,8 @@ DRY_RUN=false
 
 TF_LAUNCH="scripts/training/train_transformer.sh"
 MLP_LAUNCH="scripts/training/train_mlp.sh"
-TF_ARGS="model=transformer_rollout training.batch_size=128 training.max_epochs=40"
-MLP_ARGS="model=mlp_rollout training.max_epochs=40"
+TF_ARGS="model=transformer objective=rollout training.batch_size=128 training.max_epochs=40"
+MLP_ARGS="model=mlp objective=rollout training.max_epochs=40"
 BASE="loss=smoothl1 horizon=h24 data=full"
 TF_TIME="24:00:00"
 MLP_TIME="12:00:00"
@@ -47,25 +47,25 @@ submit () {
 
 # ---- Block 1: backbone x lookback (embedding statics) ----
 for lb in 24 72 168; do
-    submit 4 ${TF_TIME} ${TF_LAUNCH} ${TF_ARGS} ${BASE} _lookback=${lb} tag=lb${lb}_emb
-    submit 1 ${MLP_TIME} ${MLP_LAUNCH} ${MLP_ARGS} ${BASE} _lookback=${lb} tag=lb${lb}_emb
+    submit 4 ${TF_TIME} ${TF_LAUNCH} ${TF_ARGS} ${BASE} window.lookback=${lb} tag=lb${lb}_emb
+    submit 1 ${MLP_TIME} ${MLP_LAUNCH} ${MLP_ARGS} ${BASE} window.lookback=${lb} tag=lb${lb}_emb
 done
 
 # ---- Block 2: backbone x static encoding at lb24 (integer variants) ----
-submit 4 ${TF_TIME} ${TF_LAUNCH} ${TF_ARGS} ${BASE} _lookback=24 model.static_encoding=integer tag=lb24_int
-submit 1 ${MLP_TIME} ${MLP_LAUNCH} ${MLP_ARGS} ${BASE} _lookback=24 model.static_encoding=integer tag=lb24_int
+submit 4 ${TF_TIME} ${TF_LAUNCH} ${TF_ARGS} ${BASE} window.lookback=24 model.static_encoding=integer tag=lb24_int
+submit 1 ${MLP_TIME} ${MLP_LAUNCH} ${MLP_ARGS} ${BASE} window.lookback=24 model.static_encoding=integer tag=lb24_int
 
 # ---- Block 3: loss components x loss functions (transformer lb168_emb base) ----
 for loss in smoothl1 mae mse; do
     for comp in full noinc noroll notf; do
         [ "${loss}" == "smoothl1" ] && [ "${comp}" == "full" ] && continue
         overrides=""
-        [ "${comp}" == "noinc" ]  && overrides="model.incremental_loss=false"
-        [ "${comp}" == "noroll" ] && overrides="model.rollout_loss=false"
-        [ "${comp}" == "notf" ]   && overrides="model.teacher_forcing_loss=false"
+        [ "${comp}" == "noinc" ]  && overrides="objective.terms.increment=0"
+        [ "${comp}" == "noroll" ] && overrides="objective.terms.rollout=0"
+        [ "${comp}" == "notf" ]   && overrides="objective.terms.teacher_forcing=0"
         tag="lb168_emb"
         [ "${comp}" != "full" ] && tag="lb168_emb_${comp}"
-        submit 4 ${TF_TIME} ${TF_LAUNCH} ${TF_ARGS} loss=${loss} horizon=h24 data=full _lookback=168 ${overrides} tag=${tag}
+        submit 4 ${TF_TIME} ${TF_LAUNCH} ${TF_ARGS} loss=${loss} horizon=h24 data=full window.lookback=168 ${overrides} tag=${tag}
     done
 done
 

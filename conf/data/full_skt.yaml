@@ -1,36 +1,6 @@
 # @package _global_
-# `full` plus ERA5-Land skin temperature (skt) as a dynamic forcing input and as context. skt
-# is already in the era5_land load list (it was the ERA5-Land baseline reference), so this
-# shares the 3-modality preload cache with `full`; only the model role changes.
-_data: full_skt
 
-train_dataset:
-  era5:
-    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
-    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
-  era5_land:
-    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt, solar_zenith]
-    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt, solar_zenith]
-  seviri:
-    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
-    prognostics: [LST]
-    diagnostics: []
-    context_vars: [LST]
-
-val_dataset:
-  era5:
-    inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
-    context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]
-  era5_land:
-    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt, solar_zenith]
-    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt, solar_zenith]
-  seviri:
-    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
-    prognostics: [LST]
-    diagnostics: []
-    context_vars: [LST]
-
-test_dataset:
+features:
   era5:
     inputs: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, tvh, tvl, lsm, slt, solar_zenith]
     context_vars: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc, solar_zenith]

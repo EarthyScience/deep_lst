@@ -6,7 +6,7 @@
 #   1. loads the run's saved config.yml and best checkpoint (deep_lst.utils.config.load_model),
 #   2. builds the eval dataset from the same preload cache the inference used (every stored
 #      input of the eval sites for 2016-2025, normalised), inits thinned to 00 UTC of the test
-#      year with test_dataset.init_hours=[0] (365 inits x 500 holdout sites; all four init
+#      year with splits.test.init_hours=[0] (365 inits x 500 holdout sites; all four init
 #      hours would take four times longer on CPU),
 #   3. for every stored temporal input (ERA5, ERA5-Land, SEVIRI FVC, GloFAS when loaded; computed
 #      features and statics have no day axis) shuffles that input's days per cell -- within
@@ -52,7 +52,7 @@ PREAMBLE="cd ${WORKDIR} && source ${WORKDIR}/.venv/bin/activate && \
 
 for block in ${BLOCKS}; do
     CMD="srun python3 ${WORKDIR}/scripts/sensitivity/run_sensitivity.py experiment=${EXPERIMENT} eval=${EVAL} \
-        version=version_0 best=true sensitivity.block=${block} test_dataset.init_hours=[0] analysis.num_workers=16"
+        version=version_0 best=true sensitivity.block=${block} splits.test.init_hours=[0] analysis.num_workers=16"
     JOB=$(sbatch --parsable ${RESOURCES} \
         --job-name="sens_${block}_${EXPERIMENT}" --output="${WORKDIR}/scripts/out/sens_${EVAL}_${EXPERIMENT}_${block}.%j" \
         --wrap="${PREAMBLE} && ${CMD}")

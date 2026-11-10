@@ -1,0 +1,9 @@
+# @package model
+name: mlp
+hidden_sizes: [1024,512,256,256,128]
+dropout: 0.005
+activation: gelu
+use_residual: true
+use_layer_norm: true
+static_encoding: integer
+diagnostic_history: true

@@ -124,6 +124,8 @@ def main():
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
 
+    from deep_lst.utils.config import split_views
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spatial", default=None, help="Override the config's spatial selection.")
     parser.add_argument("--overrides", nargs="*", default=[], help="Extra hydra overrides.")
@@ -134,7 +136,7 @@ def main():
         cfg = compose(config_name="train", overrides=list(args.overrides))
     config = OmegaConf.to_container(cfg, resolve=True)
 
-    dataset_config = config["train_dataset"]
+    dataset_config = split_views(config)["train"]
     if args.spatial:
         dataset_config = dict(dataset_config, spatial=args.spatial, stats_spatial=args.spatial)
 

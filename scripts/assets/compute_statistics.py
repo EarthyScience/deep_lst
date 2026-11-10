@@ -44,14 +44,14 @@ def _flatten_channels(values: torch.Tensor) -> torch.Tensor:
 
 
 @torch.no_grad()
-def compute_statistics(dataset, prognostic_channels, device, num_workers, transform=None):
-    """Base per-data-type statistics + optional prognostic increment statistics (NaN ignored).
+def compute_statistics(dataset, increment_channels, device, num_workers, transform=None):
+    """Base per-data-type statistics + optional increment statistics (NaN ignored).
 
     `transform` names the modality's value transform (see dataset/transforms.py); the moments
     are then accumulated on the transformed values, matching what the normalizer z-scores."""
     loader = DataLoader(dataset, batch_size=8, num_workers=num_workers, drop_last=False)
     base: dict[str, WelfordMetric] = {}
-    increment = _welford(device) if prognostic_channels else None
+    increment = _welford(device) if increment_channels else None
     transform_values = transform_function(transform)
 
     for batch in tqdm(loader):
@@ -62,8 +62,8 @@ def compute_statistics(dataset, prognostic_channels, device, num_workers, transf
             base.setdefault(data_type, _welford(device)).update(_flatten_channels(values).to(torch.float64))
         if increment is not None:
             data = batch["data"].to(device)  # (B, days, C, 24)
-            diff = (data[..., 1:] - data[..., :-1])[:, :, prognostic_channels, :]  # within-day 1-hour increments
-            increment.update(diff.movedim(2, -1).reshape(-1, len(prognostic_channels)).to(torch.float64))
+            diff = (data[..., 1:] - data[..., :-1])[:, :, increment_channels, :]  # within-day 1-hour increments
+            increment.update(diff.movedim(2, -1).reshape(-1, len(increment_channels)).to(torch.float64))
 
     base_stats = {data_type: metric.compute() for data_type, metric in base.items()}
     increment_stats = increment.compute() if increment is not None else None
@@ -93,29 +93,30 @@ def computed_feature_statistics(rows, stat_days, modality) -> ArrayStatistics:
 def main(cfg: DictConfig) -> None:
     config = OmegaConf.to_container(cfg, resolve=True)
     modality = config["modality"]
-    prognostics = config[modality].get("prognostics", [])
-    transform = config[modality].get("transform")
+    source = config["sources"][modality]  # the same definition train.yaml composes
+    increment_vars = source.get("increment_vars", [])
+    transform = source.get("transform")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset = UnimodalDataset.from_config(
         modality=modality,
-        store=config[modality]["store"],
+        store=source["store"],
         spatial=config["spatial"],
         anchor=config["anchor"],
         temporal=config["temporal"],
     )
     data_fields = list(dataset.reader.data_arr.dtype.fields)
-    prognostic_channels = [data_fields.index(var) for var in prognostics]
+    increment_channels = [data_fields.index(var) for var in increment_vars]
     print(
         f"modality={modality}  pixels={len(dataset.rows)}  days={len(dataset.stat_days)}  "
-        f"prognostics={prognostics}  transform={transform}"
+        f"increment_vars={increment_vars}  transform={transform}"
     )
 
     base_stats, increment_stats = compute_statistics(
-        dataset, prognostic_channels, device, config["num_workers"], transform=transform
+        dataset, increment_channels, device, config["num_workers"], transform=transform
     )
 
-    # Base statistics per data type, plus (if any) the prognostic increments — all stored as the
+    # Base statistics per data type, plus (if any) the increments — all stored as the
     # same ArrayStatistics (mean/std/min/max). load_inc_variances derives (std_increment/std_var)^2 later.
     def _array_stats(stats):
         # atleast_1d: single-variable data types (e.g. seviri data_static=DEM) squeeze to 0-D in
@@ -125,7 +126,7 @@ def main(cfg: DictConfig) -> None:
 
     modality_stats = {data_type: _array_stats(stats) for data_type, stats in base_stats.items()}
     modality_stats["computed"] = computed_feature_statistics(dataset.rows, dataset.stat_days, modality)
-    if prognostics:
+    if increment_vars:
         modality_stats["increments"] = _array_stats(increment_stats)
 
     out_path = PATHS.stats_zarr_path(modality, config["spatial"])
@@ -140,17 +141,17 @@ def main(cfg: DictConfig) -> None:
         root[data_type].attrs["variables"] = list(getattr(dataset.reader, DATA_TYPES[data_type]).dtype.fields)
     root["computed"].attrs["variables"] = list(COMPUTED_VARIABLES)
 
-    if prognostics:  # record which data variables the increment channels correspond to
+    if increment_vars:  # record which data variables the increment channels correspond to
         group = root["increments"]
-        group.attrs["variables"] = list(prognostics)
-        group.attrs["channels"] = [int(channel) for channel in prognostic_channels]
+        group.attrs["variables"] = list(increment_vars)
+        group.attrs["channels"] = [int(channel) for channel in increment_channels]
 
     for data_type, stats in base_stats.items():
         print(
             f"  {data_type}: mean={np.round(stats['mean'].cpu().numpy(), 3)}  std={np.round(stats['std'].cpu().numpy(), 3)}"
         )
-    if prognostics:
-        print(f"  increments std={np.round(increment_stats['std'].cpu().numpy(), 3)} for {prognostics}")
+    if increment_vars:
+        print(f"  increments std={np.round(increment_stats['std'].cpu().numpy(), 3)} for {increment_vars}")
     print(f"saved statistics -> {out_path}")
 
 

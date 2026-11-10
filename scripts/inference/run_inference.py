@@ -19,7 +19,7 @@ from deep_lst.dataset.collator import Collator
 from deep_lst.dataset.dataset import MultimodalDataset
 from deep_lst.inference import Forecast
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.config import get_keys_from_config, get_packing_keys, load_model
+from deep_lst.utils.config import get_keys_from_config, get_packing_keys, load_model, split_views
 from deep_lst.utils.inference import load_run_config
 
 
@@ -27,16 +27,17 @@ from deep_lst.utils.inference import load_run_config
 def run_inference(cfg: DictConfig) -> None:
     paths = ExperimentPaths()
     config = load_run_config(cfg, paths)
-    td_keys = get_keys_from_config(config["test_dataset"])
+    test_view = split_views(config)["test"]
+    td_keys = get_keys_from_config(test_view)
     # init_fill: as trained unless overridden. The nowcast source follows the model (the analysis
     # head exists when it was trained with init_fill gated or always); a deviating init_fill
     # writes forecast_<init_fill>.zarr next to the canonical store.
-    trained_fill = config["model"].get("init_fill", "none")
+    trained_fill = config["objective"]["init_fill"]
     init_fill = cfg.init_fill if cfg.init_fill is not None else trained_fill
     nowcast = "analysis" if trained_fill != "none" else "history"
     if init_fill == "always" and nowcast != "analysis":
         raise ValueError(
-            "init_fill=always needs a model trained with model.init_fill gated or always (the analysis head)"
+            "init_fill=always needs a model trained with objective.init_fill gated or always (the analysis head)"
         )
     suffix = "" if init_fill == trained_fill else f"_{init_fill}"
 
@@ -45,8 +46,8 @@ def run_inference(cfg: DictConfig) -> None:
     )
 
     modality_ids = config["modality_ids"]
-    shared = MultimodalDataset.preload_shared(modality_ids, **config["test_dataset"])
-    dataset = MultimodalDataset.from_modalities(modality_ids, shared, **config["test_dataset"])
+    shared = MultimodalDataset.preload_shared(modality_ids, **test_view)
+    dataset = MultimodalDataset.from_modalities(modality_ids, shared, **test_view)
     print(f"Experiment : {cfg.experiment} / {cfg.version}")
     print(f"Eval       : {cfg.eval_name}")
     print(f"init_fill  : {init_fill} (trained {trained_fill}, nowcast {nowcast})")
@@ -72,7 +73,7 @@ def run_inference(cfg: DictConfig) -> None:
         num_workers=config["analysis"]["num_workers"],
         shuffle=False,
         drop_last=False,
-        collate_fn=Collator(config["model"]["name"], get_packing_keys(config["test_dataset"])),
+        collate_fn=Collator(config["model"]["name"], get_packing_keys(test_view)),
         pin_memory=config["analysis"].get("pin_memory", False),
         persistent_workers=config["analysis"]["num_workers"] > 0,
         prefetch_factor=config["analysis"].get("prefetch_factor", 2),
@@ -83,11 +84,11 @@ def run_inference(cfg: DictConfig) -> None:
         device=device,
         loader=loader,
         td_keys=td_keys,
-        config=config["test_dataset"],
+        config=test_view,
         spatial_indices=dataset.spatial_idx,
         pixel_lonlat=dataset.pixel_lonlat(),
         non_land=dataset.non_land_mask(),
-        prediction_mode=config["model"]["step_loss"],
+        prediction_mode=config["objective"]["kind"],
         apply_lw_mask=cfg.land_water_mask,
         init_fill=init_fill,
         nowcast=nowcast,

@@ -32,7 +32,7 @@ for arg in "$@"; do
 done
 
 MLP_LAUNCH="scripts/training/train_mlp.sh"
-MLP_ARGS="model=mlp_rollout loss=smoothl1 horizon=h24 _lookback=168 model.static_encoding=integer model.incremental_loss=false training.max_epochs=70 _spatial=mtg_hydrostates _spatial_val=eval_mtg_hydrostates_val _version=v16.2"
+MLP_ARGS="model=mlp objective=rollout loss=smoothl1 horizon=h24 window.lookback=168 model.static_encoding=integer objective.terms.increment=0 training.max_epochs=70 _spatial=mtg_hydrostates _spatial_val=eval_mtg_hydrostates_val _version=v16.2"
 MLP_TIME="10:00:00"
 BUILDER_TIME="16:00:00"
 BASE_TAG="hydrostates"

@@ -9,8 +9,8 @@ fields are ignored to keep the state_dict loadable.
 Usage
 -----
 uv run deep_lst/finetune.py \\
-    model=mlp_rollout loss=smoothl1 horizon=h72 \\
-    from_run=mlp_rollout_smoothl1_h24_v9/version_0
+    model=mlp objective=rollout loss=smoothl1 horizon=h72 \\
+    from_run=v18_mlp_rollout_smoothl1_h24_full/version_0
 
 Override any single value on the CLI:
     uv run deep_lst/finetune.py ... training.max_epochs=40 checkpoint=last
@@ -25,6 +25,7 @@ from pathlib import Path
 import hydra
 import pytorch_lightning as pl
 import torch
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import loggers as lgrs
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
@@ -32,8 +33,15 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.lit_module import LitModelModule
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.config import build_model, get_keys_from_config
-from deep_lst.utils.io import load_inc_variances, stats_spatial
+from deep_lst.utils.config import (
+    build_model,
+    experiment_name,
+    get_keys_from_config,
+    migrate_config,
+    split_views,
+    validate_config,
+)
+from deep_lst.utils.io import check_stats_transform, load_inc_variances, stats_spatial
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
 print("SLURM_JOB_GPUS:", os.environ.get("SLURM_JOB_GPUS"))
@@ -51,13 +59,15 @@ def _git_hash() -> str:
 @hydra.main(config_path="../conf", config_name="finetune", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     config = OmegaConf.to_container(cfg, resolve=True)
+    choices = HydraConfig.get().runtime.choices
+    validate_config(config)
 
     smoke = config.pop("smoke", False)
     tag = config.pop("tag", None)
     from_run = config.pop("from_run")
     checkpoint_choice = config.pop("checkpoint", "best")
 
-    name = config["_experiment"]
+    name = experiment_name(config, choices)
     if tag:
         name = f"{name}_{tag}"
 
@@ -92,7 +102,7 @@ def main(cfg: DictConfig) -> None:
     # rely on the user passing them on the CLI.
     saved_config_path = paths.experiment_dir(from_experiment) / from_version / "config.yml"
     if saved_config_path.exists():
-        saved = OmegaConf.to_container(OmegaConf.load(saved_config_path), resolve=True)
+        saved = migrate_config(OmegaConf.to_container(OmegaConf.load(saved_config_path), resolve=True))
         for k in ("hidden_sizes", "use_residual"):
             if k in saved.get("model", {}):
                 if config["model"].get(k) != saved["model"][k]:
@@ -119,7 +129,7 @@ def main(cfg: DictConfig) -> None:
         OmegaConf.save(OmegaConf.create(config), run_dir / "config.yml")
         metadata = {
             "name": name,
-            "config": config["_model_name"],
+            "config": choices["model"],
             "smoke": smoke,
             "tag": tag,
             "from_run": from_run,
@@ -136,7 +146,7 @@ def main(cfg: DictConfig) -> None:
 
     callbacks = []
     if not smoke and config["csv_logger"]:
-        monitor = config["model"].get("checkpoint_monitor", "val_loss_step_epoch")
+        monitor = config["objective"]["checkpoint_monitor"]
         ckpt_dir = run_dir / "checkpoints"
         callbacks = [
             ModelCheckpoint(
@@ -152,7 +162,7 @@ def main(cfg: DictConfig) -> None:
     if config["early_stopping"]:
         callbacks.append(
             EarlyStopping(
-                monitor=config["model"].get("checkpoint_monitor", "val_loss_step_epoch_log"),
+                monitor=config["objective"]["checkpoint_monitor"],
                 mode="min",
                 patience=7,
                 min_delta=5e-4,
@@ -160,34 +170,31 @@ def main(cfg: DictConfig) -> None:
             )
         )
 
-    data_module = LitDataModule(**config)
+    views = split_views(config)
+    train_view = views["train"]
+    stats_tag = stats_spatial(train_view)
+    for modality in config["modality_ids"]:
+        transform = config["sources"][modality].get("transform")
+        check_stats_transform(paths.stats_zarr_path(modality, stats_tag), transform)
+
+    data_module = LitDataModule(
+        **config, train_dataset=train_view, val_dataset=views["val"], test_dataset=views["test"]
+    )
     data_module.setup()
 
     # NOTE: the anomaly mode (predict_anomaly + ClimatologyLookup) was stripped — it did not
     # survive the packed-RolloutLoss migration (no loss consumed the climatology). Re-implement
     # inside losses/rollout.py if anomaly training returns.
 
-    td_keys = get_keys_from_config(config["train_dataset"])
-    lookback = config["train_dataset"]["seviri"]["lookback"]
+    td_keys = get_keys_from_config(train_view)
+    lookback = config["window"]["lookback"]
 
     inc_variances: dict[str, float] = {}
-    stats_tag = stats_spatial(config["train_dataset"])
     for modality in config["modality_ids"]:
         inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality, stats_tag)))
 
-    model = build_model(config, config["train_dataset"], lookback, paths)
-    lit_module = LitModelModule(
-        model,
-        config,
-        **td_keys,
-        inc_variances=inc_variances,
-        detach_rollout=config["model"].get("detach_rollout", True),
-        teacher_forcing_loss=config["model"].get("teacher_forcing_loss", True),
-        incremental_loss=config["model"].get("incremental_loss", False),
-        rollout_loss=config["model"].get("rollout_loss", True),
-        init_fill=config["model"].get("init_fill", "none"),
-        init_hide_fraction=config["model"].get("init_hide_fraction", 0.5),
-    )
+    model = build_model(config, train_view, lookback, paths)
+    lit_module = LitModelModule(model, config, **td_keys, inc_variances=inc_variances)
 
     state = torch.load(ckpt_path, map_location="cpu")
     lit_module.load_state_dict(state["state_dict"], strict=False)

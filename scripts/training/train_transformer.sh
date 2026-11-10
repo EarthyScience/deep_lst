@@ -11,7 +11,7 @@
 # Usage: sbatch train_transformer.sh [hydra_overrides...]
 #
 # Examples:
-#   sbatch scripts/training/train_transformer.sh model=transformer_rollout loss=smoothl1 horizon=h24 data=full_glofas
+#   sbatch scripts/training/train_transformer.sh model=transformer objective=rollout loss=smoothl1 horizon=h24 data=full_glofas
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1

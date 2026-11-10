@@ -86,10 +86,11 @@ class Forecast:
         """
         from eodata.grids import T1H
 
+        # prediction_mode is the objective's kind. A diagnostic objective is the rollout without
+        # a carried state, which _predict_rollout covers (no prognostic channel, lead 0 empty).
         predict_dispatch = {
-            "DiagnosticMSE": self._predict_diagnostic,
-            "DiagnosticCRPS": self._predict_diagnostic,
-            "RolloutLoss": self._predict_rollout,
+            "rollout": self._predict_rollout,
+            "diagnostic": self._predict_rollout,
         }
         predict_fn = predict_dispatch.get(self.prediction_mode)
         if predict_fn is None:
@@ -398,36 +399,6 @@ class Forecast:
         if self.sparse:
             return self.lats[self.local_rows], self.lons[self.local_cols]
         return self.lats, self.lons
-
-    @staticmethod
-    def _predict_diagnostic(model, device, loader, td_keys, normaliser=None, **kwargs):
-        """Single-step generator: yields per-batch (preds, obs, filled) dicts, denormalised;
-        filled is empty (no prognostic, nothing is started from an estimate)."""
-        diag_keys = td_keys["diagnostic_keys"]
-
-        with torch.no_grad():
-            for batch in tqdm(loader, desc="Predicting (diagnostic)"):
-                batch = batch.to(device)
-                with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
-                    out = model.model(batch)
-
-                preds_b = {}
-                obs_b = {}
-                # Pair by construction, not by zip: diagnostic_out_keys may carry extra
-                # {var}_log_sigma_pred entries (sigma_diagnostics) that have no target key.
-                for diag_key in diag_keys:
-                    modality, var = diag_key
-                    diag_out_key = (modality, f"{var}_pred")
-                    pred_batch = out[diag_out_key].float().cpu().numpy().squeeze((-3, -2, -1))
-                    obs_batch = batch[diag_key].cpu().numpy().squeeze((-3, -2, -1))
-
-                    if normaliser:
-                        pred_batch = normaliser.denormalise(pred_batch, var)
-                        obs_batch = normaliser.denormalise(obs_batch, var)
-
-                    preds_b[var] = pred_batch
-                    obs_b[var] = obs_batch
-                yield preds_b, obs_b, {}
 
     @staticmethod
     def _predict_rollout(model, device, loader, td_keys, normaliser=None, **kwargs):

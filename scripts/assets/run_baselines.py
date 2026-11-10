@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 
 from deep_lst.baselines import ClimatologyExtractor, Era5Extractor, Era5LandExtractor, PersistenceExtractor
 from deep_lst.dataset.dataset import MultimodalDataset
+from deep_lst.utils.config import split_views
 
 CONF_DIR = "/Net/Groups/BGI/people/mwessel/deep_lst/conf"
 
@@ -45,13 +46,16 @@ def parse_args():
 
 
 def build_config(region: str):
-    """Full data config for a region: train.yaml's test_dataset (stores/load) with the eval
-    region's spatial/anchor/temporal overlaid — the same inputs preload_shared saw at inference."""
+    """Full data config for a region: train.yaml's test split (stores/load) with the eval
+    region's spatial/anchor/temporal overlaid — the same inputs preload_shared saw at inference.
+    The test dataset dict the extractors read is attached as config["test_dataset"]."""
     with initialize_config_dir(version_base=None, config_dir=CONF_DIR):
         cfg = compose(config_name="train")
     region_cfg = OmegaConf.load(Path(CONF_DIR) / "eval" / f"{region}.yaml")
-    cfg.test_dataset = OmegaConf.merge(cfg.test_dataset, region_cfg.test_dataset)
-    return OmegaConf.to_container(cfg, resolve=True)
+    cfg.splits.test = OmegaConf.merge(cfg.splits.test, region_cfg.splits.test)
+    config = OmegaConf.to_container(cfg, resolve=True)
+    config["test_dataset"] = split_views(config)["test"]
+    return config
 
 
 def main():

@@ -1,145 +1,45 @@
 defaults:
   - _self_          # base applies first; groups below have higher priority
-  - model: mlp_rollout
+  - sources: eozarr
+  - model: mlp
+  - objective: rollout
   - loss: smoothl1
+  - optim: adamw_cosine
   - horizon: h24
   - data: full
 
+
+config_version: 2
+
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new
-# Pixels held out from training for validation and test: 500 MTG cells disjoint from
-# ${_spatial} (assets/spatial/indices_eval_mtg_new_val.npz, 2026-10-13). Normalisation stays
-# on the training statistics via stats_spatial. The v16 reference runs validated on the
-# training pixels; set this to ${_spatial} to reproduce them.
 _spatial_val: eval_mtg_new_val
-_lookback:   168
-_version:    v18   # data/selection generation in the run name; v16.2 = the validity-decorrelated mtg_hydrostates selection
-# Run name = <_version>_<_model_name>_<_loss>_<_horizon>_<_data>[_<tag>][_smoke] (train.py). The
-# recipe (lookback, statics encoding, loss terms, epochs) lives in the defaults and is not part
-# of the name; `tag` carries what varies between otherwise identical runs (seed, attention).
-_experiment: ${_version}_${_model_name}_${_loss}_${_horizon}_${_data}
-
-# Temporal split, chronological: train <= 2022, validate 2023, test 2024. Training is
-# every hour of 2016-01-01..2022-12-31; validation is days 11-20 of every month of 2023
-# (12 blocks, 2880 h), so the validation year is sampled in all twelve seasons. Train and
-# validation are separated by calendar year, so no lookback/horizon guard is needed and
-# the files do not depend on _lookback. Regenerate with:
-#   python ../eodata_slim/scripts/time_selection/seviri/temporal_midmonth.py \
-#       --out_dir assets/temporal
-# The v13 reference run used the superseded whole-month split: train_full / val
-# (validation = Feb/May/Aug/Nov 2023, and the same months of 2022 in neither split).
-# Those files are untouched; set the two keys below back to reproduce it.
+_version:    v18
 _temporal_train: train_full_2023b10
 _temporal_val:   val_2023b10
 
-# eodata-main .eozarr store names (data version)
-_seviri_store:   seviri_2016_2024
-_era5_store:     era5_2014_2025
-_era5land_store: era5_land_2016_2025
-_glofas_store:   glofas_v4_2014_2025
 
-# `load:` lists what is READ from each store, not what the model sees. The model's
-# input/context/prognostic lists live in conf/data/<data>.yaml; anything below that is
-# absent from those lists reaches RAM and stops there.
-_seviri_load:
-  data: [LST, MLE, MH]   # MLE, MH: loaded but unused in v13 — not model inputs (see conf/data/full.yaml)
-  data_daily: [FVC]
-  data_static: [DEM]
-  data_static_categorical: [LWMASK, LANDCOV]
-  metadata: [quality_flag, standard_error]   # cached raw; both unused in v13 (_quality_mask below is off)
-
-#_quality_mask:
-#  field: standard_error
-#  se_max: 1.8
-#  target: LST
-_era5_load:
-  data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
-  data_static_categorical: [tvh, tvl, lsm, slt]
-_era5land_load:
-  data: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]   # skt: baseline reference only, not a model input
-# T1D store (daily, unix-epoch day axis — same indexing as the T1H stores' day axis).
-# All four variables loaded so input toggles stay config-only; model inputs live in
-# conf/data/full_glofas.yaml. The modality is active only when modality_ids includes it.
-_glofas_load:
-  data: [rowe, sd, swir, dis24]
-# sign(x)*log1p(|x|) before the z-score: sd and dis24 span five orders of magnitude, so a plain
-# z-score squashes them to ~0 almost everywhere. The glofas stats zarr holds moments of the
-# transformed values (compute_statistics.py applies the same transform). Part of the preload
-# cache fingerprint. See deep_lst/dataset/transforms.py.
-_glofas_transform: signed_log1p
+window:
+  lookback: 168
 
 modality_ids: [era5, era5_land, seviri]
 
-train_dataset:
-  spatial: ${_spatial}
-  stats_spatial: ${_spatial}   # selection the stats zarrs were computed on (stays fixed for eval regions)
-  anchor: mtg
-  temporal: ${_temporal_train}
-  era5:
-    store: ${_era5_store}
-    load: ${_era5_load}
-    lookback: ${_lookback}
-  era5_land:
-    store: ${_era5land_store}
-    load: ${_era5land_load}
-    lookback: ${_lookback}
-  glofas_v4:
-    store: ${_glofas_store}
-    load: ${_glofas_load}
-    transform: ${_glofas_transform}
-    lookback: ${_lookback}
-  seviri:
-    store: ${_seviri_store}
-    load: ${_seviri_load}
-    lookback: ${_lookback}
-#    quality_mask: ${_quality_mask}
-
-val_dataset:
-  spatial: ${_spatial_val}
-  stats_spatial: ${_spatial}
-  anchor: mtg
-  temporal: ${_temporal_val}
-  era5:
-    store: ${_era5_store}
-    load: ${_era5_load}
-    lookback: ${_lookback}
-  era5_land:
-    store: ${_era5land_store}
-    load: ${_era5land_load}
-    lookback: ${_lookback}
-  glofas_v4:
-    store: ${_glofas_store}
-    load: ${_glofas_load}
-    transform: ${_glofas_transform}
-    lookback: ${_lookback}
-  seviri:
-    store: ${_seviri_store}
-    load: ${_seviri_load}
-    lookback: ${_lookback}
- #   quality_mask: ${_quality_mask}
-
-test_dataset:
-  spatial: ${_spatial_val}
-  stats_spatial: ${_spatial}
-  anchor: mtg
-  temporal: test_period_00
-  era5:
-    store: ${_era5_store}
-    load: ${_era5_load}
-    lookback: ${_lookback}
-  era5_land:
-    store: ${_era5land_store}
-    load: ${_era5land_load}
-    lookback: ${_lookback}
-  glofas_v4:
-    store: ${_glofas_store}
-    load: ${_glofas_load}
-    transform: ${_glofas_transform}
-    lookback: ${_lookback}
-  seviri:
-    store: ${_seviri_store}
-    load: ${_seviri_load}
-    lookback: ${_lookback}
+splits:
+  train:
+    spatial: ${_spatial}
+    stats_spatial: ${_spatial}   # selection the stats zarrs were computed on (stays fixed for eval regions)
+    anchor: mtg
+    temporal: ${_temporal_train}
+  val:
+    spatial: ${_spatial_val}
+    stats_spatial: ${_spatial}
+    anchor: mtg
+    temporal: ${_temporal_val}
+  test:
+    spatial: ${_spatial_val}
+    stats_spatial: ${_spatial}
+    anchor: mtg
+    temporal: test_period_00
 
 training:
   max_epochs: 70
@@ -156,9 +56,6 @@ training:
 wandb_logger: true
 csv_logger: true
 profiler: false
-# Off by default: the cosine schedule is sized to max_epochs, and every tuned run's best
-# epoch landed in its last few (38-41/40, 49/50), so patience-based stopping cut runs off
-# mid-decay. ModelCheckpoint still keeps the best epoch by checkpoint_monitor.
 early_stopping: false
 
 # --- runtime flags (CLI overrides) ---

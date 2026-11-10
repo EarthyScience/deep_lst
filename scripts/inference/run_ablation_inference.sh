@@ -57,7 +57,7 @@ PREAMBLE="cd ${WORKDIR} && source ${WORKDIR}/.venv/bin/activate && \
 # 3000 px x 480 inits: the final model's train_mtg_new run (1460 inits) took 6.3 h on an
 # A100, so ~2 h here, ~4 h on an A40; 8 h walltime as in run_temporal_extrapolation.sh.
 for exp in "${EXPERIMENTS[@]}"; do
-    CMD="srun python3 ${WORKDIR}/scripts/inference/run_inference.py eval=${EVAL_NAME} experiment=${exp} version=version_0 best=true inference_horizon=${INFER_HORIZON} 'test_dataset.init_hours=[0, 6, 12, 18]'"
+    CMD="srun python3 ${WORKDIR}/scripts/inference/run_inference.py eval=${EVAL_NAME} experiment=${exp} version=version_0 best=true inference_horizon=${INFER_HORIZON} 'splits.test.init_hours=[0, 6, 12, 18]'"
     if $DRY_RUN; then
         echo "[dry] ${exp} (eval=${EVAL_NAME}):"; echo "    ${CMD}"
     else

@@ -12,18 +12,12 @@ eval_name: ???
 # --- optional inference flags ---
 best: true               # load best.ckpt instead of last.ckpt
 land_water_mask: true   # keep LANDCOV land classes 1-16; drop ocean (17) + water bodies (18)
-inference_horizon: 240   # rollout horizon in hours. Use the trained value to reproduce training-length forecasts.
-# null = as trained (model.init_fill of the run), else none | gated | always. gated: inits without
-# an observation start from the model's nowcast; always: every init starts from it. The nowcast
-# is the analysis for models trained with init_fill gated or always, the history nowcast (lead-1
-# diagnostic one hour early) for any other joint model; always needs the analysis. A value
-# deviating from the trained one writes forecast_<init_fill>.zarr. Lead 0 of every rollout store
-# holds the start state (prognostic var), the init observation, the nowcast (diagnostic var,
-# NaN without filling) and a boolean <var>_init_filled per init and pixel.
+inference_horizon: 240
 init_fill: null
 
-test_dataset:
-  init_hours: [0, 6, 12, 18]   # thin init times to these UTC hours (6-hourly); set null for every hour
+splits:
+  test:
+    init_hours: [0, 6, 12, 18]   # thin init times to these UTC hours (6-hourly); set null for every hour
 
 analysis:
   batch_size: 24768

@@ -11,7 +11,7 @@ results/<experiment>/<version>/<eval>/sensitivity/permute_days_<block>/<modality
 then scores.collect compares every store with the run's own forecast.zarr on the samples where
 both forecasts and the observation are valid: scores.nc (per pixel) and summary.csv (pooled per
 solar window and forecast day). Settings: conf/sensitivity.yaml; the eval dataset follows
-conf/infer.yaml (e.g. test_dataset.init_hours=[0] thins the inits to 00 UTC).
+conf/infer.yaml (e.g. splits.test.init_hours=[0] thins the inits to 00 UTC).
 
     python scripts/sensitivity/run_sensitivity.py experiment=<exp> eval=eval_mtg sensitivity.block=month
     python scripts/sensitivity/run_sensitivity.py experiment=<exp> eval=eval_mtg \\

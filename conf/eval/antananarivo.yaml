@@ -1,7 +1,8 @@
 # @package _global_
 eval_name: antananarivo
 
-test_dataset:
-  spatial: eval_antananarivo
-  temporal: test
-  anchor: seviri
+splits:
+  test:
+    spatial: eval_antananarivo
+    temporal: test
+    anchor: seviri

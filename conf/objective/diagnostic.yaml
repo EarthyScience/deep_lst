@@ -1,0 +1,12 @@
+# @package objective
+
+defaults:
+  - rollout
+  - _self_
+
+kind: diagnostic
+terms:
+  teacher_forcing: 1.0
+  rollout: 0.0
+  increment: 0.0
+checkpoint_monitor: val_loss_step_epoch

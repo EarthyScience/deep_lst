@@ -1,13 +1,4 @@
 import torch
-import torch.nn.functional as F
-
-
-def smooth_l1(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Huber loss with the knee at 1 (state is z-scored → 1 unit-std)."""
-    return F.smooth_l1_loss(pred, target, beta=1.0)
-
-
-LOSS_FNS = {"mse": F.mse_loss, "smooth_l1": smooth_l1, "mae": F.l1_loss}
 
 
 def masked_loss(pred, target, loss_fn, min_valid_fraction):
@@ -19,24 +10,54 @@ def masked_loss(pred, target, loss_fn, min_valid_fraction):
 
 
 class RolloutLoss:
-    def __init__(self, **kwargs):
-        self.n_prognostic = len(kwargs["prognostic_keys"])
-        self.detach_rollout = kwargs.get("detach_rollout", True)
-        self.min_valid_fraction = kwargs.get("min_valid_fraction", 0.05)
-        self.teacher_forcing_loss = kwargs.get("teacher_forcing_loss", True)
-        self.incremental_loss = kwargs.get("incremental_loss", False)
-        self.rollout_loss = kwargs.get("rollout_loss", True)
+    """The training objective of the autoregressive models.
+
+    Everything up to `checkpoint_monitor` is configuration and comes from the `objective` node
+    (conf/objective/<objective>.yaml, `pointwise` from conf/loss/<loss>.yaml); none of it has a
+    default here, the yaml is the only place that sets it. The key lists and `inc_variances` are
+    known at run time only (deep_lst.lit_module.build_objective).
+
+    pointwise           (pred, target) -> scalar, the function every term is scored with
+    terms               weight per loss term (teacher_forcing, rollout, increment); a weight
+                        multiplies its term, 0 skips it. rollout = 0 skips the whole rollout branch
+    kind                rollout | diagnostic; read by the config validation and by inference
+    checkpoint_monitor  metric the checkpoint callback follows; read by train.py
+    """
+
+    def __init__(
+        self,
+        *,
+        pointwise,
+        terms,
+        detach_rollout,
+        min_valid_fraction,
+        init_fill,
+        init_hide_fraction,
+        kind,
+        checkpoint_monitor,
+        prognostic_keys,
+        diagnostic_keys=(),
+        inc_variances=None,
+        **runtime_keys,
+    ):
+        self.pointwise = pointwise
+        self.kind = kind
+        self.checkpoint_monitor = checkpoint_monitor
+        self.n_prognostic = len(prognostic_keys)
+        self.detach_rollout = detach_rollout
+        self.min_valid_fraction = min_valid_fraction
+        self.weight_teacher_forcing = terms["teacher_forcing"]
+        self.weight_rollout = terms["rollout"]
+        self.weight_increment = terms["increment"]
         # init_fill mirrors the inference key: where the training rollout takes its first prior.
         # none = the init observation (cloudy inits drop out of the rollout term); gated = the
         # observation where present, else the analysis; always = the analysis for every sample.
         # gated and always train the analysis: the diagnostics at t0 from the window ending at t0,
         # with the t0 slot hidden in init_hide_fraction of the samples so filling has a target.
-        self.init_fill = kwargs.get("init_fill", "none")
-        self.init_hide_fraction = kwargs.get("init_hide_fraction", 0.5)
+        self.init_fill = init_fill
+        self.init_hide_fraction = init_hide_fraction
         if self.init_fill not in ("none", "gated", "always"):
             raise ValueError(f"RolloutLoss: init_fill must be none, gated or always, got {self.init_fill!r}")
-        prognostic_keys = kwargs["prognostic_keys"]
-        diagnostic_keys = kwargs.get("diagnostic_keys", [])
         self.nowcast_channels = [
             (c, diagnostic_keys.index(key)) for c, key in enumerate(prognostic_keys) if key in diagnostic_keys
         ]  # (prognostic channel, diagnostic channel of its copy)
@@ -46,18 +67,18 @@ class RolloutLoss:
         # not prognostics as well, whose history is in the window already
         self.history_channels = [d for d, key in enumerate(diagnostic_keys) if key not in prognostic_keys]
         # per-prognostic increment std σ_inc, used to standardise the increment term
-        inc_variances = kwargs.get("inc_variances") or {}
-        prognostic_vars = [key[1] for key in kwargs["prognostic_keys"]]
+        inc_variances = inc_variances or {}
+        prognostic_vars = [key[1] for key in prognostic_keys]
         self.inc_std = torch.tensor([inc_variances.get(var, 1.0) ** 0.5 for var in prognostic_vars])
 
-        if not (self.teacher_forcing_loss or self.incremental_loss or self.rollout_loss):
-            raise ValueError("RolloutLoss: all loss components disabled")
+        if self.weight_teacher_forcing == 0 and self.weight_increment == 0 and self.weight_rollout == 0:
+            raise ValueError("RolloutLoss: all loss terms have weight 0")
 
     def __call__(self, lit_module, batch, stage):
         model = lit_module.model
-        cfg = lit_module.config["train_dataset"]["seviri"]
-        lookback, horizon = cfg["lookback"], cfg["horizon"]
-        loss_fn = LOSS_FNS[lit_module.config["model"].get("loss_fn", "mse")]
+        window_config = lit_module.config["window"]
+        lookback, horizon = window_config["lookback"], window_config["horizon"]
+        loss_fn = self.pointwise
 
         y_prog = batch["y_prog"]  # (B, L+H+1, H, W, nS)  state, prog-first, NaNs kept
         X_dyn = batch["X_dyn"]  # (B, L+H+1, H, W, nF)  all inputs (step forcings)
@@ -120,7 +141,7 @@ class RolloutLoss:
 
         # ---------- teacher-forced branch ----------
         loss_logits = y_prog.new_zeros(())
-        if self.teacher_forcing_loss or self.incremental_loss:
+        if self.weight_teacher_forcing != 0 or self.weight_increment != 0:
             y_prog_windows = []
             X_dyn_windows = []
             X_dyn_step = []
@@ -149,19 +170,19 @@ class RolloutLoss:
 
             y_prog_pred = prior_state + inc_pred
 
-            if self.teacher_forcing_loss:
+            if self.weight_teacher_forcing != 0:
                 if has_prognostic:
-                    loss_logits += state_loss(y_prog_pred, target_state)
+                    loss_logits += self.weight_teacher_forcing * state_loss(y_prog_pred, target_state)
                 if n_diagnostic:
-                    loss_logits += state_loss(
+                    loss_logits += self.weight_teacher_forcing * state_loss(
                         diag_pred, y_prog[:, lookback + 1 : lookback + horizon + 1, ..., self.n_prognostic :]
                     )
 
-            if self.incremental_loss and has_prognostic:
-                loss_logits += state_loss(inc_pred / inc_std, target_inc / inc_std)
+            if self.weight_increment != 0 and has_prognostic:
+                loss_logits += self.weight_increment * state_loss(inc_pred / inc_std, target_inc / inc_std)
 
         # ---------- rollout branch ----------
-        if self.rollout_loss and has_prognostic:
+        if self.weight_rollout != 0 and has_prognostic:
             prog_seq = [y_prog[:, i, ..., : self.n_prognostic] for i in range(lookback + horizon + 1)]
             if start_state is not None:
                 prog_seq[lookback] = start_state
@@ -187,17 +208,17 @@ class RolloutLoss:
                     prog_seq[lookback + h] = state_h.detach() if self.detach_rollout else state_h
 
             state_preds = torch.stack(state_preds, dim=1)  # (B, H, H, W, nP)
-            loss_rollout = state_loss(
+            loss_rollout = self.weight_rollout * state_loss(
                 state_preds, y_prog[:, lookback + 1 : lookback + horizon + 1, ..., : self.n_prognostic]
             )
             if n_diagnostic:
                 diag_preds = torch.stack(diag_preds, dim=1)
-                loss_rollout += state_loss(
+                loss_rollout += self.weight_rollout * state_loss(
                     diag_preds, y_prog[:, lookback + 1 : lookback + horizon + 1, ..., self.n_prognostic :]
                 )
-            if self.incremental_loss:
+            if self.weight_increment != 0:
                 inc_preds = torch.stack(inc_preds, dim=1)
-                loss_rollout += state_loss(inc_preds / inc_std, target_inc / inc_std)
+                loss_rollout += self.weight_increment * state_loss(inc_preds / inc_std, target_inc / inc_std)
             loss_rollout = loss_rollout
         else:
             loss_rollout = y_prog.new_zeros(())

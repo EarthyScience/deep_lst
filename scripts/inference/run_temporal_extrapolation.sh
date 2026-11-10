@@ -21,7 +21,7 @@ PREAMBLE="cd ${WORKDIR} && source ${WORKDIR}/.venv/bin/activate && \
 
 for eval_name in ${EVALS}; do
     exp=${EXPERIMENT}
-    CMD="srun python3 ${WORKDIR}/scripts/inference/run_inference.py eval=${eval_name} experiment=${exp} version=version_0 best=true inference_horizon=${INFER_HORIZON} 'test_dataset.init_hours=[0, 6, 12, 18]'"
+    CMD="srun python3 ${WORKDIR}/scripts/inference/run_inference.py eval=${eval_name} experiment=${exp} version=version_0 best=true inference_horizon=${INFER_HORIZON} 'splits.test.init_hours=[0, 6, 12, 18]'"
     if $DRY_RUN; then
         echo "[dry] ${exp} (eval=${eval_name}):"; echo "    ${CMD}"
     else

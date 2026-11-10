@@ -1,5 +1,5 @@
 """
-To test with resolved config: python deep_lst/train.py model=mlp_rollout loss=smoothl1 horizon=h24 data=full --cfg job --resolve
+To test with resolved config: python deep_lst/train.py model=mlp objective=rollout loss=smoothl1 horizon=h24 data=full --cfg job --resolve
 """
 
 import json
@@ -11,6 +11,7 @@ from pathlib import Path
 import hydra
 import pytorch_lightning as pl
 import torch
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import loggers as lgrs
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
@@ -18,8 +19,15 @@ from pytorch_lightning.profilers import AdvancedProfiler  # noqa: F401
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.lit_module import LitModelModule
-from deep_lst.utils.config import build_model, get_keys_from_config, get_packing_keys
-from deep_lst.utils.io import ExperimentPaths, load_inc_variances, stats_spatial
+from deep_lst.utils.config import (
+    build_model,
+    experiment_name,
+    get_keys_from_config,
+    get_packing_keys,
+    split_views,
+    validate_config,
+)
+from deep_lst.utils.io import ExperimentPaths, check_stats_transform, load_inc_variances, stats_spatial
 
 print("SLURM_NODELIST:", os.environ.get("SLURM_NODELIST"))
 print("SLURM_NNODES:", os.environ.get("SLURM_NNODES"))
@@ -40,6 +48,8 @@ def main(cfg: DictConfig) -> None:
     paths = ExperimentPaths()
 
     config = OmegaConf.to_container(cfg, resolve=True)
+    choices = HydraConfig.get().runtime.choices
+    validate_config(config)
     pl.seed_everything(config["seed"], workers=True)
 
     smoke = config.pop("smoke", False)
@@ -49,9 +59,9 @@ def main(cfg: DictConfig) -> None:
 
     if use_hpo and hpo_path:
         _HPO_PARAM_MAP = {
-            "learning_rate": ("model", "learning_rate"),
+            "learning_rate": ("optim", "learning_rate"),
             "dropout": ("model", "dropout"),
-            "weight_decay": ("model", "weight_decay"),
+            "weight_decay": ("optim", "weight_decay"),
             "batch_size": ("training", "batch_size"),
         }
         with open(hpo_path) as f:
@@ -64,12 +74,12 @@ def main(cfg: DictConfig) -> None:
             config["model"]["hidden_sizes"] = hpo["hidden_sizes"]
         if "horizon" in params:
             expected = f"h{int(params['horizon'])}"
-            actual = config.get("_horizon", "?")
+            actual = f"h{config['window']['horizon']}"
             if expected != actual:
                 print(f"WARNING: hpo_best was tuned for horizon={expected}, running with {actual}")
         print(f">>> HPO params loaded from {hpo_path} (val_loss={hpo.get('val_loss', '?'):.4f})")
 
-    name = config["_experiment"]
+    name = experiment_name(config, choices)
     if tag:
         name = f"{name}_{tag}"
 
@@ -98,7 +108,7 @@ def main(cfg: DictConfig) -> None:
         OmegaConf.save(OmegaConf.create(config), run_dir / "config.yml")
         metadata = {
             "name": name,
-            "config": config["_model_name"],
+            "config": choices["model"],
             "smoke": smoke,
             "tag": tag,
             "seed": config["seed"],
@@ -114,7 +124,7 @@ def main(cfg: DictConfig) -> None:
 
     callbacks = []
     if not smoke and config["csv_logger"]:
-        monitor = config["model"].get("checkpoint_monitor", "val_loss_step_epoch")
+        monitor = config["objective"]["checkpoint_monitor"]
         ckpt_dir = run_dir / "checkpoints"
         callbacks = [
             ModelCheckpoint(
@@ -130,7 +140,7 @@ def main(cfg: DictConfig) -> None:
     if config["early_stopping"]:
         callbacks.append(
             EarlyStopping(
-                monitor=config["model"].get("checkpoint_monitor", "val_loss_step_epoch_log"),
+                monitor=config["objective"]["checkpoint_monitor"],
                 mode="min",
                 patience=7,
                 min_delta=1e-4,
@@ -138,37 +148,34 @@ def main(cfg: DictConfig) -> None:
             )
         )
 
-    data_module = LitDataModule(**config)
+    views = split_views(config)
+    train_view = views["train"]
+    stats_tag = stats_spatial(train_view)
+    for modality in config["modality_ids"]:
+        transform = config["sources"][modality].get("transform")
+        check_stats_transform(paths.stats_zarr_path(modality, stats_tag), transform)
+
+    data_module = LitDataModule(
+        **config, train_dataset=train_view, val_dataset=views["val"], test_dataset=views["test"]
+    )
     data_module.setup()
 
-    td_keys = get_keys_from_config(config["train_dataset"])
-    packing = get_packing_keys(config["train_dataset"])
-    lookback = config["train_dataset"]["seviri"]["lookback"]
+    td_keys = get_keys_from_config(train_view)
+    packing = get_packing_keys(train_view)
+    lookback = config["window"]["lookback"]
 
     print(f"packing: {packing}")
 
     inc_variances: dict[str, float] = {}
-    stats_tag = stats_spatial(config["train_dataset"])
     for modality in config["modality_ids"]:
         inc_variances.update(load_inc_variances(paths.stats_zarr_path(modality, stats_tag)))
 
-    model = build_model(config, config["train_dataset"], lookback, paths)
+    model = build_model(config, train_view, lookback, paths)
     n_parameters = sum(p.numel() for p in model.parameters())
     print(f"static_encoding={config['model'].get('static_encoding', 'embedding')} parameters={n_parameters:,}")
     if getattr(model, "static_embedder", None) is not None:
         print(f"  {model.static_embedder}")
-    model_module = LitModelModule(
-        model,
-        config,
-        **td_keys,
-        inc_variances=inc_variances,
-        detach_rollout=config["model"].get("detach_rollout", True),
-        teacher_forcing_loss=config["model"].get("teacher_forcing_loss", True),
-        incremental_loss=config["model"].get("incremental_loss", False),
-        rollout_loss=config["model"].get("rollout_loss", True),
-        init_fill=config["model"].get("init_fill", "none"),
-        init_hide_fraction=config["model"].get("init_hide_fraction", 0.5),
-    )
+    model_module = LitModelModule(model, config, **td_keys, inc_variances=inc_variances)
 
     ngpu = torch.cuda.device_count()
     print("number of GPUs:", ngpu)

@@ -11,6 +11,7 @@ disagree, the code wins; fix the document in the same change.
 |---|---|
 | what the project is, install, the five pipeline commands, the role of every package | `README.md` |
 | config groups, run naming, computed features and old checkpoints, pitfalls | `docs/ARCHITECTURE.md` |
+| what a configuration key or option means, its default, which options go together | `docs/CONFIGURATION.md` |
 | cluster setup, directories, data stores and assets, preload cache, the SLURM job of every stage | `docs/RUNBOOK.md` |
 | drawing a new spatial selection and training on it | `docs/ONBOARDING.md` |
 

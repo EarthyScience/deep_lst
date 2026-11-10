@@ -1,0 +1,29 @@
+# @package sources
+
+era5:
+  store: era5_2014_2025
+  load:
+    data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
+    data_static_categorical: [tvh, tvl, lsm, slt]
+  increment_vars: []
+era5_land:
+  store: era5_land_2016_2025
+  load:
+    data: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]   # skt: baseline reference only, not a model input
+  increment_vars: [swvl1, swvl2, stl1, stl2]
+
+glofas_v4:
+  store: glofas_v4_2014_2025
+  load:
+    data: [rowe, sd, swir, dis24]
+  transform: signed_log1p
+  increment_vars: []
+seviri:
+  store: seviri_2016_2024
+  load:
+    data: [LST, MLE, MH]   # MLE, MH: loaded but unused in v13 — not model inputs (see conf/data/full.yaml)
+    data_daily: [FVC]
+    data_static: [DEM]
+    data_static_categorical: [LWMASK, LANDCOV]
+    metadata: [quality_flag, standard_error]   # cached raw; both unused in v13 (no quality_mask set)
+  increment_vars: [LST, MLE, MH]

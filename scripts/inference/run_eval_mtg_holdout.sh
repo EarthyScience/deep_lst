@@ -33,7 +33,7 @@ PREAMBLE="cd ${WORKDIR} && source ${WORKDIR}/.venv/bin/activate && \
 # (dataset.py:451-453). Chain them so the first builds the cache and the rest reuse it.
 PREVIOUS_JOB=""
 for exp in "${EXPERIMENTS[@]}"; do
-    CMD="srun python3 ${WORKDIR}/scripts/inference/run_inference.py eval=${EVAL_NAME} experiment=${exp} version=version_0 best=true inference_horizon=${INFER_HORIZON} 'test_dataset.init_hours=[0]'"
+    CMD="srun python3 ${WORKDIR}/scripts/inference/run_inference.py eval=${EVAL_NAME} experiment=${exp} version=version_0 best=true inference_horizon=${INFER_HORIZON} 'splits.test.init_hours=[0]'"
     if $DRY_RUN; then
         echo "[dry] ${exp} (eval=${EVAL_NAME}):"; echo "    ${CMD}"
     else

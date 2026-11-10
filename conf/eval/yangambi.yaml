@@ -1,7 +1,8 @@
 # @package _global_
 eval_name: yangambi
 
-test_dataset:
-  spatial: eval_yangambi
-  temporal: test
-  anchor: seviri
+splits:
+  test:
+    spatial: eval_yangambi
+    temporal: test
+    anchor: seviri

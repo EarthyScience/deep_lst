@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from deep_lst.dataset.data_module import LitDataModule
 from deep_lst.lit_module import LitModelModule
-from deep_lst.utils.config import build_model, get_keys_from_config, get_packing_keys
+from deep_lst.utils.config import build_model, get_keys_from_config, get_packing_keys, split_views
 from deep_lst.utils.io import ExperimentPaths, load_inc_variances
 
 HPO_EPOCHS = 20
@@ -58,6 +58,7 @@ class _PruningCallback(pl.Callback):
 def objective(
     trial: optuna.Trial,
     base_config: dict,
+    train_view: dict,
     data_module: LitDataModule,
     td_keys: dict,
     packing: dict,
@@ -65,16 +66,16 @@ def objective(
 ) -> float:
     config = copy.deepcopy(base_config)
 
-    config["model"]["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    config["optim"]["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     config["model"]["dropout"] = trial.suggest_float("dropout", 0.0, 0.5)
-    config["model"]["weight_decay"] = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
+    config["optim"]["weight_decay"] = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
     config["model"]["hidden_sizes"] = HIDDEN_SIZES[trial.suggest_categorical("hidden_sizes_idx", [0, 1, 2, 3, 4])]
     config["training"]["batch_size"] = trial.suggest_categorical("batch_size", [32, 64, 128, 256, 512])
 
     print(
-        f"[Trial {trial.number}] lr={config['model']['learning_rate']:.2e}  "
+        f"[Trial {trial.number}] lr={config['optim']['learning_rate']:.2e}  "
         f"dropout={config['model']['dropout']:.2f}  "
-        f"wd={config['model']['weight_decay']:.2e}  "
+        f"wd={config['optim']['weight_decay']:.2e}  "
         f"bs={config['training']['batch_size']}",
         flush=True,
     )
@@ -87,15 +88,8 @@ def objective(
     config["csv_logger"] = False
     config["wandb_logger"] = False
 
-    model = build_model(config, config["train_dataset"], config["train_dataset"]["seviri"]["lookback"])
-    model_module = LitModelModule(
-        model,
-        config,
-        **td_keys,
-        inc_variances=inc_variances,
-        detach_rollout=config["model"].get("detach_rollout", False),
-        incremental_loss=config["model"].get("incremental_loss", True),
-    )
+    model = build_model(config, train_view, config["window"]["lookback"])
+    model_module = LitModelModule(model, config, **td_keys, inc_variances=inc_variances)
 
     ngpu = torch.cuda.device_count()
     trainer = pl.Trainer(
@@ -128,26 +122,29 @@ def main():
         cfg = compose(
             config_name="train",
             overrides=[
-                "model=mlp_rollout",
+                "model=mlp",
+                "objective=rollout",
                 "loss=smoothl1",
                 "horizon=h24",
-                "model.warmup_steps=300",
+                "optim.warmup_steps=300",
             ],
         )
     config = OmegaConf.to_container(cfg, resolve=True)
     config.pop("smoke", None)
     config.pop("tag", None)
 
-    dm = LitDataModule(**config)
+    views = split_views(config)
+    train_view = views["train"]
+    dm = LitDataModule(**config, train_dataset=train_view, val_dataset=views["val"], test_dataset=views["test"])
     dm.setup()
 
     # td_keys and inc_variances are horizon-independent
-    td_keys = get_keys_from_config(config["train_dataset"])
-    packing = get_packing_keys(config["train_dataset"])
+    td_keys = get_keys_from_config(train_view)
+    packing = get_packing_keys(train_view)
 
     paths = ExperimentPaths()
     inc_variances: dict[str, float] = {}
-    for modality, mod_cfg in config["train_dataset"].items():
+    for modality, mod_cfg in train_view.items():
         if isinstance(mod_cfg, dict) and "statistics" in mod_cfg:
             inc_variances.update(load_inc_variances(paths.statistics_path(modality, mod_cfg["statistics"])))
 
@@ -167,7 +164,7 @@ def main():
 
     n_trials = int(os.environ.get("HPO_N_TRIALS", "25"))
     study.optimize(
-        lambda trial: objective(trial, config, dm, td_keys, packing, inc_variances),
+        lambda trial: objective(trial, config, train_view, dm, td_keys, packing, inc_variances),
         n_trials=n_trials,
     )
 

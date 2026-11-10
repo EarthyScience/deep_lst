@@ -54,7 +54,7 @@ for a selection of 3000 sites. The pipeline has five stages, run from the reposi
 # 1. normalisation statistics of a training selection (repeat for era5 and era5_land)
 uv run python scripts/assets/compute_statistics.py modality=seviri spatial=<selection>
 # 2. training
-uv run python deep_lst/train.py model=mlp_rollout _spatial=<selection> tag=<tag>
+uv run python deep_lst/train.py model=mlp objective=rollout _spatial=<selection> tag=<tag>
 # 3. inference: roll the trained run out over an evaluation set
 uv run python scripts/inference/run_inference.py eval=<eval> experiment=<run>
 # 4. verification against the observations and the reference forecasts
@@ -82,7 +82,7 @@ forecasts that `scripts/assets/run_baselines.py` extracts once per evaluation se
 | `deep_lst/exploration/` | stand-alone analyses of the data and the site sampling; not part of the pipeline |
 | `deep_lst/nas/` | hyper-parameter search |
 | `deep_lst/utils/` | shared helpers: experiment paths, config handling, computed solar and time features, normalisation, grid mapping |
-| `conf/` | Hydra configuration: one root file per entry point and the groups model, loss, horizon, data and eval |
+| `conf/` | Hydra configuration: one root file per entry point and the groups model, objective, loss, optim, horizon, data, sources and eval |
 | `scripts/` | entry points outside the package (assets, inference, sensitivity) and SLURM launchers written for the MPI-BGC cluster |
 | `tests/` | pytest suite; runs in CI without the data stores |
 
@@ -92,6 +92,8 @@ forecasts that `scripts/assets/run_baselines.py` extracts once per evaluation se
   prerequisites and directories to data, assets and the SLURM job of every stage.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): configuration groups, run naming, computed
   input features and known pitfalls.
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md): every configuration file, group, option
+  and key.
 - [`docs/ONBOARDING.md`](docs/ONBOARDING.md): the workflow for a new training selection, and a
   first project.
 

@@ -43,7 +43,7 @@ if [ ! -f "${GLOFAS_CACHE}" ] && ! $FORCE && ! $DRY_RUN; then
 fi
 
 MLP_LAUNCH="scripts/training/train_mlp.sh"
-MLP_ARGS="model=mlp_rollout loss=smoothl1 horizon=h24 _lookback=168 model.static_encoding=integer model.incremental_loss=false training.max_epochs=70 _spatial_val=mtg_new"
+MLP_ARGS="model=mlp objective=rollout loss=smoothl1 horizon=h24 window.lookback=168 model.static_encoding=integer objective.terms.increment=0 training.max_epochs=70 _spatial_val=mtg_new"
 MLP_TIME="10:00:00"
 BASE_TAG="hydrostates"
 

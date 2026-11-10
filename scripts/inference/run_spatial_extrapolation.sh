@@ -46,7 +46,7 @@ for eval in "${EVALS[@]}"; do
     STRIDE_ARGS=""
     if [ -n "${STRIDE}" ]; then
         name="${name}_s${STRIDE}"
-        STRIDE_ARGS="eval_name=${name} test_dataset.temporal=test_stride${STRIDE}"
+        STRIDE_ARGS="eval_name=${name} splits.test.temporal=test_stride${STRIDE}"
     fi
     JOB=$(sbatch --parsable \
         --partition=${JOB_PARTITION} ${GRES_FLAG} \

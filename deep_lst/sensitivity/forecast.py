@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from deep_lst.dataset.collator import Collator
 from deep_lst.dataset.dataset import MultimodalDataset
 from deep_lst.inference import Forecast
-from deep_lst.utils.config import get_keys_from_config, get_packing_keys, load_model
+from deep_lst.utils.config import get_keys_from_config, get_packing_keys, load_model, split_views
 
 from .perturb import STATIC_LEAVES, locate, perturbed
 
@@ -19,7 +19,7 @@ def stored_inputs(config, var_names):
     order; computed features and static leaves are left out."""
     inputs = []
     for modality in config["modality_ids"]:
-        for variable in config["test_dataset"][modality].get("inputs", []):
+        for variable in config["features"].get(modality, {}).get("inputs", []):
             try:
                 leaf, _ = locate(var_names, modality, variable)
             except KeyError:
@@ -39,12 +39,13 @@ class PerturbedInference:
     def __init__(self, cfg, config):
         self.cfg = cfg  # hydra: experiment, version, best, land_water_mask
         self.config = config  # resolved run config
-        self.td_keys = get_keys_from_config(config["test_dataset"])
+        self.test_view = split_views(config)["test"]
+        self.td_keys = get_keys_from_config(self.test_view)
         self.model, self.device = load_model(
             config, self.td_keys, experiment=cfg.experiment, version=cfg.version, prefer_best=cfg.best
         )
-        self.shared = MultimodalDataset.preload_shared(config["modality_ids"], **config["test_dataset"])
-        self.dataset = MultimodalDataset.from_modalities(config["modality_ids"], self.shared, **config["test_dataset"])
+        self.shared = MultimodalDataset.preload_shared(config["modality_ids"], **self.test_view)
+        self.dataset = MultimodalDataset.from_modalities(config["modality_ids"], self.shared, **self.test_view)
 
     def forecast(self, path):
         """One pass over the dataset as it is now (perturbed or not) into a forecast store.
@@ -56,7 +57,7 @@ class PerturbedInference:
             num_workers=analysis["num_workers"],
             shuffle=False,
             drop_last=False,
-            collate_fn=Collator(self.config["model"]["name"], get_packing_keys(self.config["test_dataset"])),
+            collate_fn=Collator(self.config["model"]["name"], get_packing_keys(self.test_view)),
             pin_memory=analysis.get("pin_memory", False),
             persistent_workers=analysis["num_workers"] > 0,
             prefetch_factor=analysis.get("prefetch_factor", 2),
@@ -66,11 +67,11 @@ class PerturbedInference:
             device=self.device,
             loader=loader,
             td_keys=self.td_keys,
-            config=self.config["test_dataset"],
+            config=self.test_view,
             spatial_indices=self.dataset.spatial_idx,
             pixel_lonlat=self.dataset.pixel_lonlat(),
             non_land=self.dataset.non_land_mask(),
-            prediction_mode=self.config["model"]["step_loss"],
+            prediction_mode=self.config["objective"]["kind"],
             apply_lw_mask=self.cfg.land_water_mask,
         )
         forecast.predict_and_save(path, self.dataset.time_idx)

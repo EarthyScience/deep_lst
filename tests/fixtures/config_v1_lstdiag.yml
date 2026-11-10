@@ -1,11 +1,11 @@
 # Resolved composition at develop 5274122, before the objective/window/sources refactor:
-#   python deep_lst/train.py model=mlp_diag loss=mse horizon=h24 data=full_lstdiag --cfg job --resolve
+#   python deep_lst/train.py model=mlp_rollout loss=smoothl1 horizon=h24 data=full_lstdiag --cfg job --resolve
 # Pins what the legacy command line composed. Never regenerate from newer code.
 _spatial: mtg_new
 _spatial_val: eval_mtg_new_val
 _lookback: 168
 _version: v18
-_experiment: v18_mlp_diag_mse_h24_full_lstdiag
+_experiment: v18_mlp_smoothl1_h24_full_lstdiag
 _temporal_train: train_full_2023b10
 _temporal_val: val_2023b10
 _seviri_store: seviri_2016_2024
@@ -164,6 +164,7 @@ train_dataset:
       - quality_flag
       - standard_error
     lookback: 168
+    horizon: 24
     inputs:
     - FVC
     - DEM
@@ -177,7 +178,6 @@ train_dataset:
     prognostics: []
     diagnostics:
     - LST
-    horizon: 24
     context_vars: []
 val_dataset:
   spatial: eval_mtg_new_val
@@ -281,6 +281,7 @@ val_dataset:
       - quality_flag
       - standard_error
     lookback: 168
+    horizon: 24
     inputs:
     - FVC
     - DEM
@@ -294,7 +295,6 @@ val_dataset:
     prognostics: []
     diagnostics:
     - LST
-    horizon: 24
     context_vars: []
 test_dataset:
   spatial: eval_mtg_new_val
@@ -398,6 +398,7 @@ test_dataset:
       - quality_flag
       - standard_error
     lookback: 168
+    horizon: 24
     inputs:
     - FVC
     - DEM
@@ -411,7 +412,6 @@ test_dataset:
     prognostics: []
     diagnostics:
     - LST
-    horizon: 24
     context_vars: []
 training:
   max_epochs: 70
@@ -433,28 +433,37 @@ seed: 42
 hpo_path: nas/hpo_best.json
 hpo: false
 resume_ckpt: null
-_model_name: mlp_diag
-_step_loss_mse: DiagnosticMSE
-_step_loss_crps: DiagnosticCRPS
+_model_name: mlp
 _sigma_prognostics: []
-_sigma_diagnostics:
-- LST
+_sigma_diagnostics: []
 model:
   name: mlp
   hidden_sizes:
+  - 1024
   - 512
   - 256
   - 256
   - 128
-  - 256
-  learning_rate: 0.0001
-  dropout: 0.2
-  activation: relu
+  learning_rate: 0.00037
+  dropout: 0.005
+  activation: gelu
   use_residual: true
+  use_layer_norm: true
+  static_encoding: integer
+  diagnostic_history: true
+  init_fill: none
+  init_hide_fraction: 0.5
+  step_loss: RolloutLoss
+  loss_fn: smooth_l1
+  checkpoint_monitor: val_loss_step_epoch_log
+  detach_rollout: false
+  teacher_forcing_loss: true
+  incremental_loss: false
+  rollout_loss: true
   probabilistic: false
-  step_loss: DiagnosticMSE
-  checkpoint_monitor: val_loss_step_epoch
-  loss_fn: mse
-_loss: mse
+  scheduler_T0: 80000
+  weight_decay: 0.0001
+  warmup_steps: 20000
+_loss: smoothl1
 _horizon: h24
 _data: full_lstdiag
