@@ -106,12 +106,14 @@ assets/statistics/<modality>_stats_<name>.zarr   z-score statistics per (modalit
 assets/baselines/<kind>/<name>.nc         persistence / climatology / ERA5(-Land) reference forecasts
 ```
 
-Two hard-coded paths need attention in a new clone:
+Check these locations in a new clone:
 
-1. `ExperimentPaths.preload_cache_root` in `deep_lst/utils/io.py` defaults to the maintainer's
-   tscratch directory. For training, set `paths.preload_cache_root=<your-tscratch>` in the
-   command/config instead of editing Python; `paths.eozarr_root` can also override the store
-   root. Other entry points still use `ExperimentPaths` defaults. See `docs/CONFIGURATION.md`.
+1. `ExperimentPaths.preload_cache_root` in `deep_lst/utils/io.py` uses `DEEP_LST_CACHE_ROOT`
+   when it is nonempty, otherwise `/Net/Groups/BGI/tscratch/$USER/tmp` (using the login name if
+   `USER` is unset or empty). For training, `paths.preload_cache_root=<your-tscratch>` on the command
+   line or in the config file takes priority; `paths.eozarr_root` can also override the store
+   root. Other entry points use the shared `ExperimentPaths` defaults, including this cache
+   fallback. See `docs/CONFIGURATION.md`.
    The data stores (`ExperimentPaths.eozarr_root`,
    `/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old`) are group-readable and
    stay as they are.
