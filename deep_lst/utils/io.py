@@ -1,3 +1,5 @@
+import getpass
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,7 +16,12 @@ class ExperimentPaths:
     eozarr_root: Path = field(
         default_factory=lambda: Path("/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old")
     )
-    preload_cache_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/tmp"))
+    preload_cache_root: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get("DEEP_LST_CACHE_ROOT")
+            or f"/Net/Groups/BGI/tscratch/{os.environ.get('USER') or getpass.getuser()}/tmp"
+        )
+    )
 
     def experiment_dir(self, experiment: str) -> Path:
         return self.experiment_root / experiment

@@ -33,6 +33,7 @@ def test_training_passes_paths_to_data_module_and_saves_overrides(tmp_path, monk
             config_name="train", overrides=["wandb_logger=false", *[f"paths.{k}={v}" for k, v in overrides.items()]]
         )
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEEP_LST_CACHE_ROOT", str(tmp_path / "environment-cache"))
     choices = dict(model="mlp", objective="rollout", loss="smoothl1", horizon="h24", data="full")
     monkeypatch.setattr(train.HydraConfig, "get", lambda: SimpleNamespace(runtime=SimpleNamespace(choices=choices)))
     monkeypatch.setattr(train, "check_stats_transform", lambda *args: None)

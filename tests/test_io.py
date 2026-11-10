@@ -18,6 +18,37 @@ def paths(tmp_path):
     )
 
 
+def test_cache_root_uses_environment_without_user(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEEP_LST_CACHE_ROOT", str(tmp_path / "cache"))
+    monkeypatch.delenv("USER", raising=False)
+    assert ExperimentPaths().preload_cache_root == tmp_path / "cache"
+
+
+@pytest.mark.parametrize("cache_root", [None, ""])
+def test_cache_root_defaults_to_current_user(monkeypatch, cache_root):
+    if cache_root is None:
+        monkeypatch.delenv("DEEP_LST_CACHE_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("DEEP_LST_CACHE_ROOT", cache_root)
+    monkeypatch.setenv("USER", "test-user")
+    assert ExperimentPaths().preload_cache_root.as_posix() == "/Net/Groups/BGI/tscratch/test-user/tmp"
+
+
+def test_cache_root_uses_account_name_when_user_is_unset(monkeypatch):
+    monkeypatch.delenv("DEEP_LST_CACHE_ROOT", raising=False)
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.setattr("getpass.getuser", lambda: "test-user")
+    assert ExperimentPaths().preload_cache_root.as_posix() == "/Net/Groups/BGI/tscratch/test-user/tmp"
+
+
+def test_explicit_cache_root_overrides_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEEP_LST_CACHE_ROOT", str(tmp_path / "environment-cache"))
+    assert (
+        ExperimentPaths(preload_cache_root=tmp_path / "explicit-cache").preload_cache_root
+        == tmp_path / "explicit-cache"
+    )
+
+
 # ── directory resolution ──────────────────────────────────────────────────────
 
 
