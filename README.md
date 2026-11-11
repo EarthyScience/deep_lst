@@ -1,6 +1,6 @@
 # deep_lst
 
-[![Tests](https://github.com/MWesselkamp/deep_lst/actions/workflows/tests.yml/badge.svg)](https://github.com/MWesselkamp/deep_lst/actions/workflows/tests.yml)
+[![Tests](https://github.com/EarthyScience/deep_lst/actions/workflows/tests.yml/badge.svg)](https://github.com/EarthyScience/deep_lst/actions/workflows/tests.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![standard-readme compliant](https://img.shields.io/badge/readme%20style-standard-brightgreen.svg)](https://github.com/RichardLitt/standard-readme)
 
@@ -30,7 +30,7 @@ provides the native GDAL and PROJ libraries of the data library
 from a sibling directory that must be named `eodata_slim`:
 
 ```sh
-git clone https://github.com/MWesselkamp/deep_lst.git
+git clone https://github.com/EarthyScience/deep_lst.git
 git clone -b v0.3_DeepLST https://github.com/EarthyScience/eodata.git eodata_slim
 
 cd eodata_slim
@@ -107,7 +107,7 @@ If you use this software, please cite it with the metadata in [`CITATION.cff`](C
 ## Contributing
 
 Questions and bug reports go to the
-[issue tracker](https://github.com/MWesselkamp/deep_lst/issues). Pull requests against
+[issue tracker](https://github.com/EarthyScience/deep_lst/issues). Pull requests against
 `develop` are welcome; run `uv run pre-commit run --all-files` and `uv run pytest` first.
 
 ## License
