@@ -75,10 +75,11 @@ def load_samples(
     return indices
 
 
-def _load_anchor_ids(spatial_name):
+def _load_anchor_ids(spatial_name, paths=None):
     """Anchor cell ids for a split: global MTG ids for training, seviri equiangular pixels
     for an eval holdout region."""
-    return np.sort(np.load(PATHS.spatial_indices_path(spatial_name))["src_indices"].astype(np.int64))
+    paths = paths or PATHS
+    return np.sort(np.load(paths.spatial_indices_path(spatial_name))["src_indices"].astype(np.int64))
 
 
 def _flatten_hours(values, valid):
@@ -373,7 +374,7 @@ class MultimodalDataset(Dataset):
         return np.isin(landcov[self.inverse[_ANCHOR_MODALITY]], classes)
 
     @classmethod
-    def preload_shared(cls, modality_ids, **kwargs):
+    def preload_shared(cls, modality_ids, paths=None, **kwargs):
         """Preload each modality's native columns once, shared across train/val/test splits.
 
         Every anchor cell (MTG for training, seviri pixels for eval) is nearest-neighbour mapped
@@ -381,9 +382,10 @@ class MultimodalDataset(Dataset):
         are read. Columns depend only on (anchors, store), not the temporal split, so this runs
         once — a full-axis cache per split would not fit in RAM.
         """
+        paths = paths or PATHS
         spatial_name = kwargs["spatial"]
         stats_tag = stats_spatial(kwargs)
-        anchor_ids = _load_anchor_ids(spatial_name)
+        anchor_ids = _load_anchor_ids(spatial_name, paths)
         src_grid = anchor_grid(kwargs.get("anchor", "mtg"))
         num_workers = kwargs.get("preload_workers", 8)
 
@@ -397,7 +399,7 @@ class MultimodalDataset(Dataset):
                 modality: {
                     "store": kwargs[modality]["store"],
                     "load": kwargs[modality]["load"],
-                    "stats_mtime": os.path.getmtime(PATHS.stats_zarr_path(modality, stats_tag) / "zarr.json"),
+                    "stats_mtime": os.path.getmtime(paths.stats_zarr_path(modality, stats_tag) / "zarr.json"),
                     "axis": [PRELOAD_START_DAY, PRELOAD_END_DAY],
                 }
                 for modality in modality_ids
@@ -408,7 +410,7 @@ class MultimodalDataset(Dataset):
             if transform is not None:  # only when set, so caches built before the key existed stay valid
                 fingerprint_spec["modalities"][modality]["transform"] = transform
         fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True).encode()).hexdigest()[:16]
-        cache_path = PATHS.preload_cache_path(fingerprint, spatial_name)
+        cache_path = paths.preload_cache_path(fingerprint, spatial_name)
         if cache_path.exists():
             print(f"Loading preload cache {cache_path}")
             return torch.load(cache_path, map_location="cpu", weights_only=False)
@@ -431,11 +433,11 @@ class MultimodalDataset(Dataset):
             accepted = inspect.signature(get_data_reader_class(modality)).parameters
             reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
             reader = eodata.get_data_reader(
-                modality, store=str(PATHS.eozarr_store_path(kwargs[modality]["store"])), **reader_kwargs
+                modality, store=str(paths.eozarr_store_path(kwargs[modality]["store"])), **reader_kwargs
             )
 
             normalizer = ModalityNormalizer.from_spec(
-                f"zscore:{PATHS.stats_zarr_path(modality, stats_tag)}", reader.schema
+                f"zscore:{paths.stats_zarr_path(modality, stats_tag)}", reader.schema
             )
             normalizer = with_transform(normalizer, kwargs[modality].get("transform"))
             # Channel indices of the config variables within each data type's full store variable order.
@@ -462,17 +464,18 @@ class MultimodalDataset(Dataset):
         return shared
 
     @classmethod
-    def from_modalities(cls, modality_ids, shared, **kwargs):
+    def from_modalities(cls, modality_ids, shared, paths=None, **kwargs):
         """Build one split's dataset from the shared preloaded columns + this split's anchors."""
+        paths = paths or PATHS
         stats_tag = stats_spatial(kwargs)
-        computed_stats = {m: load_computed_stats(PATHS.stats_zarr_path(m, stats_tag)) for m in modality_ids}
+        computed_stats = {m: load_computed_stats(paths.stats_zarr_path(m, stats_tag)) for m in modality_ids}
 
         if kwargs["spatial"] != shared["spatial"]:
             raise ValueError(f"Shared cache built for spatial={shared['spatial']!r}, got {kwargs['spatial']!r}")
 
         temporal_split = kwargs["temporal"]
         if temporal_split is not None:
-            temporal_paths = PATHS.temporal_indices_path(temporal_split)
+            temporal_paths = paths.temporal_indices_path(temporal_split)
         else:
             temporal_paths = None
 

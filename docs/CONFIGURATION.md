@@ -56,6 +56,28 @@ be edited.
 
 ## 2. `conf/train.yaml`
 
+### Training data and cache paths
+
+`paths.eozarr_root` and `paths.preload_cache_root` override the data-store and preload-cache
+roots used by `deep_lst/train.py`, for all three training/validation/test splits. The defaults
+are defined in `ExperimentPaths` in `deep_lst/utils/io.py`, also used by the `PATHS` singleton
+in `deep_lst/dataset/dataset.py`. Both config values default to `null`, so these defaults apply.
+
+The cache default uses `DEEP_LST_CACHE_ROOT` when it is nonempty; otherwise it uses
+`/Net/Groups/BGI/tscratch/$USER/tmp` (the login name is used if `USER` is unset or empty).
+An explicit `paths.preload_cache_root` takes priority over this default. Relative paths remain
+relative to the repository working directory. The overrides are saved in the run's `config.yml`.
+
+```
+uv run python deep_lst/train.py paths.eozarr_root=/data/eozarr paths.preload_cache_root=/scratch/deep_lst-cache
+```
+
+Cache keys are unchanged; use a separate cache root when the source data content differs.
+
+These Hydra overrides apply to training. Standalone inference, statistics and fine-tuning use
+the shared `ExperimentPaths` defaults, including the cache default described above.
+Model, loss and data-processing settings are unchanged.
+
 ### 2.1 Selections and splits
 
 | Key | Default | Meaning |

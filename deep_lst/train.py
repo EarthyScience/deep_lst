@@ -45,11 +45,10 @@ def _git_hash() -> str:
 
 @hydra.main(config_path="../conf", config_name="train", version_base="1.3")
 def main(cfg: DictConfig) -> None:
-    paths = ExperimentPaths()
-
     config = OmegaConf.to_container(cfg, resolve=True)
     choices = HydraConfig.get().runtime.choices
     validate_config(config)
+    paths = ExperimentPaths(**{key: Path(value) for key, value in config.get("paths", {}).items() if value is not None})
     pl.seed_everything(config["seed"], workers=True)
 
     smoke = config.pop("smoke", False)
@@ -156,7 +155,7 @@ def main(cfg: DictConfig) -> None:
         check_stats_transform(paths.stats_zarr_path(modality, stats_tag), transform)
 
     data_module = LitDataModule(
-        **config, train_dataset=train_view, val_dataset=views["val"], test_dataset=views["test"]
+        experiment_paths=paths, **config, train_dataset=train_view, val_dataset=views["val"], test_dataset=views["test"]
     )
     data_module.setup()
 
