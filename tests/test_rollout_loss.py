@@ -21,6 +21,13 @@ Covered:
   terms
     - a weight multiplies its term; rollout 0 skips the rollout branch
     - all weights 0 is refused
+  rollout (the free-running forecast, called on its own)
+    - the model is called once per lead with lookback-long windows of the prognostics
+    - a gap in the observations stays a gap in the window
+    - one prediction per lead comes back: states, diagnostics, increments
+    - a prediction is valid where the init observation is, whatever the targets
+  masked_loss
+    - scores the entries that are valid in prediction and target
 """
 
 import pytest
@@ -28,11 +35,11 @@ import torch
 import torch.nn.functional as F
 
 from deep_lst.losses import RolloutLoss
+from deep_lst.losses.rollout import masked_loss
 
 B = 3
 LOOKBACK = 4
 HORIZON = 2
-T = LOOKBACK + HORIZON + 1
 N_FORCING = 2
 N_CONTEXT = 1
 
@@ -61,12 +68,13 @@ class _StubModule:
         self.logged[name] = float(value.detach())
 
 
-def _batch(n_states, seed=0):
+def _batch(n_states, seed=0, horizon=HORIZON, height=1, width=1):
     generator = torch.Generator().manual_seed(seed)
-    y_prog = torch.randn(B, T, 1, 1, n_states, generator=generator)
+    n_steps = LOOKBACK + horizon + 1
+    y_prog = torch.randn(B, n_steps, height, width, n_states, generator=generator)
     y_prog[0, LOOKBACK + 1, 0, 0, :] = float("nan")  # one masked target
-    X_dyn = torch.randn(B, T, 1, 1, N_FORCING, generator=generator)
-    X_dyn_ctx = torch.randn(B, T, 1, 1, N_CONTEXT, generator=generator)
+    X_dyn = torch.randn(B, n_steps, height, width, N_FORCING, generator=generator)
+    X_dyn_ctx = torch.randn(B, n_steps, height, width, N_CONTEXT, generator=generator)
     return {"y_prog": y_prog, "X_dyn": X_dyn, "X_dyn_ctx": X_dyn_ctx}
 
 
@@ -124,15 +132,19 @@ def test_one_prognostic_keeps_state_and_rollout_terms():
 
 
 class _RecordingModel(_ConstantModel):
-    """Keeps every state window it was called with."""
+    """Keeps the inputs of every call."""
 
     def __init__(self, n_out, diagnostic_history):
         super().__init__(n_out)
         self.diagnostic_history = diagnostic_history
         self.windows = []
+        self.forcing_windows = []
+        self.step_forcings = []
 
     def forward(self, state_window, X_dyn_window, step_X_dyn):
         self.windows.append(state_window)
+        self.forcing_windows.append(X_dyn_window)
+        self.step_forcings.append(step_X_dyn)
         return super().forward(state_window, X_dyn_window, step_X_dyn)
 
 
@@ -256,3 +268,89 @@ def test_all_weights_zero_is_refused():
     terms = {"teacher_forcing": 0.0, "rollout": 0.0, "increment": 0.0}
     with pytest.raises(ValueError, match="weight 0"):
         _loss(prognostic_keys=[("seviri", "LST")], terms=terms)
+
+
+# ---------- rollout, called on its own ----------
+# Sizes differ per axis (B 3, LOOKBACK 4, HEIGHT 5, WIDTH 6), so a swapped axis cannot pass.
+HEIGHT = 5
+WIDTH = 6
+ROLLOUT_KEYS = [("seviri", "LST"), ("era5_land", "skt")]
+N_PROGNOSTIC = len(ROLLOUT_KEYS)
+N_DIAGNOSTIC = 1
+N_STATES = N_PROGNOSTIC + N_DIAGNOSTIC
+HORIZONS = [1, 2, 7]
+
+
+def _run_rollout(model, batch, horizon):
+    loss = _loss(prognostic_keys=ROLLOUT_KEYS)
+    return loss.rollout(model, batch["y_prog"], batch["X_dyn"], batch["X_dyn_ctx"], LOOKBACK, horizon)
+
+
+@pytest.mark.parametrize("horizon", HORIZONS)
+def test_rollout_calls_the_model_once_per_lead_with_a_lookback_window(horizon):
+    model = _RecordingModel(n_out=N_STATES, diagnostic_history=False)
+    batch = _batch(n_states=N_STATES, horizon=horizon, height=HEIGHT, width=WIDTH)
+
+    _run_rollout(model, batch, horizon)
+
+    assert len(model.windows) == horizon
+    for lead in range(horizon):
+        assert model.windows[lead].shape == (B, LOOKBACK, HEIGHT, WIDTH, N_PROGNOSTIC)
+        assert model.forcing_windows[lead].shape == (B, LOOKBACK, HEIGHT, WIDTH, N_CONTEXT)
+        assert model.step_forcings[lead].shape == (B, HEIGHT, WIDTH, N_FORCING)
+
+
+def test_rollout_window_keeps_the_gaps_of_the_observations():
+    model = _RecordingModel(n_out=N_STATES, diagnostic_history=False)
+    batch = _batch(n_states=N_STATES, height=HEIGHT, width=WIDTH)
+    batch["y_prog"][1, 2, 3, 4, 0] = float("nan")  # one gap inside the lookback
+
+    _run_rollout(model, batch, HORIZON)
+
+    observed_window = batch["y_prog"][:, 1 : LOOKBACK + 1, ..., :N_PROGNOSTIC]  # hours t0-L+1 .. t0
+    assert torch.isnan(model.windows[0][1, 1, 3, 4, 0])  # time step 2 is window slot 1
+    assert torch.equal(torch.isnan(model.windows[0]), torch.isnan(observed_window))
+
+
+@pytest.mark.parametrize("horizon", HORIZONS)
+def test_rollout_returns_one_prediction_per_lead(horizon):
+    model = _RecordingModel(n_out=N_STATES, diagnostic_history=False)
+    batch = _batch(n_states=N_STATES, horizon=horizon, height=HEIGHT, width=WIDTH)
+
+    state_preds, diag_preds, inc_preds = _run_rollout(model, batch, horizon)
+
+    assert state_preds.shape == (B, horizon, HEIGHT, WIDTH, N_PROGNOSTIC)
+    assert diag_preds.shape == (B, horizon, HEIGHT, WIDTH, N_DIAGNOSTIC)
+    assert inc_preds.shape == (B, horizon, HEIGHT, WIDTH, N_PROGNOSTIC)
+
+
+def test_rollout_prediction_is_valid_where_the_init_observation_is():
+    horizon = 7
+    model = _RecordingModel(n_out=N_STATES, diagnostic_history=False)
+    batch = _batch(n_states=N_STATES, horizon=horizon, height=HEIGHT, width=WIDTH)
+    batch["y_prog"][0, LOOKBACK, 1, 1, 0] = float("nan")  # no init observation: every lead is lost
+    batch["y_prog"][2, LOOKBACK + 3, 0, 0, 1] = float("nan")  # a missing target: the prediction stays
+
+    state_preds, _, _ = _run_rollout(model, batch, horizon)
+
+    init_valid = torch.isfinite(batch["y_prog"][:, LOOKBACK, ..., :N_PROGNOSTIC])  # (B, HEIGHT, WIDTH, nP)
+    expected_valid = init_valid.unsqueeze(1).expand_as(state_preds)
+    assert torch.isnan(state_preds[0, :, 1, 1, 0]).all()  # the pixel without init observation, at every lead
+    assert torch.equal(torch.isfinite(state_preds), expected_valid)
+
+
+def test_masked_loss_scores_the_entries_valid_in_prediction_and_target():
+    pred = torch.zeros(B, HORIZON, HEIGHT, WIDTH, N_PROGNOSTIC)
+    target = torch.zeros(B, HORIZON, HEIGHT, WIDTH, N_PROGNOSTIC)
+    pred[0, 0, 1, 1, 0] = float("nan")
+    target[2, 1, 0, 0, 1] = float("nan")
+    scored_sizes = []
+
+    def recording_pointwise(valid_pred, valid_target):
+        scored_sizes.append((valid_pred.numel(), valid_target.numel()))
+        return valid_pred.sum()
+
+    masked_loss(pred, target, recording_pointwise, min_valid_fraction=0.05)
+
+    n_valid = pred.numel() - 2
+    assert scored_sizes == [(n_valid, n_valid)]
