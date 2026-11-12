@@ -183,41 +183,17 @@ class RolloutLoss:
 
         # ---------- rollout branch ----------
         if self.weight_rollout != 0 and has_prognostic:
-            prog_seq = [y_prog[:, i, ..., : self.n_prognostic] for i in range(lookback + horizon + 1)]
-            if start_state is not None:
-                prog_seq[lookback] = start_state
-            state_preds = []
-            diag_preds = []
-            inc_preds = []
-
-            for h in range(1, horizon + 1):
-                state_window = torch.stack(prog_seq[h : lookback + h], dim=1)  # (B, L, H, W, nP)
-                if history_diag is not None:
-                    state_window = torch.cat([state_window, history_diag[:, h : lookback + h]], dim=-1)
-                out = model(state_window, X_dyn_window[:, h : lookback + h], X_dyn[:, lookback + h])  # (B, H, W, nS)
-
-                inc = out[..., : self.n_prognostic]
-                prior = prog_seq[lookback + h - 1]
-                state_h = prior + inc
-
-                state_preds.append(state_h)
-                diag_preds.append(out[..., self.n_prognostic :])
-                inc_preds.append(inc)
-
-                if h < horizon:
-                    prog_seq[lookback + h] = state_h.detach() if self.detach_rollout else state_h
-
-            state_preds = torch.stack(state_preds, dim=1)  # (B, H, H, W, nP)
+            state_preds, diag_preds, inc_preds = self.rollout(
+                model, y_prog, X_dyn, X_dyn_window, lookback, horizon, history_diag, start_state
+            )
             loss_rollout = self.weight_rollout * state_loss(
                 state_preds, y_prog[:, lookback + 1 : lookback + horizon + 1, ..., : self.n_prognostic]
             )
             if n_diagnostic:
-                diag_preds = torch.stack(diag_preds, dim=1)
                 loss_rollout += self.weight_rollout * state_loss(
                     diag_preds, y_prog[:, lookback + 1 : lookback + horizon + 1, ..., self.n_prognostic :]
                 )
             if self.weight_increment != 0:
-                inc_preds = torch.stack(inc_preds, dim=1)
                 loss_rollout += self.weight_increment * state_loss(inc_preds / inc_std, target_inc / inc_std)
             loss_rollout = loss_rollout
         else:
@@ -231,6 +207,44 @@ class RolloutLoss:
         lit_module.log(f"{stage}_loss_analysis", loss_analysis, on_step=False, on_epoch=True, sync_dist=True)
 
         return total_loss
+
+    def rollout(self, model, y_prog, X_dyn, X_dyn_window, lookback, horizon, history_diag=None, start_state=None):
+        """The free-running forecast from t0: every lead takes the previous prediction as its prior.
+
+        history_diag  the diagnostics' observed past for the window, None without diagnostic_history
+        start_state   the prior of lead 1 if it is not the init observation (init_fill gated / always)
+
+        Returns the predictions of all leads, each (B, horizon, H, W, channels):
+        the prognostic states, the diagnostics, the prognostic increments.
+        """
+        prog_seq = [y_prog[:, i, ..., : self.n_prognostic] for i in range(lookback + horizon + 1)]
+        if start_state is not None:
+            prog_seq[lookback] = start_state
+        state_preds = []
+        diag_preds = []
+        inc_preds = []
+
+        for h in range(1, horizon + 1):
+            state_window = torch.stack(prog_seq[h : lookback + h], dim=1)  # (B, L, H, W, nP)
+            if history_diag is not None:
+                state_window = torch.cat([state_window, history_diag[:, h : lookback + h]], dim=-1)
+            out = model(state_window, X_dyn_window[:, h : lookback + h], X_dyn[:, lookback + h])  # (B, H, W, nS)
+
+            inc = out[..., : self.n_prognostic]
+            prior = prog_seq[lookback + h - 1]
+            state_h = prior + inc
+
+            state_preds.append(state_h)
+            diag_preds.append(out[..., self.n_prognostic :])
+            inc_preds.append(inc)
+
+            if h < horizon:
+                prog_seq[lookback + h] = state_h.detach() if self.detach_rollout else state_h
+
+        state_preds = torch.stack(state_preds, dim=1)  # (B, H, H, W, nP)
+        diag_preds = torch.stack(diag_preds, dim=1)
+        inc_preds = torch.stack(inc_preds, dim=1)
+        return state_preds, diag_preds, inc_preds
 
 
 def _fold(x):
