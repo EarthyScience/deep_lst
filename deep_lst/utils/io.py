@@ -50,14 +50,15 @@ class ExperimentPaths:
     def statistics_path(self, modality, name) -> Path:
         return self.assets_root / modality / "statistics" / f"statistics_{name}.npz"
 
-    def eozarr_store_path(self, store_name: str) -> Path:
+    def eozarr_store_path(self, store_name: str, store_root: str | Path | None = None) -> Path:
         """Resolve a full eodata .eozarr store from its config-provided name.
 
         Prefers the directory store when it is readable and falls back to the .zip sibling:
-        under eozarr_root the era5, era5_land, glofas and swe stores exist only as zips, while
+        under the selected root the era5, era5_land, glofas and swe stores exist only as zips, while
         seviri is a directory store."""
-        directory = self.eozarr_root / f"{store_name}.eozarr"
-        archive = self.eozarr_root / f"{store_name}.eozarr.zip"
+        root = self.eozarr_root if store_root is None else Path(store_root)
+        directory = root / f"{store_name}.eozarr"
+        archive = root / f"{store_name}.eozarr.zip"
         directory_is_readable = (directory / "data" / "zarr.json").exists()
         if not directory_is_readable and archive.exists():
             return archive

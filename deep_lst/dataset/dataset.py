@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import eodata
 import numpy as np
@@ -242,7 +243,7 @@ class UnimodalDataset(Dataset):
         return leaves
 
     @classmethod
-    def from_config(cls, modality, store, spatial, anchor, temporal, workers=1):
+    def from_config(cls, modality, store, spatial, anchor, temporal, workers=1, store_root=None):
         """Stream the MTG pixel selection (spatial) over the statistics timestep subset (temporal)."""
         anchor_ids = _load_anchor_ids(spatial)
         rows = np.unique(map_to_store_rows(anchor_grid(anchor), anchor_ids, store_grid(modality)))
@@ -260,7 +261,9 @@ class UnimodalDataset(Dataset):
         }
         accepted = inspect.signature(get_data_reader_class(modality)).parameters
         reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
-        reader = eodata.get_data_reader(modality, store=str(PATHS.eozarr_store_path(store)), **reader_kwargs)
+        reader = eodata.get_data_reader(
+            modality, store=str(PATHS.eozarr_store_path(store, store_root)), **reader_kwargs
+        )
         return cls(reader, rows, stat_days)
 
 
@@ -406,6 +409,9 @@ class MultimodalDataset(Dataset):
             },
         }
         for modality in modality_ids:
+            store_root = kwargs[modality].get("store_root")
+            if store_root is not None:
+                fingerprint_spec["modalities"][modality]["store_root"] = str(Path(store_root).resolve())
             transform = kwargs[modality].get("transform")
             if transform is not None:  # only when set, so caches built before the key existed stay valid
                 fingerprint_spec["modalities"][modality]["transform"] = transform
@@ -433,7 +439,9 @@ class MultimodalDataset(Dataset):
             accepted = inspect.signature(get_data_reader_class(modality)).parameters
             reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
             reader = eodata.get_data_reader(
-                modality, store=str(paths.eozarr_store_path(kwargs[modality]["store"])), **reader_kwargs
+                modality,
+                store=str(paths.eozarr_store_path(kwargs[modality]["store"], kwargs[modality].get("store_root"))),
+                **reader_kwargs,
             )
 
             normalizer = ModalityNormalizer.from_spec(

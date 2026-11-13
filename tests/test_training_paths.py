@@ -84,7 +84,7 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
 
     def reader(modality, store, **kwargs):
         stores.append(store)
-        return SimpleNamespace(schema={}, data_arr=np.empty(0, dtype=[("LST", "f4")]))
+        return SimpleNamespace(store=store, schema={}, data_arr=np.empty(0, dtype=[("LST", "f4")]))
 
     def normalizer(spec, schema):
         normalizers.append(spec)
@@ -97,7 +97,13 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
     column[0, 3] = float("nan")
     monkeypatch.setattr(dataset.eodata, "get_data_reader", reader)
     monkeypatch.setattr(dataset.ModalityNormalizer, "from_spec", staticmethod(normalizer))
-    monkeypatch.setattr(dataset, "_preload_columns", lambda *args, **kwargs: {"data": column})
+    monkeypatch.setattr(
+        dataset,
+        "_preload_columns",
+        lambda reader, *args, **kwargs: {
+            "data": column + (100 if Path(reader.store).parent.name == "changed-data" else 0)
+        },
+    )
     monkeypatch.setattr(dataset, "load_computed_stats", computed_stats)
     split = dict(
         spatial="tiny",
@@ -105,6 +111,8 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
         stats_spatial="mtg_new",
         seviri=dict(store="tiny", load={"data": ["LST"]}, lookback=2, horizon=2, prognostics=["LST"]),
     )
+    if explicit_paths:
+        split["seviri"]["store_root"] = "modality-data"
     for _ in range(2):
         module = LitDataModule(
             experiment_paths=paths if explicit_paths else None,
@@ -118,8 +126,19 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
         for data in (module.train_dataset, module.val_dataset, module.test_dataset):
             np.testing.assert_array_equal(data.indices[:, 1], dataset.STORE_EPOCH_OFFSET + np.array([2, 3]))
             torch.testing.assert_close(data[0]["seviri", "LST"].flatten(), column[0, :5, 0], equal_nan=True)
-    assert stores == [str(paths.eozarr_store_path("tiny"))]
+    expected_store = Path("modality-data/tiny.eozarr") if explicit_paths else paths.eozarr_store_path("tiny")
+    assert stores == [str(expected_store)]
     assert normalizers == [f"zscore:{stats}"]
     assert computed == [stats] * 6
     assert len(list(paths.preload_cache_root.glob("preload_tiny_*.pt"))) == 1
     assert dataset.PATHS is original_paths
+    if explicit_paths:
+        split["seviri"]["store_root"] = "changed-data"
+        changed = LitDataModule(experiment_paths=paths, **module.kwargs)
+        changed.setup()
+        torch.testing.assert_close(
+            changed.train_dataset[0]["seviri", "LST"].flatten(), column[0, :5, 0] + 100, equal_nan=True
+        )
+        assert stores[-1] == str(Path("changed-data/tiny.eozarr"))
+        assert len(stores) == 2
+        assert len(list(paths.preload_cache_root.glob("preload_tiny_*.pt"))) == 2

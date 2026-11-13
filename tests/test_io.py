@@ -4,6 +4,8 @@ All path-structure tests use a custom root via tmp_path so they are
 hermetic — nothing depends on the real on-disk layout.
 """
 
+from pathlib import Path
+
 import pytest
 
 from deep_lst.utils.io import ExperimentPaths
@@ -47,6 +49,26 @@ def test_explicit_cache_root_overrides_environment(monkeypatch, tmp_path):
         ExperimentPaths(preload_cache_root=tmp_path / "explicit-cache").preload_cache_root
         == tmp_path / "explicit-cache"
     )
+
+
+@pytest.mark.parametrize("root_kind", ["default", "string", "path", "relative"])
+def test_store_root_override_keeps_directory_and_zip_selection(tmp_path, monkeypatch, root_kind):
+    monkeypatch.chdir(tmp_path)
+    paths = ExperimentPaths(eozarr_root=tmp_path / "shared")
+    root = paths.eozarr_root if root_kind == "default" else tmp_path / "modality"
+    if root_kind == "relative":
+        root = Path("modality")
+    kwargs = {} if root_kind == "default" else {"store_root": str(root) if root_kind == "string" else root}
+    directory = root / "tiny.eozarr"
+    archive = root / "tiny.eozarr.zip"
+    root.mkdir(parents=True)
+    assert paths.eozarr_store_path("tiny", **kwargs) == directory
+    archive.touch()
+    assert paths.eozarr_store_path("tiny", **kwargs) == archive
+    (directory / "data").mkdir(parents=True)
+    (directory / "data" / "zarr.json").write_text("{}")
+    assert paths.eozarr_store_path("tiny", **kwargs) == directory
+    assert paths.eozarr_root == tmp_path / "shared"
 
 
 # ── directory resolution ──────────────────────────────────────────────────────
