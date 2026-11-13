@@ -213,6 +213,17 @@ def test_training_path_overrides_leave_scientific_config_unchanged():
     assert overridden == default
 
 
+def test_modality_store_root_reaches_each_split_without_changing_other_settings():
+    default = _compose(NEW_OVERRIDES["default"])
+    overridden = _compose([*NEW_OVERRIDES["default"], "+sources.seviri.store_root=local-seviri"])
+    for view in config_utils.split_views(overridden).values():
+        assert view["seviri"]["store_root"] == "local-seviri"
+        assert "store_root" not in view["era5"]
+        assert "store_root" not in view["era5_land"]
+    assert overridden["sources"]["seviri"].pop("store_root") == "local-seviri"
+    assert overridden == default
+
+
 @pytest.mark.parametrize("case", CASES)
 def test_migrated_fixture_equals_the_new_composition(case):
     migrated = config_utils.migrate_config(_fixture(case))

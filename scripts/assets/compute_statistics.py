@@ -101,6 +101,7 @@ def main(cfg: DictConfig) -> None:
     dataset = UnimodalDataset.from_config(
         modality=modality,
         store=source["store"],
+        store_root=source.get("store_root"),
         spatial=config["spatial"],
         anchor=config["anchor"],
         temporal=config["temporal"],

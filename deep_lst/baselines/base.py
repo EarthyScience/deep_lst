@@ -86,7 +86,10 @@ class BaselineExtractor(ABC):
 
     def _metadata_attrs(self, modality: str, store_name: str, var_name: str) -> dict:
         """Baseline attrs sourced from the store's own per-variable metadata scheme."""
-        reader = get_data_reader(modality, store=str(self.paths.eozarr_store_path(store_name)), average_hourly=False)
+        store_root = self.config["test_dataset"][modality].get("store_root")
+        reader = get_data_reader(
+            modality, store=str(self.paths.eozarr_store_path(store_name, store_root)), average_hourly=False
+        )
         variable_meta = reader.data_arr.attrs.get("metadata", {}).get(var_name, {})
         return dict(
             variable=var_name,
