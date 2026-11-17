@@ -279,13 +279,20 @@ SAVED_CONFIGS = sorted((REPO_ROOT / "experiments").glob("*/version_*/config.yml"
 @pytest.mark.skipif(not SAVED_CONFIGS, reason="no experiments/ in this working tree")
 def test_every_saved_config_migrates_to_its_own_datasets():
     """Old runs keep working: the migrated config gives back the dataset dicts the run was
-    trained with, in the same channel order, and its objective can be built."""
+    trained with, in the same channel order, and its objective can be built.
+    A config saved in the current layout passes unchanged and its objective can be built."""
     for path in SAVED_CONFIGS:
         saved = yaml.safe_load(path.read_text())
+        is_current = saved.get("config_version", 1) == config_utils.CONFIG_VERSION
 
         migrated = config_utils.migrate_config(saved)
 
         views = config_utils.split_views(migrated)
+        if is_current:
+            assert migrated == yaml.safe_load(path.read_text()), path
+            td_keys = config_utils.get_keys_from_config(views["train"])
+            build_objective(migrated["objective"], **td_keys)
+            continue
         assert views["train"] == saved["train_dataset"], path
         assert views["val"] == saved["val_dataset"], path
         assert views["test"] == saved["test_dataset"], path
