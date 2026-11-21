@@ -31,12 +31,12 @@ from deep_lst.utils.inference import load_run_config
 
 @hydra.main(config_path="../../conf", config_name="sensitivity", version_base="1.3")
 def main(cfg: DictConfig) -> None:
-    paths = ExperimentPaths()
+    paths = ExperimentPaths.from_config(cfg.get("paths"))
     config = load_run_config(cfg, paths)
     settings = cfg.sensitivity
     out_dir = sensitivity_dir(paths, cfg.experiment, cfg.version, cfg.eval_name, settings.method, settings.block)
 
-    inference = PerturbedInference(cfg, config)
+    inference = PerturbedInference(cfg, config, paths=paths)
     if settings.variables is None:
         variables = stored_inputs(config, inference.shared["var_names"])
     else:

@@ -82,7 +82,7 @@ def main(cfg: DictConfig) -> None:
         name = f"{name}_smoke"
     config["name"] = name
 
-    paths = ExperimentPaths()
+    paths = ExperimentPaths.from_config(config.get("paths"))
     from_parts = from_run.split("/")
     if len(from_parts) != 2:
         raise ValueError(f"from_run must be EXPERIMENT/VERSION, got: {from_run!r}")
@@ -178,7 +178,7 @@ def main(cfg: DictConfig) -> None:
         check_stats_transform(paths.stats_zarr_path(modality, stats_tag), transform)
 
     data_module = LitDataModule(
-        **config, train_dataset=train_view, val_dataset=views["val"], test_dataset=views["test"]
+        experiment_paths=paths, **config, train_dataset=train_view, val_dataset=views["val"], test_dataset=views["test"]
     )
     data_module.setup()
 

@@ -25,7 +25,7 @@ from deep_lst.utils.inference import load_run_config
 
 @hydra.main(config_path="../../conf", config_name="infer", version_base="1.3")
 def run_inference(cfg: DictConfig) -> None:
-    paths = ExperimentPaths()
+    paths = ExperimentPaths.from_config(cfg.get("paths"))
     config = load_run_config(cfg, paths)
     test_view = split_views(config)["test"]
     td_keys = get_keys_from_config(test_view)
@@ -46,8 +46,8 @@ def run_inference(cfg: DictConfig) -> None:
     )
 
     modality_ids = config["modality_ids"]
-    shared = MultimodalDataset.preload_shared(modality_ids, **test_view)
-    dataset = MultimodalDataset.from_modalities(modality_ids, shared, **test_view)
+    shared = MultimodalDataset.preload_shared(modality_ids, paths=paths, **test_view)
+    dataset = MultimodalDataset.from_modalities(modality_ids, shared, paths=paths, **test_view)
     print(f"Experiment : {cfg.experiment} / {cfg.version}")
     print(f"Eval       : {cfg.eval_name}")
     print(f"init_fill  : {init_fill} (trained {trained_fill}, nowcast {nowcast})")

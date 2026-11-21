@@ -50,6 +50,8 @@ class BaselineExtractor(ABC):
     def run(self, shared: dict, config: dict, store_key: str) -> None:
         self.store_key = store_key
         self.config = config
+        if "paths" in config:
+            self.paths = ExperimentPaths.from_config(config["paths"])
         if self.output_path().exists() and not self.overwrite:
             print(f"Output already exists for '{store_key}'. Pass overwrite=True to refresh.")
             return
@@ -86,7 +88,7 @@ class BaselineExtractor(ABC):
 
     def _metadata_attrs(self, modality: str, store_name: str, var_name: str) -> dict:
         """Baseline attrs sourced from the store's own per-variable metadata scheme."""
-        store_root = self.config["test_dataset"][modality].get("store_root")
+        store_root = self.paths.store_roots.get(modality, self.config["test_dataset"][modality].get("store_root"))
         reader = get_data_reader(
             modality, store=str(self.paths.eozarr_store_path(store_name, store_root)), average_hourly=False
         )

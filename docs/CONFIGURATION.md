@@ -56,28 +56,34 @@ be edited.
 
 ## 2. `conf/train.yaml`
 
-### Training data and cache paths
+### Data and cache paths
 
-`paths.eozarr_root` and `paths.preload_cache_root` override the data-store and preload-cache
-roots used by `deep_lst/train.py`, for all three training/validation/test splits. The defaults
-are defined in `ExperimentPaths` in `deep_lst/utils/io.py`, also used by the `PATHS` singleton
-in `deep_lst/dataset/dataset.py`. Both config values default to `null`, so these defaults apply.
+`conf/paths.yaml` is the shared file for the data and preload-cache locations. Training,
+fine-tuning, inference, sensitivity, statistics and baseline generation read it from the
+current checkout. Set `eozarr_root` for the common store directory and add entries to
+`store_roots` for modalities that live elsewhere:
 
-The cache default uses `DEEP_LST_CACHE_ROOT` when it is nonempty; otherwise it uses
-`/Net/Groups/BGI/tscratch/$USER/tmp` (the login name is used if `USER` is unset or empty).
-An explicit `paths.preload_cache_root` takes priority over this default. Relative paths remain
-relative to the repository working directory. The overrides are saved in the run's `config.yml`.
+```yaml
+store_roots:
+  seviri: /data/deep_lst
+```
+
+Here SEVIRI uses the separate directory and the other modalities use `eozarr_root`.
+A null entry explicitly selects the common root. An older saved run can still provide
+`sources.<modality>.store_root` if the current paths file has no entry for that modality.
+
+If `preload_cache_root` is unset, the cache uses `DEEP_LST_CACHE_ROOT` when nonempty,
+otherwise `<preload_cache_parent>/<user>/tmp`. The login name is used when `USER` is unset
+or empty. Relative paths are resolved from the working directory.
 
 ```
 uv run python deep_lst/train.py paths.eozarr_root=/data/eozarr paths.preload_cache_root=/scratch/deep_lst-cache
+uv run python scripts/assets/compute_statistics.py modality=seviri +paths.store_roots.seviri=/data/deep_lst
 ```
 
-Changing only `paths.eozarr_root` does not change cache keys; use a separate cache root when
-the source data content differs.
-
-These Hydra overrides apply to training. Standalone inference, statistics and fine-tuning use
-the shared `ExperimentPaths` defaults, including the cache default described above.
-Model, loss and data-processing settings are unchanged.
+Use `+` to add a modality to `store_roots` and leave it off to override an existing entry.
+If you change the common `eozarr_root`, set a separate `preload_cache_root` to avoid reusing
+a cache generated from the old stores. A modality-specific root is included in the cache key.
 
 ### 2.1 Selections and splits
 
@@ -168,23 +174,13 @@ that training, inference, the baselines and the statistics script share.
 | Key under `sources.<modality>` | Meaning |
 |---|---|
 | `store` | name of the `.eozarr` store |
-| `store_root` | optional; root directory for this modality's store. If omitted or `null`, use the shared `ExperimentPaths.eozarr_root` (`paths.eozarr_root` in training). |
 | `load` | variables read from the store, by data type (below). This is what reaches memory, not what the model sees; the model's variables are chosen in the `data` group and have to be listed here. |
 | `transform` | optional; a value transform applied before the normalisation. `signed_log1p` is sign(x) * log(1 + \|x\|), for variables that span orders of magnitude. The statistics have to be computed under the same transform; training checks this before it reads data. |
 | `increment_vars` | variables for which the statistics script also computes the statistics of the 1-hour increment. Read by `scripts/assets/compute_statistics.py` only. Listing a variable here does not make it a prognostic of the model. |
 | `quality_mask` | optional and not set: `{field, se_max, target}` sets `target` to missing where the metadata variable `field` exceeds `se_max` |
 
-For example, keep ERA5 in the shared root while reading SEVIRI from another directory:
-
-```
-uv run python deep_lst/train.py +sources.seviri.store_root=/data/deep_lst
-uv run scripts/assets/compute_statistics.py modality=seviri +sources.seviri.store_root=/data/deep_lst
-```
-
-The `+` adds this optional field in Hydra; it can also be added to the modality's source YAML.
-The selected root contains `<store>.eozarr` or `<store>.eozarr.zip`, with the existing directory/ZIP
-selection unchanged. Relative roots stay relative to the working directory. The source setting
-is saved with the run config and follows the modality through the existing split views.
+The root comes from `conf/paths.yaml`. Each store is read from `<store>.eozarr` or its ZIP sibling
+under the selected root.
 
 Data types under `load`:
 
@@ -211,8 +207,8 @@ only in the data options that name it.
 
 Changing `store`, `load` or `transform` changes the preload cache key, so the cache is rebuilt
 (`docs/RUNBOOK.md`, section 4.6). Changing the `data` option does not.
-An explicit `store_root` is included in that key using its resolved path. Different roots use
-separate caches; leaving `store_root` unset keeps the existing cache keys.
+A modality-specific root from `paths.store_roots` is included in that key using its resolved path.
+Without a modality-specific root, the existing cache key is preserved.
 
 ### 3.2 `data`
 

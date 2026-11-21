@@ -108,15 +108,10 @@ assets/baselines/<kind>/<name>.nc         persistence / climatology / ERA5(-Land
 
 Check these locations in a new clone:
 
-1. `ExperimentPaths.preload_cache_root` in `deep_lst/utils/io.py` uses `DEEP_LST_CACHE_ROOT`
-   when it is nonempty, otherwise `/Net/Groups/BGI/tscratch/$USER/tmp` (using the login name if
-   `USER` is unset or empty). For training, `paths.preload_cache_root=<your-tscratch>` on the command
-   line or in the config file takes priority; `paths.eozarr_root` can also override the store
-   root. Other entry points use the shared `ExperimentPaths` defaults, including this cache
-   fallback. See `docs/CONFIGURATION.md`.
-   The data stores (`ExperimentPaths.eozarr_root`,
-   `/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old`) are group-readable and
-   stay as they are.
+1. Check `conf/paths.yaml` for the common store directory, any modality-specific directories
+   and the preload cache. The defaults keep the existing BGC store and scratch locations.
+   Set `preload_cache_root` explicitly or use `DEEP_LST_CACHE_ROOT` to choose another cache.
+   See `docs/CONFIGURATION.md` for precedence and examples.
 2. The SLURM launchers under `scripts/` hard-code the path of the maintainer's clone, most of
    them as `WORKDIR=` near the top; replace it with the path of your clone.
 

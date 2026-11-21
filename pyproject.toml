@@ -83,5 +83,8 @@ quote-style = "double"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["deep_lst*"]
+include = ["deep_lst*", "conf"]
 exclude = ["plots*", "wandb*", "assets*", "configs*", "notebooks*", "checkpoints*", "experiments*"]
+
+[tool.setuptools.package-data]
+conf = ["paths.yaml"]

@@ -15,17 +15,20 @@ from deep_lst.utils.io import ExperimentPaths  # noqa: E402
 from scripts.assets import compute_statistics  # noqa: E402
 
 
-@pytest.mark.parametrize("store_root", [None, "custom-store"])
-def test_statistics_dataset_uses_the_selected_store_root(tmp_path, monkeypatch, store_root):
+@pytest.mark.parametrize(
+    "store_roots, legacy", [({}, None), ({"seviri": "custom-store"}, "old-store"), ({}, "old-store")]
+)
+def test_statistics_dataset_uses_the_selected_store_root(tmp_path, monkeypatch, store_roots, legacy):
     monkeypatch.chdir(tmp_path)
-    paths = ExperimentPaths(assets_root=tmp_path / "assets", eozarr_root=tmp_path / "default-store")
+    paths = ExperimentPaths(
+        assets_root=tmp_path / "assets", eozarr_root=tmp_path / "default-store", store_roots=store_roots
+    )
     for path, values in (
         (paths.spatial_indices_path("tiny"), {"src_indices": [0]}),
         (paths.temporal_indices_path("tiny"), {"time_indices": [0, 24]}),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(path, **values)
-    monkeypatch.setattr(dataset, "PATHS", paths)
     monkeypatch.setattr(dataset, "anchor_grid", lambda _: None)
     monkeypatch.setattr(dataset, "store_grid", lambda _: None)
     monkeypatch.setattr(dataset, "map_to_store_rows", lambda *args: np.array([4]))
@@ -38,8 +41,10 @@ def test_statistics_dataset_uses_the_selected_store_root(tmp_path, monkeypatch, 
         return reader
 
     monkeypatch.setattr(dataset.eodata, "get_data_reader", open_reader)
-    kwargs = {} if store_root is None else {"store_root": store_root}
-    result = dataset.UnimodalDataset.from_config("seviri", "tiny", "tiny", "mtg", "tiny", **kwargs)
+    result = dataset.UnimodalDataset.from_config(
+        "seviri", "tiny", "tiny", "mtg", "tiny", store_root=legacy, paths=paths
+    )
+    store_root = store_roots.get("seviri", legacy)
     expected_root = paths.eozarr_root if store_root is None else Path(store_root)
     assert stores == [str(expected_root / "tiny.eozarr")]
     assert result.reader is reader
@@ -48,17 +53,22 @@ def test_statistics_dataset_uses_the_selected_store_root(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize("store_root", [None, "custom-store"])
-def test_statistics_command_forwards_the_source_store_root(monkeypatch, store_root):
-    source = {"store": "tiny"}
-    if store_root is not None:
-        source["store_root"] = store_root
+def test_statistics_command_forwards_the_paths(monkeypatch, store_root):
     cfg = OmegaConf.create(
-        dict(modality="seviri", sources={"seviri": source}, spatial="tiny", anchor="mtg", temporal="tiny")
+        dict(
+            modality="seviri",
+            sources={"seviri": {"store": "tiny"}},
+            spatial="tiny",
+            anchor="mtg",
+            temporal="tiny",
+            paths={"eozarr_root": "shared", "store_roots": {"seviri": store_root}},
+        )
     )
 
     def stop_at_dataset(**kwargs):
         assert kwargs["store"] == "tiny"
-        assert kwargs.get("store_root") == store_root
+        assert kwargs["paths"].store_roots["seviri"] == store_root
+        assert kwargs["paths"].eozarr_root == Path("shared")
         raise RuntimeError("statistics dataset reached")
 
     monkeypatch.setattr(compute_statistics.UnimodalDataset, "from_config", staticmethod(stop_at_dataset))
@@ -71,10 +81,8 @@ def test_baseline_metadata_uses_the_modality_store_root(tmp_path, monkeypatch, s
     monkeypatch.chdir(tmp_path)
     extractor = Era5LandExtractor("skt", 2024)
     extractor.paths = ExperimentPaths(eozarr_root=tmp_path / "default-store")
-    source = {"store": "tiny"}
-    if store_root is not None:
-        source["store_root"] = store_root
-    extractor.config = {"test_dataset": {"era5_land": source}}
+    extractor.paths.store_roots["era5_land"] = store_root
+    extractor.config = {"test_dataset": {"era5_land": {"store": "tiny"}}}
     stores = []
 
     def open_reader(modality, store, **kwargs):

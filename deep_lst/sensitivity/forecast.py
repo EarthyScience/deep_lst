@@ -36,7 +36,7 @@ def sensitivity_dir(paths, experiment, version, eval_name, method, block):
 class PerturbedInference:
     """Holds the loaded model and the preloaded dataset of one (experiment, eval)."""
 
-    def __init__(self, cfg, config):
+    def __init__(self, cfg, config, paths=None):
         self.cfg = cfg  # hydra: experiment, version, best, land_water_mask
         self.config = config  # resolved run config
         self.test_view = split_views(config)["test"]
@@ -44,8 +44,10 @@ class PerturbedInference:
         self.model, self.device = load_model(
             config, self.td_keys, experiment=cfg.experiment, version=cfg.version, prefer_best=cfg.best
         )
-        self.shared = MultimodalDataset.preload_shared(config["modality_ids"], **self.test_view)
-        self.dataset = MultimodalDataset.from_modalities(config["modality_ids"], self.shared, **self.test_view)
+        self.shared = MultimodalDataset.preload_shared(config["modality_ids"], paths=paths, **self.test_view)
+        self.dataset = MultimodalDataset.from_modalities(
+            config["modality_ids"], self.shared, paths=paths, **self.test_view
+        )
 
     def forecast(self, path):
         """One pass over the dataset as it is now (perturbed or not) into a forecast store.

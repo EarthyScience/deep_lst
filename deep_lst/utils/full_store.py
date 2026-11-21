@@ -38,7 +38,8 @@ def open_store_reader(modality, store, data_types):
         reader_kwargs[flag] = data_type in data_types
     accepted = inspect.signature(get_data_reader_class(modality)).parameters
     reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
-    return eodata.get_data_reader(modality, store=str(PATHS.eozarr_store_path(store)), **reader_kwargs)
+    store_path = PATHS.eozarr_store_path(store, PATHS.store_roots.get(modality))
+    return eodata.get_data_reader(modality, store=str(store_path), **reader_kwargs)
 
 
 def load_store_columns(modality, store, spatial, load, anchor="mtg", day_range=None, num_workers=8):

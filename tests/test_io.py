@@ -7,8 +7,22 @@ hermetic — nothing depends on the real on-disk layout.
 from pathlib import Path
 
 import pytest
+from hydra import compose, initialize_config_dir
 
 from deep_lst.utils.io import ExperimentPaths
+
+CONF_DIR = Path(__file__).resolve().parents[1] / "conf"
+
+
+@pytest.mark.parametrize("entrypoint", ["train", "finetune", "infer", "statistics", "sensitivity"])
+def test_entrypoints_use_the_shared_paths_file(entrypoint):
+    with initialize_config_dir(config_dir=str(CONF_DIR), version_base="1.3"):
+        default = compose(config_name=entrypoint)
+        cfg = compose(config_name=entrypoint, overrides=["+paths.store_roots.seviri=local-seviri"])
+    assert ExperimentPaths.from_config(default.paths) == ExperimentPaths()
+    paths = ExperimentPaths.from_config(cfg.paths)
+    assert paths.store_roots == {"seviri": "local-seviri"}
+    assert paths.eozarr_root == ExperimentPaths().eozarr_root
 
 
 @pytest.fixture

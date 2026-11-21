@@ -63,6 +63,8 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
         monkeypatch.chdir(tmp_path)
     root = Path(".") if explicit_paths else tmp_path
     paths = ExperimentPaths(assets_root=root / "assets", eozarr_root=root / "data", preload_cache_root=root / "cache")
+    if explicit_paths:
+        paths.store_roots["seviri"] = "modality-data"
     spatial = paths.spatial_indices_path("tiny")
     spatial.parent.mkdir(parents=True)
     np.savez(spatial, src_indices=[0])
@@ -111,8 +113,6 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
         stats_spatial="mtg_new",
         seviri=dict(store="tiny", load={"data": ["LST"]}, lookback=2, horizon=2, prognostics=["LST"]),
     )
-    if explicit_paths:
-        split["seviri"]["store_root"] = "modality-data"
     for _ in range(2):
         module = LitDataModule(
             experiment_paths=paths if explicit_paths else None,
@@ -133,7 +133,7 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
     assert len(list(paths.preload_cache_root.glob("preload_tiny_*.pt"))) == 1
     assert dataset.PATHS is original_paths
     if explicit_paths:
-        split["seviri"]["store_root"] = "changed-data"
+        paths.store_roots["seviri"] = "changed-data"
         changed = LitDataModule(experiment_paths=paths, **module.kwargs)
         changed.setup()
         torch.testing.assert_close(

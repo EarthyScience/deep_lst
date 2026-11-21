@@ -24,8 +24,6 @@ from deep_lst.utils import features
 from deep_lst.utils.io import ExperimentPaths
 from deep_lst.utils.spatial import store_grid
 
-PATHS = ExperimentPaths()
-
 # On-the-fly features that get statistics. The doy/hod cos/sin encodings are bounded in
 # [-1, 1] by construction and stay raw — z-scoring the components of a cyclic pair
 # separately would distort the encoding.
@@ -92,6 +90,7 @@ def computed_feature_statistics(rows, stat_days, modality) -> ArrayStatistics:
 @hydra.main(config_path="../../conf", config_name="statistics", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     config = OmegaConf.to_container(cfg, resolve=True)
+    paths = ExperimentPaths.from_config(config.get("paths"))
     modality = config["modality"]
     source = config["sources"][modality]  # the same definition train.yaml composes
     increment_vars = source.get("increment_vars", [])
@@ -102,6 +101,7 @@ def main(cfg: DictConfig) -> None:
         modality=modality,
         store=source["store"],
         store_root=source.get("store_root"),
+        paths=paths,
         spatial=config["spatial"],
         anchor=config["anchor"],
         temporal=config["temporal"],
@@ -130,7 +130,7 @@ def main(cfg: DictConfig) -> None:
     if increment_vars:
         modality_stats["increments"] = _array_stats(increment_stats)
 
-    out_path = PATHS.stats_zarr_path(modality, config["spatial"])
+    out_path = paths.stats_zarr_path(modality, config["spatial"])
     ModalityStatistics(modality_stats).to_zarr(str(out_path))
 
     # Record variable names next to the positional statistics: base data types carry the

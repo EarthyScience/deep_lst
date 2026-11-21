@@ -15,9 +15,10 @@ from omegaconf import OmegaConf
 
 from deep_lst.baselines import ClimatologyExtractor, Era5Extractor, Era5LandExtractor, PersistenceExtractor
 from deep_lst.dataset.dataset import MultimodalDataset
+from deep_lst.utils import ExperimentPaths
 from deep_lst.utils.config import split_views
 
-CONF_DIR = "/Net/Groups/BGI/people/mwessel/deep_lst/conf"
+CONF_DIR = Path(__file__).resolve().parents[2] / "conf"
 
 REFERENCE_EXTRACTORS = {"era5": Era5Extractor, "era5_land": Era5LandExtractor}
 
@@ -49,9 +50,9 @@ def build_config(region: str):
     """Full data config for a region: train.yaml's test split (stores/load) with the eval
     region's spatial/anchor/temporal overlaid — the same inputs preload_shared saw at inference.
     The test dataset dict the extractors read is attached as config["test_dataset"]."""
-    with initialize_config_dir(version_base=None, config_dir=CONF_DIR):
+    with initialize_config_dir(version_base=None, config_dir=str(CONF_DIR)):
         cfg = compose(config_name="train")
-    region_cfg = OmegaConf.load(Path(CONF_DIR) / "eval" / f"{region}.yaml")
+    region_cfg = OmegaConf.load(CONF_DIR / "eval" / f"{region}.yaml")
     cfg.splits.test = OmegaConf.merge(cfg.splits.test, region_cfg.splits.test)
     config = OmegaConf.to_container(cfg, resolve=True)
     config["test_dataset"] = split_views(config)["test"]
@@ -63,7 +64,8 @@ def main():
     config = build_config(args.region)
     store_key = args.out_key or config["test_dataset"]["spatial"]
 
-    shared = MultimodalDataset.preload_shared(config["modality_ids"], **config["test_dataset"])
+    paths = ExperimentPaths.from_config(config.get("paths"))
+    shared = MultimodalDataset.preload_shared(config["modality_ids"], paths=paths, **config["test_dataset"])
 
     persistence = PersistenceExtractor(
         var_name="LST", test_year=args.test_year, overwrite=args.overwrite, force_sparse=args.force_sparse
