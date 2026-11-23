@@ -72,6 +72,10 @@ Here SEVIRI uses the separate directory and the other modalities use `eozarr_roo
 A null entry explicitly selects the common root. An older saved run can still provide
 `sources.<modality>.store_root` if the current paths file has no entry for that modality.
 
+`product_root` is the directory of the product stores, the `<name>.zarr` stores that the
+readers in `deep_lst/stores/` read. Training does not read them yet; the tests that compare
+these readers with the `.eozarr` stores are skipped where the directory does not hold the stores.
+
 If `preload_cache_root` is unset, the cache uses `DEEP_LST_CACHE_ROOT` when nonempty,
 otherwise `<preload_cache_parent>/<user>/tmp`. The login name is used when `USER` is unset
 or empty. Relative paths are resolved from the working directory.

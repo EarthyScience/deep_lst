@@ -85,6 +85,21 @@ def test_store_root_override_keeps_directory_and_zip_selection(tmp_path, monkeyp
     assert paths.eozarr_root == tmp_path / "shared"
 
 
+def test_product_store_path_is_a_zarr_folder_under_the_product_root(tmp_path):
+    paths = ExperimentPaths(product_root=tmp_path / "products")
+    assert paths.product_store_path("tiny_product") == tmp_path / "products" / "tiny_product.zarr"
+
+
+def test_product_root_comes_from_the_paths_file_and_can_be_overridden():
+    with initialize_config_dir(config_dir=str(CONF_DIR), version_base="1.3"):
+        default = compose(config_name="train")
+        overridden = compose(config_name="train", overrides=["paths.product_root=local-products"])
+    assert ExperimentPaths.from_config(default.paths).product_root == ExperimentPaths().product_root
+    assert ExperimentPaths.from_config(overridden.paths).product_root == Path("local-products")
+    old_run = ExperimentPaths.from_config({"eozarr_root": "old-data"})
+    assert old_run.product_root == ExperimentPaths().product_root
+
+
 # ── directory resolution ──────────────────────────────────────────────────────
 
 

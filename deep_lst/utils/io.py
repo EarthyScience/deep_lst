@@ -31,6 +31,7 @@ class ExperimentPaths:
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
     eozarr_root: Path = field(default_factory=lambda: Path(_default_paths()["eozarr_root"]))
     preload_cache_root: Path = field(default_factory=lambda: _preload_cache_root(_default_paths()))
+    product_root: Path = field(default_factory=lambda: Path(_default_paths()["product_root"]))
     store_roots: dict[str, str | None] = field(
         default_factory=lambda: dict(_default_paths()["store_roots"]), kw_only=True
     )
@@ -84,6 +85,10 @@ class ExperimentPaths:
         if not directory_is_readable and archive.exists():
             return archive
         return directory
+
+    def product_store_path(self, store_name: str) -> Path:
+        """Folder of a product store, the stores that deep_lst.stores reads, from its name."""
+        return self.product_root / f"{store_name}.zarr"
 
     def stats_zarr_path(self, modality: str, spatial: str) -> Path:
         """Zscore statistics zarr for *modality* (eodata ModalityNormalizer format),
