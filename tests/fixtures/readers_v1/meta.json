@@ -1,0 +1,345 @@
+{
+  "written": "2026-11-23",
+  "deep_lst_commit": "5487dd74b3074efc182472e9f5494b1bf842f9ee",
+  "eodata_commit": "f4ee53884799ec4af9763cee5626556fe7a33874",
+  "versions": {
+    "eodata": "0.3",
+    "zarr": "3.2.1",
+    "numpy": "2.3.4",
+    "torch": "2.9.0"
+  },
+  "stats_spatial": "mtg_new",
+  "n_days": 4,
+  "pixels": {
+    "niamey_sahel": 12616679,
+    "yangambi_rainforest": 10324148,
+    "gobabeb_namib": 6097282,
+    "johannesburg_highveld": 5654254,
+    "madagascar_disk_edge": 7510778,
+    "tunisia_north": 16348980,
+    "lake_victoria": 9859505,
+    "south_coast": 4483159,
+    "dakar_coast": 12794938,
+    "durban_coast": 5088792
+  },
+  "windows": {
+    "record_start": {
+      "first_day": "2016-01-01",
+      "start_day": 16801
+    },
+    "lst_gap_9h": {
+      "first_day": "2021-10-10",
+      "start_day": 18910
+    },
+    "year_boundary": {
+      "first_day": "2023-12-30",
+      "start_day": 19721
+    },
+    "leap_day": {
+      "first_day": "2024-02-27",
+      "start_day": 19780
+    }
+  },
+  "modalities": {
+    "era5": {
+      "store": "/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old/era5_2014_2025.eozarr.zip",
+      "statistics": "assets/statistics/era5_stats_mtg_new.zarr",
+      "transform": null,
+      "native_grid": "EquiAng_0.25deg",
+      "variables": {
+        "data": [
+          "sp",
+          "u10",
+          "v10",
+          "ssrd",
+          "strd",
+          "tp",
+          "tcwv",
+          "tcc"
+        ],
+        "data_static_categorical": [
+          "tvh",
+          "tvl",
+          "lsm",
+          "slt"
+        ]
+      },
+      "shapes": {
+        "anchor_ids": [
+          10
+        ],
+        "anchor_lonlat": [
+          10,
+          2
+        ],
+        "store_rows": [
+          10
+        ],
+        "cell_lonlat": [
+          10,
+          2
+        ],
+        "start_days": [
+          4
+        ],
+        "raw__data": [
+          4,
+          10,
+          96,
+          8
+        ],
+        "normalized__data": [
+          4,
+          10,
+          96,
+          8
+        ],
+        "raw__data_static_categorical": [
+          10,
+          4
+        ],
+        "normalized__data_static_categorical": [
+          10,
+          4
+        ]
+      },
+      "dtypes": {
+        "anchor_ids": "int64",
+        "anchor_lonlat": "float64",
+        "store_rows": "int64",
+        "cell_lonlat": "float64",
+        "start_days": "int64",
+        "raw__data": "float32",
+        "normalized__data": "float32",
+        "raw__data_static_categorical": "int8",
+        "normalized__data_static_categorical": "int8"
+      }
+    },
+    "era5_land": {
+      "store": "/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old/era5_land_2016_2025.eozarr.zip",
+      "statistics": "assets/statistics/era5_land_stats_mtg_new.zarr",
+      "transform": null,
+      "native_grid": "EquiAng_0.10deg",
+      "variables": {
+        "data": [
+          "stl1",
+          "stl2",
+          "swvl1",
+          "swvl2",
+          "t2m",
+          "d2m",
+          "skt"
+        ]
+      },
+      "shapes": {
+        "anchor_ids": [
+          10
+        ],
+        "anchor_lonlat": [
+          10,
+          2
+        ],
+        "store_rows": [
+          10
+        ],
+        "cell_lonlat": [
+          10,
+          2
+        ],
+        "start_days": [
+          4
+        ],
+        "raw__data": [
+          4,
+          10,
+          96,
+          7
+        ],
+        "normalized__data": [
+          4,
+          10,
+          96,
+          7
+        ]
+      },
+      "dtypes": {
+        "anchor_ids": "int64",
+        "anchor_lonlat": "float64",
+        "store_rows": "int64",
+        "cell_lonlat": "float64",
+        "start_days": "int64",
+        "raw__data": "float32",
+        "normalized__data": "float32"
+      }
+    },
+    "seviri": {
+      "store": "/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old/seviri_2016_2024.eozarr",
+      "statistics": "assets/statistics/seviri_stats_mtg_new.zarr",
+      "transform": null,
+      "native_grid": "EquiAng_0.05deg_80.0to-80.0lat_-80.0to80.0lon",
+      "variables": {
+        "data": [
+          "LST",
+          "MLE",
+          "MH"
+        ],
+        "data_daily": [
+          "FVC"
+        ],
+        "data_static": [
+          "DEM"
+        ],
+        "data_static_categorical": [
+          "LWMASK",
+          "LANDCOV"
+        ],
+        "metadata": [
+          "quality_flag",
+          "standard_error"
+        ]
+      },
+      "shapes": {
+        "anchor_ids": [
+          10
+        ],
+        "anchor_lonlat": [
+          10,
+          2
+        ],
+        "store_rows": [
+          10
+        ],
+        "cell_lonlat": [
+          10,
+          2
+        ],
+        "start_days": [
+          4
+        ],
+        "raw__data": [
+          4,
+          10,
+          96,
+          3
+        ],
+        "normalized__data": [
+          4,
+          10,
+          96,
+          3
+        ],
+        "raw__data_daily": [
+          4,
+          10,
+          96,
+          1
+        ],
+        "normalized__data_daily": [
+          4,
+          10,
+          96,
+          1
+        ],
+        "raw__data_static": [
+          10,
+          1
+        ],
+        "normalized__data_static": [
+          10,
+          1
+        ],
+        "raw__data_static_categorical": [
+          10,
+          2
+        ],
+        "normalized__data_static_categorical": [
+          10,
+          2
+        ],
+        "raw__metadata": [
+          4,
+          10,
+          96,
+          2
+        ],
+        "normalized__metadata": [
+          4,
+          10,
+          96,
+          2
+        ]
+      },
+      "dtypes": {
+        "anchor_ids": "int64",
+        "anchor_lonlat": "float64",
+        "store_rows": "int64",
+        "cell_lonlat": "float64",
+        "start_days": "int64",
+        "raw__data": "float32",
+        "normalized__data": "float32",
+        "raw__data_daily": "float32",
+        "normalized__data_daily": "float32",
+        "raw__data_static": "float32",
+        "normalized__data_static": "float32",
+        "raw__data_static_categorical": "int8",
+        "normalized__data_static_categorical": "int8",
+        "raw__metadata": "float32",
+        "normalized__metadata": "float32"
+      }
+    },
+    "glofas_v4": {
+      "store": "/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old/glofas_v4_2014_2025.eozarr.zip",
+      "statistics": "assets/statistics/glofas_v4_stats_mtg_new.zarr",
+      "transform": "signed_log1p",
+      "native_grid": "EquiAng_0.05deg_89.975to-59.975lat_-179.975to179.975lon",
+      "variables": {
+        "data": [
+          "rowe",
+          "sd",
+          "swir",
+          "dis24"
+        ]
+      },
+      "shapes": {
+        "anchor_ids": [
+          10
+        ],
+        "anchor_lonlat": [
+          10,
+          2
+        ],
+        "store_rows": [
+          10
+        ],
+        "cell_lonlat": [
+          10,
+          2
+        ],
+        "start_days": [
+          4
+        ],
+        "raw__data": [
+          4,
+          10,
+          96,
+          4
+        ],
+        "normalized__data": [
+          4,
+          10,
+          96,
+          4
+        ]
+      },
+      "dtypes": {
+        "anchor_ids": "int64",
+        "anchor_lonlat": "float64",
+        "store_rows": "int64",
+        "cell_lonlat": "float64",
+        "start_days": "int64",
+        "raw__data": "float32",
+        "normalized__data": "float32"
+      }
+    }
+  }
+}
