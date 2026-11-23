@@ -48,7 +48,7 @@ def main(cfg: DictConfig) -> None:
     config = OmegaConf.to_container(cfg, resolve=True)
     choices = HydraConfig.get().runtime.choices
     validate_config(config)
-    paths = ExperimentPaths(**{key: Path(value) for key, value in config.get("paths", {}).items() if value is not None})
+    paths = ExperimentPaths.from_config(config.get("paths"))
     pl.seed_everything(config["seed"], workers=True)
 
     smoke = config.pop("smoke", False)

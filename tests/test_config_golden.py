@@ -208,8 +208,19 @@ def test_training_path_overrides_leave_scientific_config_unchanged():
     overridden = _compose(
         [*NEW_OVERRIDES["default"], "paths.eozarr_root=local-data", "paths.preload_cache_root=local-cache"]
     )
-    assert default.pop("paths") == {"eozarr_root": None, "preload_cache_root": None}
-    assert overridden.pop("paths") == {"eozarr_root": "local-data", "preload_cache_root": "local-cache"}
+    expected_paths = default.pop("paths") | {"eozarr_root": "local-data", "preload_cache_root": "local-cache"}
+    assert overridden.pop("paths") == expected_paths
+    assert overridden == default
+
+
+def test_modality_store_root_lives_only_in_shared_paths():
+    default = _compose(NEW_OVERRIDES["default"])
+    overridden = _compose([*NEW_OVERRIDES["default"], "+paths.store_roots.seviri=local-seviri"])
+    for view in config_utils.split_views(overridden).values():
+        assert "store_root" not in view["seviri"]
+        assert "store_root" not in view["era5"]
+        assert "store_root" not in view["era5_land"]
+    assert overridden["paths"]["store_roots"].pop("seviri") == "local-seviri"
     assert overridden == default
 
 
