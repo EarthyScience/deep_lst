@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import eodata
 import numpy as np
@@ -242,11 +243,12 @@ class UnimodalDataset(Dataset):
         return leaves
 
     @classmethod
-    def from_config(cls, modality, store, spatial, anchor, temporal, workers=1):
+    def from_config(cls, modality, store, spatial, anchor, temporal, workers=1, store_root=None, paths=None):
         """Stream the MTG pixel selection (spatial) over the statistics timestep subset (temporal)."""
-        anchor_ids = _load_anchor_ids(spatial)
+        paths = paths or PATHS
+        anchor_ids = _load_anchor_ids(spatial, paths)
         rows = np.unique(map_to_store_rows(anchor_grid(anchor), anchor_ids, store_grid(modality)))
-        stat_hours = np.load(PATHS.temporal_indices_path(temporal))["time_indices"].astype(np.int64)
+        stat_hours = np.load(paths.temporal_indices_path(temporal))["time_indices"].astype(np.int64)
         stat_days = np.unique((stat_hours + STORE_EPOCH_OFFSET) // 24)  # store days; each read in full (24 h)
 
         # Enable the full continuous leaves (data + data_daily + data_static), raw. Categoricals and
@@ -260,7 +262,10 @@ class UnimodalDataset(Dataset):
         }
         accepted = inspect.signature(get_data_reader_class(modality)).parameters
         reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
-        reader = eodata.get_data_reader(modality, store=str(PATHS.eozarr_store_path(store)), **reader_kwargs)
+        store_root = paths.store_roots.get(modality, store_root)
+        reader = eodata.get_data_reader(
+            modality, store=str(paths.eozarr_store_path(store, store_root)), **reader_kwargs
+        )
         return cls(reader, rows, stat_days)
 
 
@@ -388,6 +393,9 @@ class MultimodalDataset(Dataset):
         anchor_ids = _load_anchor_ids(spatial_name, paths)
         src_grid = anchor_grid(kwargs.get("anchor", "mtg"))
         num_workers = kwargs.get("preload_workers", 8)
+        store_roots = {
+            modality: paths.store_roots.get(modality, kwargs[modality].get("store_root")) for modality in modality_ids
+        }
 
         # Disk cache: the preload is deterministic given the anchors, stores, load specs and
         # statistics, so later runs (restarts, HP/architecture sweeps) skip the store reads.
@@ -406,6 +414,9 @@ class MultimodalDataset(Dataset):
             },
         }
         for modality in modality_ids:
+            store_root = store_roots[modality]
+            if store_root is not None:
+                fingerprint_spec["modalities"][modality]["store_root"] = str(Path(store_root).resolve())
             transform = kwargs[modality].get("transform")
             if transform is not None:  # only when set, so caches built before the key existed stay valid
                 fingerprint_spec["modalities"][modality]["transform"] = transform
@@ -433,7 +444,9 @@ class MultimodalDataset(Dataset):
             accepted = inspect.signature(get_data_reader_class(modality)).parameters
             reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
             reader = eodata.get_data_reader(
-                modality, store=str(paths.eozarr_store_path(kwargs[modality]["store"])), **reader_kwargs
+                modality,
+                store=str(paths.eozarr_store_path(kwargs[modality]["store"], store_roots[modality])),
+                **reader_kwargs,
             )
 
             normalizer = ModalityNormalizer.from_spec(

@@ -1,5 +1,6 @@
 defaults:
   - _self_          # base applies first; groups below have higher priority
+  - paths
   - sources: eozarr
   - model: mlp
   - objective: rollout
@@ -10,10 +11,6 @@ defaults:
 
 
 config_version: 2
-
-paths:
-  eozarr_root: null
-  preload_cache_root: null
 
 # --- derived keys (resolved lazily by OmegaConf) ---
 _spatial:    mtg_new

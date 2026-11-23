@@ -4,9 +4,25 @@ All path-structure tests use a custom root via tmp_path so they are
 hermetic — nothing depends on the real on-disk layout.
 """
 
+from pathlib import Path
+
 import pytest
+from hydra import compose, initialize_config_dir
 
 from deep_lst.utils.io import ExperimentPaths
+
+CONF_DIR = Path(__file__).resolve().parents[1] / "conf"
+
+
+@pytest.mark.parametrize("entrypoint", ["train", "finetune", "infer", "statistics", "sensitivity"])
+def test_entrypoints_use_the_shared_paths_file(entrypoint):
+    with initialize_config_dir(config_dir=str(CONF_DIR), version_base="1.3"):
+        default = compose(config_name=entrypoint)
+        cfg = compose(config_name=entrypoint, overrides=["+paths.store_roots.seviri=local-seviri"])
+    assert ExperimentPaths.from_config(default.paths) == ExperimentPaths()
+    paths = ExperimentPaths.from_config(cfg.paths)
+    assert paths.store_roots == {"seviri": "local-seviri"}
+    assert paths.eozarr_root == ExperimentPaths().eozarr_root
 
 
 @pytest.fixture
@@ -47,6 +63,26 @@ def test_explicit_cache_root_overrides_environment(monkeypatch, tmp_path):
         ExperimentPaths(preload_cache_root=tmp_path / "explicit-cache").preload_cache_root
         == tmp_path / "explicit-cache"
     )
+
+
+@pytest.mark.parametrize("root_kind", ["default", "string", "path", "relative"])
+def test_store_root_override_keeps_directory_and_zip_selection(tmp_path, monkeypatch, root_kind):
+    monkeypatch.chdir(tmp_path)
+    paths = ExperimentPaths(eozarr_root=tmp_path / "shared")
+    root = paths.eozarr_root if root_kind == "default" else tmp_path / "modality"
+    if root_kind == "relative":
+        root = Path("modality")
+    kwargs = {} if root_kind == "default" else {"store_root": str(root) if root_kind == "string" else root}
+    directory = root / "tiny.eozarr"
+    archive = root / "tiny.eozarr.zip"
+    root.mkdir(parents=True)
+    assert paths.eozarr_store_path("tiny", **kwargs) == directory
+    archive.touch()
+    assert paths.eozarr_store_path("tiny", **kwargs) == archive
+    (directory / "data").mkdir(parents=True)
+    (directory / "data" / "zarr.json").write_text("{}")
+    assert paths.eozarr_store_path("tiny", **kwargs) == directory
+    assert paths.eozarr_root == tmp_path / "shared"
 
 
 # ── directory resolution ──────────────────────────────────────────────────────
