@@ -13,6 +13,10 @@ authors:
     email: mwessel@bgc-jena.mpg.de
     affiliation: Max Planck Institute for Biogeochemistry
     orcid: 'https://orcid.org/0009-0008-2742-319X'
+identifiers:
+  - type: doi
+    value: 10.17605/OSF.IO/VYX8R
+    description: Archived code of version 1.0.0 (tag DeepLST_v1.0.0)
 abstract: >-
   Neural forecasting of land surface temperature (LST) over
   Africa from geostationary satellite observations (SEVIRI)

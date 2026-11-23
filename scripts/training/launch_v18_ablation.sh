@@ -1,20 +1,21 @@
 #!/bin/bash
 # v18 ablation (2026-10-22/23): MLP runs on mtg_new / eval_mtg_new_val with the default recipe
 # (lb168, integer statics, no incremental loss, 70 epochs; conf defaults since 2026-10-23), one
-# cell per (model config, data config):
+# cell per (objective config, data config):
 #
-#   mlp_rollout:full                 no. 0, baseline (full since v18 = minus the ERA5 statics)
-#   mlp_rollout:noera5static_nostl   no. 1: no. 0 minus ERA5-Land stl1, stl2
-#   mlp_rollout:noera5static_skt     no. 2: no. 1 plus ERA5-Land skt
-#   mlp_rollout:full_lstdiag         no. 4: the diagnostic regression (LST diagnostic only, history as context)
-#   mlp_rollout:full_joint           joint head, init_fill none (gated at inference via the history nowcast)
-#   mlp_gated:full_joint             joint head trained with init_fill gated (analysis head)
-#   mlp_always:full_joint            joint head trained with init_fill always (analysis head)
+#   rollout:full                 no. 0, baseline (full since v18 = minus the ERA5 statics)
+#   rollout:noera5static_nostl   no. 1: no. 0 minus ERA5-Land stl1, stl2
+#   rollout:noera5static_skt     no. 2: no. 1 plus ERA5-Land skt
+#   rollout:full_lstdiag         no. 4: the diagnostic regression (LST diagnostic only, history as context)
+#   rollout:full_joint           joint head, init_fill none (gated at inference via the history nowcast)
+#   rollout_gated:full_joint     joint head trained with init_fill gated (analysis head)
+#   rollout_always:full_joint    joint head trained with init_fill always (analysis head)
 #
 # All cells share the 3-modality preload cache of full (the load lists are unchanged), so they
-# are submitted without dependencies. Run names: v18_<_model_name>_smoothl1_h24_<data>, where
-# _model_name is mlp for mlp_rollout and the variant name otherwise. Cells whose experiment
-# directory exists are skipped.
+# are submitted without dependencies. Run names: v18_mlp_<objective>_smoothl1_h24_<data>. The
+# campaign was trained before the run name carried the objective, as
+# v18_<mlp|mlp_gated|mlp_always>_smoothl1_h24_<data> (the former model configs mlp_rollout,
+# mlp_gated, mlp_always). Cells whose experiment directory exists under either name are skipped.
 #
 # Usage: bash scripts/training/launch_v18_ablation.sh [--dry-run]
 
@@ -28,30 +29,32 @@ for arg in "$@"; do
 done
 
 MLP_LAUNCH="scripts/training/train_mlp.sh"
-MLP_ARGS="loss=smoothl1 horizon=h24 _spatial=mtg_new _spatial_val=eval_mtg_new_val _version=v18"
+MLP_ARGS="model=mlp loss=smoothl1 horizon=h24 _spatial=mtg_new _spatial_val=eval_mtg_new_val _version=v18"
 MLP_TIME="12:00:00"
 
-CELLS="mlp_rollout:full mlp_rollout:noera5static_nostl mlp_rollout:noera5static_skt mlp_rollout:full_lstdiag mlp_rollout:full_joint mlp_gated:full_joint mlp_always:full_joint"
+CELLS="rollout:full rollout:noera5static_nostl rollout:noera5static_skt rollout:full_lstdiag rollout:full_joint rollout_gated:full_joint rollout_always:full_joint"
 
-model_label () {
+legacy_model_label () {
     case $1 in
-        mlp_rollout) echo mlp ;;
-        *) echo $1 ;;
+        rollout) echo mlp ;;
+        rollout_gated) echo mlp_gated ;;
+        rollout_always) echo mlp_always ;;
     esac
 }
 
 for cell in ${CELLS}; do
-    model=${cell%%:*}
+    objective=${cell%%:*}
     data=${cell##*:}
-    name="v18_$(model_label ${model})_smoothl1_h24_${data}"
-    if [ -d "experiments/${name}" ]; then
+    name="v18_mlp_${objective}_smoothl1_h24_${data}"
+    legacy_name="v18_$(legacy_model_label ${objective})_smoothl1_h24_${data}"
+    if [ -d "experiments/${name}" ] || [ -d "experiments/${legacy_name}" ]; then
         echo "skip ${name}: experiment directory exists"
         continue
     fi
     if $DRY_RUN; then
-        echo "[dry] sbatch --time=${MLP_TIME} ${MLP_LAUNCH} model=${model} ${MLP_ARGS} data=${data}"
+        echo "[dry] sbatch --time=${MLP_TIME} ${MLP_LAUNCH} objective=${objective} ${MLP_ARGS} data=${data}"
     else
-        job=$(sbatch --parsable --time=${MLP_TIME} ${MLP_LAUNCH} model=${model} ${MLP_ARGS} data=${data})
+        job=$(sbatch --parsable --time=${MLP_TIME} ${MLP_LAUNCH} objective=${objective} ${MLP_ARGS} data=${data})
         echo "job ${job}: ${name}"
     fi
 done

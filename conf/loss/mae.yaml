@@ -1,6 +1,3 @@
-# @package _global_
-
-_loss: mae
-
-model:
-  loss_fn: mae
+# @package objective.pointwise
+_target_: torch.nn.functional.l1_loss
+_partial_: true

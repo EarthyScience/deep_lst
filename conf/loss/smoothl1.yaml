@@ -1,7 +1,6 @@
-# @package _global_
-
-# Smooth L1 (Huber with beta=1): quadratic for |err|<1, linear beyond.
-_loss: smoothl1
-
-model:
-  loss_fn: smooth_l1
+# @package objective.pointwise
+# Smooth L1 (Huber with beta=1): quadratic for |err|<1, linear beyond. The state is z-scored,
+# so the knee sits at one standard deviation.
+_target_: torch.nn.functional.smooth_l1_loss
+_partial_: true
+beta: 1.0

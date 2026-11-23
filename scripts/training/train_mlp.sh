@@ -11,7 +11,7 @@
 # Usage: sbatch train_mlp.sh [hydra_overrides...]
 #
 # Examples:
-#   sbatch scripts/training/train_mlp.sh model=mlp_rollout loss=smoothl1 horizon=h120 data=full_glofas
+#   sbatch scripts/training/train_mlp.sh model=mlp objective=rollout loss=smoothl1 horizon=h120 data=full_glofas
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1

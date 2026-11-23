@@ -7,7 +7,7 @@ maintainers=[
         { name = "Ramin Yazdani", email = "ryazdani@bgc-jena.mpg.de"},
 ]
 name = "deep_lst"
-version = "1.0.0"
+version = "2.0.0"
 description = "Multi-modal and light-weight land surface temperature forecasting"
 readme = "README.md"
 
@@ -83,5 +83,8 @@ quote-style = "double"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["deep_lst*"]
+include = ["deep_lst*", "conf"]
 exclude = ["plots*", "wandb*", "assets*", "configs*", "notebooks*", "checkpoints*", "experiments*"]
+
+[tool.setuptools.package-data]
+conf = ["paths.yaml"]

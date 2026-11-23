@@ -8,11 +8,6 @@ Covered:
     - pixels outside the sparse set stay NaN
     - values land at the right (init_time, lead, row, col); lead_offset shifts leads
 
-  _predict_diagnostic
-    - output keys match diagnostic_keys
-    - output shape: (N_total_samples, 1)
-    - normaliser.denormalise is applied when provided
-
   _predict_rollout  ← core lookback=0 regression
     - loop runs exactly `horizon` times per batch (NOT horizon+1)
     - output shape is (N_total, horizon + 1): lead 0 = start state + init observation, never a
@@ -53,8 +48,6 @@ T = HORIZON + 1  # total time steps in a batch window (lookback=0 → 4)
 IN_KEYS = [("era5", "t2m"), ("era5", "u10")]
 PROG_KEYS = [("seviri", "LST")]
 PROG_OUT_KEYS = [("seviri", "LST_pred")]
-DIAG_KEYS = [("seviri", "FVC")]
-DIAG_OUT_KEYS = [("seviri", "FVC_pred")]
 
 ROLLOUT_TD_KEYS = {
     "in_keys": IN_KEYS,
@@ -63,17 +56,6 @@ ROLLOUT_TD_KEYS = {
     "diagnostic_keys": [],
     "diagnostic_out_keys": [],
 }
-
-DIAG_TD_KEYS = {
-    "in_keys": IN_KEYS,
-    "prognostic_keys": [],
-    "prognostic_out_keys": [],
-    "diagnostic_keys": DIAG_KEYS,
-    "diagnostic_out_keys": DIAG_OUT_KEYS,
-}
-
-# Diagnostic batch shape: (B, 1, 1, 1) — _predict_diagnostic squeezes (-3, -2, -1).
-SPATIAL = (1, 1, 1)
 
 # Packed-tensor layout (post-collator) consumed by _predict_rollout:
 #   y_prog    (B, T, H, W, nP+nD)  prognostics first, then diagnostics
@@ -100,21 +82,6 @@ def _rollout_batch(b=B, t=T):
         "X_dyn_ctx": torch.randn(b, t, *GRID, N_CTX),
     }
     return TensorDict(data, batch_size=[b])
-
-
-def _diag_batch(b=B, finite=True):
-    """TensorDict with shape (b, *SPATIAL) for diagnostic keys (no time dim)."""
-    data = {}
-    for k in IN_KEYS:
-        data[k] = torch.randn(b, *SPATIAL)
-    data[DIAG_KEYS[0]] = torch.randn(b, *SPATIAL)
-    data[DIAG_OUT_KEYS[0]] = torch.zeros(b, *SPATIAL)
-    return TensorDict(data, batch_size=[b])
-
-
-# Placeholder config carried by the mock models; neither _predict_rollout nor
-# _predict_diagnostic reads model.config in the current packed-tensor API.
-_EMPTY_TRAIN_CONFIG = {"train_dataset": {}, "model": {}}
 
 
 class _ZeroIncrementModel:
@@ -146,20 +113,6 @@ class _ConstantIncrementModel:
         out = torch.zeros(n, h, w, N_TARGET)
         out[..., :N_PROG] = 1.0
         return out
-
-
-class _ConstantDiagModel:
-    """Diagnostic model: always outputs a fixed value for the diagnostic key."""
-
-    def __init__(self, value=2.5):
-        self.model = self
-        self.config = _EMPTY_TRAIN_CONFIG
-        self.value = value
-
-    def __call__(self, td):
-        result = td.clone()
-        result[DIAG_OUT_KEYS[0]] = torch.full_like(td[DIAG_KEYS[0]], self.value)
-        return result
 
 
 class _MockNormaliser:
@@ -194,10 +147,6 @@ def _run_rollout(*args, **kwargs):
 
 def _run_rollout_all(*args, **kwargs):
     return _collect_all(Forecast._predict_rollout(*args, **kwargs))
-
-
-def _run_diagnostic(*args, **kwargs):
-    return _collect(Forecast._predict_diagnostic(*args, **kwargs))
 
 
 # ── _write_init_times ──────────────────────────────────────────────────────────
@@ -271,43 +220,6 @@ def test_write_init_times_sparse_transpose():
 
     np.testing.assert_array_equal(pa[0, 0], [1.0, 3.0, 5.0])  # lead 0 across pixels
     np.testing.assert_array_equal(pa[0, 1], [2.0, 4.0, 6.0])  # lead 1 across pixels
-
-
-# ── _predict_diagnostic ───────────────────────────────────────────────────────
-
-
-def test_predict_diagnostic_output_keys():
-    loader = [_diag_batch() for _ in range(2)]
-    preds, obs = _run_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS)
-    var = DIAG_KEYS[0][1]
-    assert var in preds
-    assert var in obs
-
-
-def test_predict_diagnostic_output_shape():
-    n_batches = 3
-    loader = [_diag_batch() for _ in range(n_batches)]
-    preds, obs = _run_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS)
-    var = DIAG_KEYS[0][1]
-    assert preds[var].shape[0] == n_batches * B
-
-
-def test_predict_diagnostic_constant_model_output():
-    """Model output of constant 2.5 should be reflected in predictions after denorm."""
-    loader = [_diag_batch() for _ in range(2)]
-    preds, _ = _run_diagnostic(_ConstantDiagModel(value=2.5), torch.device("cpu"), loader, DIAG_TD_KEYS)
-    var = DIAG_KEYS[0][1]
-    assert np.allclose(preds[var], 2.5), "Constant model output should be preserved exactly"
-
-
-def test_predict_diagnostic_normaliser_called():
-    """denormalise() must be invoked once per variable per batch."""
-    n_batches = 3
-    loader = [_diag_batch() for _ in range(n_batches)]
-    norm = _MockNormaliser()
-    _run_diagnostic(_ConstantDiagModel(), torch.device("cpu"), loader, DIAG_TD_KEYS, normaliser=norm)
-    # denormalise called for preds AND obs for 1 variable × n_batches × 2 sides
-    assert norm.calls == n_batches * 2
 
 
 # ── _predict_rollout: lookback=0 regression ───────────────────────────────────

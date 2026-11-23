@@ -1,7 +1,8 @@
 # @package _global_
 eval_name: eval_mtg_new_val
 
-test_dataset:
-  spatial: eval_mtg_new_val   # 500-site spatial holdout anchored on mtg_new
-  temporal: test
-  anchor: mtg
+splits:
+  test:
+    spatial: eval_mtg_new_val   # 500-site spatial holdout anchored on mtg_new
+    temporal: test
+    anchor: mtg

@@ -1,0 +1,471 @@
+# Resolved composition at develop 5274122, before the objective/window/sources refactor:
+#   python deep_lst/train.py model=transformer_rollout loss=smoothl1 horizon=h24 data=full --cfg job --resolve
+# Pins what the legacy command line composed. Never regenerate from newer code.
+_spatial: mtg_new
+_spatial_val: eval_mtg_new_val
+_lookback: 168
+_version: v18
+_experiment: v18_transformer_smoothl1_h24_full
+_temporal_train: train_full_2023b10
+_temporal_val: val_2023b10
+_seviri_store: seviri_2016_2024
+_era5_store: era5_2014_2025
+_era5land_store: era5_land_2016_2025
+_glofas_store: glofas_v4_2014_2025
+_seviri_load:
+  data:
+  - LST
+  - MLE
+  - MH
+  data_daily:
+  - FVC
+  data_static:
+  - DEM
+  data_static_categorical:
+  - LWMASK
+  - LANDCOV
+  metadata:
+  - quality_flag
+  - standard_error
+_era5_load:
+  data:
+  - sp
+  - u10
+  - v10
+  - ssrd
+  - strd
+  - tp
+  - tcwv
+  - tcc
+  data_static_categorical:
+  - tvh
+  - tvl
+  - lsm
+  - slt
+_era5land_load:
+  data:
+  - stl1
+  - stl2
+  - swvl1
+  - swvl2
+  - t2m
+  - d2m
+  - skt
+_glofas_load:
+  data:
+  - rowe
+  - sd
+  - swir
+  - dis24
+_glofas_transform: signed_log1p
+modality_ids:
+- era5
+- era5_land
+- seviri
+train_dataset:
+  spatial: mtg_new
+  stats_spatial: mtg_new
+  anchor: mtg
+  temporal: train_full_2023b10
+  era5:
+    store: era5_2014_2025
+    load:
+      data:
+      - sp
+      - u10
+      - v10
+      - ssrd
+      - strd
+      - tp
+      - tcwv
+      - tcc
+      data_static_categorical:
+      - tvh
+      - tvl
+      - lsm
+      - slt
+    lookback: 168
+    horizon: 24
+    inputs:
+    - sp
+    - u10
+    - v10
+    - ssrd
+    - strd
+    - tp
+    - tcwv
+    - tcc
+    - solar_zenith
+    context_vars:
+    - sp
+    - u10
+    - v10
+    - ssrd
+    - strd
+    - tp
+    - tcwv
+    - tcc
+    - solar_zenith
+  era5_land:
+    store: era5_land_2016_2025
+    load:
+      data:
+      - stl1
+      - stl2
+      - swvl1
+      - swvl2
+      - t2m
+      - d2m
+      - skt
+    lookback: 168
+    horizon: 24
+    inputs:
+    - stl1
+    - stl2
+    - swvl1
+    - swvl2
+    - t2m
+    - d2m
+    - solar_zenith
+    context_vars:
+    - stl1
+    - stl2
+    - swvl1
+    - swvl2
+    - t2m
+    - d2m
+    - solar_zenith
+  glofas_v4:
+    store: glofas_v4_2014_2025
+    load:
+      data:
+      - rowe
+      - sd
+      - swir
+      - dis24
+    transform: signed_log1p
+    lookback: 168
+    horizon: 24
+  seviri:
+    store: seviri_2016_2024
+    load:
+      data:
+      - LST
+      - MLE
+      - MH
+      data_daily:
+      - FVC
+      data_static:
+      - DEM
+      data_static_categorical:
+      - LWMASK
+      - LANDCOV
+      metadata:
+      - quality_flag
+      - standard_error
+    lookback: 168
+    horizon: 24
+    inputs:
+    - FVC
+    - DEM
+    - LWMASK
+    - LANDCOV
+    - solar_zenith
+    - doy_cos
+    - doy_sin
+    - hod_cos
+    - hod_sin
+    prognostics:
+    - LST
+    diagnostics: []
+    context_vars:
+    - LST
+val_dataset:
+  spatial: eval_mtg_new_val
+  stats_spatial: mtg_new
+  anchor: mtg
+  temporal: val_2023b10
+  era5:
+    store: era5_2014_2025
+    load:
+      data:
+      - sp
+      - u10
+      - v10
+      - ssrd
+      - strd
+      - tp
+      - tcwv
+      - tcc
+      data_static_categorical:
+      - tvh
+      - tvl
+      - lsm
+      - slt
+    lookback: 168
+    horizon: 24
+    inputs:
+    - sp
+    - u10
+    - v10
+    - ssrd
+    - strd
+    - tp
+    - tcwv
+    - tcc
+    - solar_zenith
+    context_vars:
+    - sp
+    - u10
+    - v10
+    - ssrd
+    - strd
+    - tp
+    - tcwv
+    - tcc
+    - solar_zenith
+  era5_land:
+    store: era5_land_2016_2025
+    load:
+      data:
+      - stl1
+      - stl2
+      - swvl1
+      - swvl2
+      - t2m
+      - d2m
+      - skt
+    lookback: 168
+    horizon: 24
+    inputs:
+    - stl1
+    - stl2
+    - swvl1
+    - swvl2
+    - t2m
+    - d2m
+    - solar_zenith
+    context_vars:
+    - stl1
+    - stl2
+    - swvl1
+    - swvl2
+    - t2m
+    - d2m
+    - solar_zenith
+  glofas_v4:
+    store: glofas_v4_2014_2025
+    load:
+      data:
+      - rowe
+      - sd
+      - swir
+      - dis24
+    transform: signed_log1p
+    lookback: 168
+    horizon: 24
+  seviri:
+    store: seviri_2016_2024
+    load:
+      data:
+      - LST
+      - MLE
+      - MH
+      data_daily:
+      - FVC
+      data_static:
+      - DEM
+      data_static_categorical:
+      - LWMASK
+      - LANDCOV
+      metadata:
+      - quality_flag
+      - standard_error
+    lookback: 168
+    horizon: 24
+    inputs:
+    - FVC
+    - DEM
+    - LWMASK
+    - LANDCOV
+    - solar_zenith
+    - doy_cos
+    - doy_sin
+    - hod_cos
+    - hod_sin
+    prognostics:
+    - LST
+    diagnostics: []
+    context_vars:
+    - LST
+test_dataset:
+  spatial: eval_mtg_new_val
+  stats_spatial: mtg_new
+  anchor: mtg
+  temporal: test_period_00
+  era5:
+    store: era5_2014_2025
+    load:
+      data:
+      - sp
+      - u10
+      - v10
+      - ssrd
+      - strd
+      - tp
+      - tcwv
+      - tcc
+      data_static_categorical:
+      - tvh
+      - tvl
+      - lsm
+      - slt
+    lookback: 168
+    horizon: 24
+    inputs:
+    - sp
+    - u10
+    - v10
+    - ssrd
+    - strd
+    - tp
+    - tcwv
+    - tcc
+    - solar_zenith
+    context_vars:
+    - sp
+    - u10
+    - v10
+    - ssrd
+    - strd
+    - tp
+    - tcwv
+    - tcc
+    - solar_zenith
+  era5_land:
+    store: era5_land_2016_2025
+    load:
+      data:
+      - stl1
+      - stl2
+      - swvl1
+      - swvl2
+      - t2m
+      - d2m
+      - skt
+    lookback: 168
+    horizon: 24
+    inputs:
+    - stl1
+    - stl2
+    - swvl1
+    - swvl2
+    - t2m
+    - d2m
+    - solar_zenith
+    context_vars:
+    - stl1
+    - stl2
+    - swvl1
+    - swvl2
+    - t2m
+    - d2m
+    - solar_zenith
+  glofas_v4:
+    store: glofas_v4_2014_2025
+    load:
+      data:
+      - rowe
+      - sd
+      - swir
+      - dis24
+    transform: signed_log1p
+    lookback: 168
+    horizon: 24
+  seviri:
+    store: seviri_2016_2024
+    load:
+      data:
+      - LST
+      - MLE
+      - MH
+      data_daily:
+      - FVC
+      data_static:
+      - DEM
+      data_static_categorical:
+      - LWMASK
+      - LANDCOV
+      metadata:
+      - quality_flag
+      - standard_error
+    lookback: 168
+    horizon: 24
+    inputs:
+    - FVC
+    - DEM
+    - LWMASK
+    - LANDCOV
+    - solar_zenith
+    - doy_cos
+    - doy_sin
+    - hod_cos
+    - hod_sin
+    prognostics:
+    - LST
+    diagnostics: []
+    context_vars:
+    - LST
+training:
+  max_epochs: 70
+  batch_size: 512
+  num_workers: 24
+  pin_memory: true
+  prefetch_factor: 2
+  limit_train_batches: 2500
+  limit_val_batches: 500
+  limit_test_batches: 1.0
+  overfit_batches: 0.0
+wandb_logger: true
+csv_logger: true
+profiler: false
+early_stopping: false
+smoke: false
+tag: null
+seed: 42
+hpo_path: nas/hpo_best.json
+hpo: false
+resume_ckpt: null
+_model_name: transformer
+_sigma_prognostics: []
+_sigma_diagnostics: []
+model:
+  name: transformer
+  d_model: 256
+  n_heads: 4
+  n_layers: 4
+  dim_feedforward: 512
+  encoder_weights: None
+  learning_rate: 0.00037
+  dropout: 0.005
+  activation: gelu
+  attention: causal
+  static_encoding: integer
+  diagnostic_history: true
+  init_fill: none
+  init_hide_fraction: 0.5
+  step_loss: RolloutLoss
+  loss_fn: smooth_l1
+  checkpoint_monitor: val_loss_step_epoch_log
+  detach_rollout: false
+  teacher_forcing_loss: true
+  incremental_loss: false
+  rollout_loss: true
+  probabilistic: false
+  scheduler_T0: 80000
+  weight_decay: 0.0001
+  warmup_steps: 20000
+  norm_first: false
+_loss: smoothl1
+_horizon: h24
+_data: full

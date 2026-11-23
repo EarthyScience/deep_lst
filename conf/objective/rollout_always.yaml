@@ -1,0 +1,7 @@
+# @package objective
+
+defaults:
+  - rollout
+  - _self_
+
+init_fill: always

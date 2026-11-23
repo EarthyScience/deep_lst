@@ -1,13 +1,13 @@
 # deep_lst
 
-[![Tests](https://github.com/MWesselkamp/deep_lst/actions/workflows/tests.yml/badge.svg)](https://github.com/MWesselkamp/deep_lst/actions/workflows/tests.yml)
+[![Tests](https://github.com/EarthyScience/deep_lst/actions/workflows/tests.yml/badge.svg)](https://github.com/EarthyScience/deep_lst/actions/workflows/tests.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![standard-readme compliant](https://img.shields.io/badge/readme%20style-standard-brightgreen.svg)](https://github.com/RichardLitt/standard-readme)
 
 Multi-modal and light-weight land surface temperature forecasting
 
 > **Status:** this is `develop`, the working branch; interfaces and configs change. The
-> last publication snapshot is the tag `DeepLST_v1.0`; reproduce the paper from there. The latest tag DeepLST_v2.0 has moved forward from there.
+> last publication snapshot is the tag `DeepLST_v1.0.0`; reproduce the paper from there. The latest tag DeepLST_v2.0.0 has moved forward from there.
 
 Multi-modal machine learning for forecasting of land surface temperature (LST) over Africa from geostationary satellite observations (SEVIRI) and reanalysis (ERA5, ERA5-Land). An autoregressive MLP or transformer
 rolls the hourly LST incrementes forward over a customized forecast horizon. The state is driven by the large-scale atmospheric forcing. Forecasts are verified against climatology, persistence and ERA5-Land skin temperature. The code builds on PyTorch Lightning, is configured with Hydra and logs to Weights & Biases.
@@ -30,7 +30,7 @@ provides the native GDAL and PROJ libraries of the data library
 from a sibling directory that must be named `eodata_slim`:
 
 ```sh
-git clone https://github.com/MWesselkamp/deep_lst.git
+git clone https://github.com/EarthyScience/deep_lst.git
 git clone -b v0.3_DeepLST https://github.com/EarthyScience/eodata.git eodata_slim
 
 cd eodata_slim
@@ -54,7 +54,7 @@ for a selection of 3000 sites. The pipeline has five stages, run from the reposi
 # 1. normalisation statistics of a training selection (repeat for era5 and era5_land)
 uv run python scripts/assets/compute_statistics.py modality=seviri spatial=<selection>
 # 2. training
-uv run python deep_lst/train.py model=mlp_rollout _spatial=<selection> tag=<tag>
+uv run python deep_lst/train.py model=mlp objective=rollout _spatial=<selection> tag=<tag>
 # 3. inference: roll the trained run out over an evaluation set
 uv run python scripts/inference/run_inference.py eval=<eval> experiment=<run>
 # 4. verification against the observations and the reference forecasts
@@ -82,7 +82,7 @@ forecasts that `scripts/assets/run_baselines.py` extracts once per evaluation se
 | `deep_lst/exploration/` | stand-alone analyses of the data and the site sampling; not part of the pipeline |
 | `deep_lst/nas/` | hyper-parameter search |
 | `deep_lst/utils/` | shared helpers: experiment paths, config handling, computed solar and time features, normalisation, grid mapping |
-| `conf/` | Hydra configuration: one root file per entry point and the groups model, loss, horizon, data and eval |
+| `conf/` | Hydra configuration: one root file per entry point and the groups model, objective, loss, optim, horizon, data, sources and eval |
 | `scripts/` | entry points outside the package (assets, inference, sensitivity) and SLURM launchers written for the MPI-BGC cluster |
 | `tests/` | pytest suite; runs in CI without the data stores |
 
@@ -92,6 +92,8 @@ forecasts that `scripts/assets/run_baselines.py` extracts once per evaluation se
   prerequisites and directories to data, assets and the SLURM job of every stage.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): configuration groups, run naming, computed
   input features and known pitfalls.
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md): every configuration file, group, option
+  and key.
 - [`docs/ONBOARDING.md`](docs/ONBOARDING.md): the workflow for a new training selection, and a
   first project.
 
@@ -105,7 +107,7 @@ If you use this software, please cite it with the metadata in [`CITATION.cff`](C
 ## Contributing
 
 Questions and bug reports go to the
-[issue tracker](https://github.com/MWesselkamp/deep_lst/issues). Pull requests against
+[issue tracker](https://github.com/EarthyScience/deep_lst/issues). Pull requests against
 `develop` are welcome; run `uv run pre-commit run --all-files` and `uv run pytest` first.
 
 ## License

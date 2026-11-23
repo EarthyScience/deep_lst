@@ -11,7 +11,7 @@ results/<experiment>/<version>/<eval>/sensitivity/permute_days_<block>/<modality
 then scores.collect compares every store with the run's own forecast.zarr on the samples where
 both forecasts and the observation are valid: scores.nc (per pixel) and summary.csv (pooled per
 solar window and forecast day). Settings: conf/sensitivity.yaml; the eval dataset follows
-conf/infer.yaml (e.g. test_dataset.init_hours=[0] thins the inits to 00 UTC).
+conf/infer.yaml (e.g. splits.test.init_hours=[0] thins the inits to 00 UTC).
 
     python scripts/sensitivity/run_sensitivity.py experiment=<exp> eval=eval_mtg sensitivity.block=month
     python scripts/sensitivity/run_sensitivity.py experiment=<exp> eval=eval_mtg \\
@@ -31,12 +31,12 @@ from deep_lst.utils.inference import load_run_config
 
 @hydra.main(config_path="../../conf", config_name="sensitivity", version_base="1.3")
 def main(cfg: DictConfig) -> None:
-    paths = ExperimentPaths()
+    paths = ExperimentPaths.from_config(cfg.get("paths"))
     config = load_run_config(cfg, paths)
     settings = cfg.sensitivity
     out_dir = sensitivity_dir(paths, cfg.experiment, cfg.version, cfg.eval_name, settings.method, settings.block)
 
-    inference = PerturbedInference(cfg, config)
+    inference = PerturbedInference(cfg, config, paths=paths)
     if settings.variables is None:
         variables = stored_inputs(config, inference.shared["var_names"])
     else:

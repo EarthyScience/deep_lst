@@ -1,7 +1,8 @@
 # @package _global_
 eval_name: zambia
 
-test_dataset:
-  spatial: eval_zambia_drought
-  temporal: test
-  anchor: seviri
+splits:
+  test:
+    spatial: eval_zambia_drought
+    temporal: test
+    anchor: seviri

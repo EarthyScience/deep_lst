@@ -1,6 +1,25 @@
+import getpass
+import os
 import re
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
+
+from omegaconf import OmegaConf
+
+
+@cache
+def _default_paths() -> dict:
+    return OmegaConf.to_container(
+        OmegaConf.load(Path(__file__).resolve().parents[2] / "conf" / "paths.yaml"), resolve=True
+    )
+
+
+def _preload_cache_root(settings: dict) -> Path:
+    root = settings["preload_cache_root"] or os.environ.get("DEEP_LST_CACHE_ROOT")
+    if root:
+        return Path(root)
+    return Path(settings["preload_cache_parent"]) / (os.environ.get("USER") or getpass.getuser()) / "tmp"
 
 
 @dataclass
@@ -10,11 +29,20 @@ class ExperimentPaths:
     experiment_root: Path = field(default_factory=lambda: Path("./experiments"))
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
-    # Full eodata stores. Moved off tscratch (90-day purge) in October 2026.
-    eozarr_root: Path = field(
-        default_factory=lambda: Path("/Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old")
+    eozarr_root: Path = field(default_factory=lambda: Path(_default_paths()["eozarr_root"]))
+    preload_cache_root: Path = field(default_factory=lambda: _preload_cache_root(_default_paths()))
+    store_roots: dict[str, str | None] = field(
+        default_factory=lambda: dict(_default_paths()["store_roots"]), kw_only=True
     )
-    preload_cache_root: Path = field(default_factory=lambda: Path("/Net/Groups/BGI/tscratch/mwessel/tmp"))
+
+    @classmethod
+    def from_config(cls, config) -> "ExperimentPaths":
+        settings = {**_default_paths(), **{key: value for key, value in (config or {}).items() if value is not None}}
+        cache_root = _preload_cache_root(settings)
+        settings.pop("preload_cache_parent")
+        store_roots = dict(settings.pop("store_roots"))
+        settings["preload_cache_root"] = cache_root
+        return cls(store_roots=store_roots, **{key: Path(value) for key, value in settings.items()})
 
     def experiment_dir(self, experiment: str) -> Path:
         return self.experiment_root / experiment
@@ -43,14 +71,15 @@ class ExperimentPaths:
     def statistics_path(self, modality, name) -> Path:
         return self.assets_root / modality / "statistics" / f"statistics_{name}.npz"
 
-    def eozarr_store_path(self, store_name: str) -> Path:
+    def eozarr_store_path(self, store_name: str, store_root: str | Path | None = None) -> Path:
         """Resolve a full eodata .eozarr store from its config-provided name.
 
         Prefers the directory store when it is readable and falls back to the .zip sibling:
-        under eozarr_root the era5, era5_land, glofas and swe stores exist only as zips, while
+        under the selected root the era5, era5_land, glofas and swe stores exist only as zips, while
         seviri is a directory store."""
-        directory = self.eozarr_root / f"{store_name}.eozarr"
-        archive = self.eozarr_root / f"{store_name}.eozarr.zip"
+        root = self.eozarr_root if store_root is None else Path(store_root)
+        directory = root / f"{store_name}.eozarr"
+        archive = root / f"{store_name}.eozarr.zip"
         directory_is_readable = (directory / "data" / "zarr.json").exists()
         if not directory_is_readable and archive.exists():
             return archive
@@ -147,6 +176,24 @@ def stats_spatial(dataset_cfg: dict) -> str:
     Experiment configs saved before the key existed were all trained on mtg_new stats.
     """
     return dataset_cfg.get("stats_spatial", "mtg_new")
+
+
+def check_stats_transform(stats_zarr: Path, transform: str | None) -> None:
+    """Raise unless the statistics were computed under the transform the run applies.
+
+    compute_statistics.py records the modality's value transform in the zarr attrs (absent =
+    raw values). Statistics of raw values normalising transformed values, or the reverse, give
+    inputs on the wrong scale without any error further down.
+    """
+    import zarr
+
+    recorded = zarr.open_group(str(stats_zarr), mode="r").attrs.get("transform")
+    if recorded != transform:
+        raise ValueError(
+            f"{stats_zarr}: statistics computed with transform={recorded!r}, the run applies "
+            f"transform={transform!r} (sources.<modality>.transform). Recompute the statistics "
+            "or fix the transform."
+        )
 
 
 def load_inc_variances(stats_zarr: Path) -> dict[str, float]:

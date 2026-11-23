@@ -1,7 +1,8 @@
 # @package _global_
 eval_name: west_africa
 
-test_dataset:
-  spatial: eval_west_africa
-  temporal: test
-  anchor: seviri
+splits:
+  test:
+    spatial: eval_west_africa
+    temporal: test
+    anchor: seviri

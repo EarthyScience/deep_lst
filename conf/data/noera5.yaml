@@ -1,35 +1,6 @@
 # @package _global_
-# Data ablation: full minus the era5 modality inputs.
-# Same modality_ids/load as full -> reuses its preload cache; only inputs shrink.
-_data: noera5
 
-train_dataset:
-  era5:
-    inputs: []
-    context_vars: []
-  era5_land:
-    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
-    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
-  seviri:
-    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
-    prognostics: [LST]
-    diagnostics: []
-    context_vars: [LST]
-
-val_dataset:
-  era5:
-    inputs: []
-    context_vars: []
-  era5_land:
-    inputs: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
-    context_vars: [stl1, stl2, swvl1, swvl2, t2m, d2m, solar_zenith]
-  seviri:
-    inputs: [FVC, DEM, LWMASK, LANDCOV, solar_zenith, doy_cos, doy_sin, hod_cos, hod_sin]
-    prognostics: [LST]
-    diagnostics: []
-    context_vars: [LST]
-
-test_dataset:
+features:
   era5:
     inputs: []
     context_vars: []

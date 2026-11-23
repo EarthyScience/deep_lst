@@ -7,9 +7,10 @@ from deep_lst.utils.config import get_packing_keys
 
 
 class LitDataModule(pl.LightningDataModule):
-    def __init__(self, **kwargs):
+    def __init__(self, experiment_paths=None, **kwargs):
         super().__init__()
         self.kwargs = kwargs
+        self.paths = experiment_paths
         self.collate_fn = Collator(kwargs["model"]["name"], get_packing_keys(kwargs["train_dataset"]))
 
     def setup(self, stage=None):
@@ -27,9 +28,11 @@ class LitDataModule(pl.LightningDataModule):
         modality_ids = self.kwargs["modality_ids"]
         spatial = split_kwargs["spatial"]
         if spatial not in self._shared_by_spatial:
-            self._shared_by_spatial[spatial] = MultimodalDataset.preload_shared(modality_ids, **split_kwargs)
+            self._shared_by_spatial[spatial] = MultimodalDataset.preload_shared(
+                modality_ids, paths=self.paths, **split_kwargs
+            )
         shared = self._shared_by_spatial[spatial]
-        return MultimodalDataset.from_modalities(modality_ids, shared, **split_kwargs)
+        return MultimodalDataset.from_modalities(modality_ids, shared, paths=self.paths, **split_kwargs)
 
     def train_dataloader(self):
         return DataLoader(
