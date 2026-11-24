@@ -84,7 +84,7 @@ class Forecast:
         so each flush writes whole init_time chunks. Memory stays bounded at ~one batch
         plus a sub-init_time carry buffer, independent of the dataset size.
         """
-        from eodata.grids import T1H
+        from deep_lst.stores import T1H
 
         # prediction_mode is the objective's kind. A diagnostic objective is the rollout without
         # a carried state, which _predict_rollout covers (no prognostic channel, lead 0 empty).

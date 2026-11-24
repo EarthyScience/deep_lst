@@ -17,9 +17,9 @@ from contextlib import contextmanager
 import numpy as np
 import pandas as pd
 import torch
-from eodata.grids import T1H
 
 from deep_lst.dataset.dataset import PRELOAD_END_DAY, PRELOAD_START_DAY
+from deep_lst.stores import T1H
 
 HOURS_PER_DAY = 24
 STATIC_LEAVES = ("data_static", "data_static_categorical")

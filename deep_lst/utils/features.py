@@ -11,12 +11,14 @@ the anchor hour (T1H global index) and, for the solar features, the cell lon/lat
   Both solar features are per-grid: on the coarse modalities they carry the geometric offset of
   the forcing cell relative to the target pixel.
 
-Hour indices are converted to timestamps via eodata's ``T1H`` grid (single source of truth for
-the index<->date mapping), so this stays consistent with how the stores are indexed.
+Hour indices are converted to timestamps via the ``T1H`` time axis of deep_lst.stores (single
+source of truth for the index<->date mapping), so this stays consistent with how the stores are
+indexed.
 """
 
 import numpy as np
-from eodata.grids import T1H
+
+from deep_lst.stores import T1H
 
 
 def _timestamps(hours):

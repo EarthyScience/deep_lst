@@ -8,7 +8,6 @@ from pathlib import Path
 import eodata
 import numpy as np
 import torch
-from eodata.grids import T1H
 from eodata.normalization import ModalityNormalizer
 from eodata.registry import get_data_reader_class
 from eodata.sample import Mask, mask_name
@@ -16,6 +15,7 @@ from tensordict import TensorDict
 from torch.utils.data import Dataset
 
 from deep_lst.dataset.transforms import with_transform
+from deep_lst.stores import T1H
 from deep_lst.utils import features
 from deep_lst.utils.io import ExperimentPaths, load_computed_stats, stats_spatial
 from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
