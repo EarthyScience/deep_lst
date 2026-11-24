@@ -9,22 +9,30 @@ import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-pytest.importorskip("eodata")
-from deep_lst import train  # noqa: E402
-from deep_lst.dataset import dataset  # noqa: E402
-from deep_lst.dataset.data_module import LitDataModule  # noqa: E402
-from deep_lst.utils.io import ExperimentPaths  # noqa: E402
+from deep_lst import stores, train
+from deep_lst.dataset import dataset
+from deep_lst.dataset.data_module import LitDataModule
+from deep_lst.stores import T1H, CubeReader
+from deep_lst.utils.io import ExperimentPaths
+from deep_lst.utils.statistics import write_statistics
 
 CONF_DIR = Path(__file__).resolve().parents[1] / "conf"
+
+
+class TinyLSTReader(CubeReader):
+    """Reader of the synthetic hourly store of tests/conftest.py."""
+
+    MODALITY_ID = "synthetic_hourly"
+    TIME_GRID = T1H
 
 
 @pytest.mark.parametrize(
     "overrides",
     [
         {},
-        {"eozarr_root": "local-data"},
+        {"product_root": "local-data"},
         {"preload_cache_root": "local-cache"},
-        {"eozarr_root": "local-data", "preload_cache_root": "local-cache"},
+        {"product_root": "local-data", "preload_cache_root": "local-cache"},
     ],
 )
 def test_training_passes_paths_to_data_module_and_saves_overrides(tmp_path, monkeypatch, overrides):
@@ -58,62 +66,41 @@ def test_training_passes_paths_to_data_module_and_saves_overrides(tmp_path, monk
 
 
 @pytest.mark.parametrize("explicit_paths", [False, True])
-def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_path, monkeypatch, explicit_paths):
-    if explicit_paths:
-        monkeypatch.chdir(tmp_path)
-    root = Path(".") if explicit_paths else tmp_path
-    paths = ExperimentPaths(assets_root=root / "assets", eozarr_root=root / "data", preload_cache_root=root / "cache")
-    if explicit_paths:
-        paths.store_roots["seviri"] = "modality-data"
+def test_configured_stores_and_cache_preserve_samples_on_cold_and_warm_load(
+    tmp_path, monkeypatch, explicit_paths, hourly_store, product_store_writer
+):
+    """The data module reads a store through the configured paths, caches the preload, serves the
+    same samples from the cache, and reads a store again when it gets a root of its own."""
+    monkeypatch.setitem(stores.READERS, "synthetic_hourly", TinyLSTReader)
+    paths = ExperimentPaths(
+        assets_root=tmp_path / "assets", product_root=tmp_path, preload_cache_root=tmp_path / "cache"
+    )
+    anchor_row = 19  # the anchors are rows of the grid of the modality seviri
     spatial = paths.spatial_indices_path("tiny")
     spatial.parent.mkdir(parents=True)
-    np.savez(spatial, src_indices=[0])
+    np.savez(spatial, src_indices=[anchor_row])
     temporal = paths.temporal_indices_path("tiny")
     temporal.parent.mkdir(parents=True)
     np.savez(temporal, time_indices=[2, 3])
-    stats = paths.stats_zarr_path("seviri", "mtg_new")
-    stats.mkdir(parents=True)
-    (stats / "zarr.json").write_text("{}")
+    plain = {"mean": [0.0], "std": [1.0], "min": [0.0], "max": [0.0]}
+    groups = {"data": dict(plain, variables=["LST"]), "computed": dict(plain, variables=["solar_zenith"])}
+    write_statistics(paths.stats_zarr_path("seviri", "mtg_new"), groups)
     if not explicit_paths:
         monkeypatch.setattr(dataset, "PATHS", paths)
     original_paths = dataset.PATHS
-    grid = SimpleNamespace(centers=np.array([[20.0, 10.0]]))
-    monkeypatch.setattr(dataset, "anchor_grid", lambda _: grid)
-    monkeypatch.setattr(dataset, "store_grid", lambda _: grid)
-    monkeypatch.setattr(dataset, "map_to_store_rows", lambda *args: np.array([0]))
-    monkeypatch.setattr(dataset, "get_data_reader_class", lambda _: lambda store, average_hourly: None)
-    stores, normalizers, computed = [], [], []
 
-    def reader(modality, store, **kwargs):
-        stores.append(store)
-        return SimpleNamespace(store=store, schema={}, data_arr=np.empty(0, dtype=[("LST", "f4")]))
-
-    def normalizer(spec, schema):
-        normalizers.append(spec)
-
-    def computed_stats(path):
-        computed.append(path)
-        return {"solar_zenith": (0.0, 1.0)}
-
-    column = torch.arange(48, dtype=torch.float32).reshape(1, 48, 1)
-    column[0, 3] = float("nan")
-    monkeypatch.setattr(dataset.eodata, "get_data_reader", reader)
-    monkeypatch.setattr(dataset.ModalityNormalizer, "from_spec", staticmethod(normalizer))
-    monkeypatch.setattr(
-        dataset,
-        "_preload_columns",
-        lambda reader, *args, **kwargs: {
-            "data": column + (100 if Path(reader.store).parent.name == "changed-data" else 0)
-        },
-    )
-    monkeypatch.setattr(dataset, "load_computed_stats", computed_stats)
     split = dict(
         spatial="tiny",
+        anchor="seviri",
         temporal="tiny",
         stats_spatial="mtg_new",
-        seviri=dict(store="tiny", load={"data": ["LST"]}, lookback=2, horizon=2, prognostics=["LST"]),
+        seviri=dict(
+            stores={"synthetic_hourly": ["LST"]}, load={"data": ["LST"]}, lookback=2, horizon=2, prognostics=["LST"]
+        ),
     )
-    for _ in range(2):
+    # LST of the anchor cell in the first five hours of 2016: 1000 + 10 * hour + row % 10
+    expected = torch.tensor([1009.0, 1019.0, 1029.0, 1039.0, 1049.0])
+    for _ in range(2):  # cold, then from the cache
         module = LitDataModule(
             experiment_paths=paths if explicit_paths else None,
             modality_ids=["seviri"],
@@ -125,20 +112,27 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
         module.setup()
         for data in (module.train_dataset, module.val_dataset, module.test_dataset):
             np.testing.assert_array_equal(data.indices[:, 1], dataset.STORE_EPOCH_OFFSET + np.array([2, 3]))
-            torch.testing.assert_close(data[0]["seviri", "LST"].flatten(), column[0, :5, 0], equal_nan=True)
-    expected_store = Path("modality-data/tiny.eozarr") if explicit_paths else paths.eozarr_store_path("tiny")
-    assert stores == [str(expected_store)]
-    assert normalizers == [f"zscore:{stats}"]
-    assert computed == [stats] * 6
+            torch.testing.assert_close(data[0]["seviri", "LST"].flatten(), expected)
     assert len(list(paths.preload_cache_root.glob("preload_tiny_*.pt"))) == 1
     assert dataset.PATHS is original_paths
-    if explicit_paths:
-        paths.store_roots["seviri"] = "changed-data"
+
+    if explicit_paths:  # the same store under a root of its own: read again, cached under another key
+        changed_values = hourly_store.values.copy()
+        changed_values["LST"] += 100
+        changed_root = tmp_path / "changed-data"
+        product_store_writer(
+            changed_root / "synthetic_hourly.zarr",
+            "synthetic_hourly",
+            T1H,
+            hourly_store.lat,
+            hourly_store.lon,
+            hourly_store.steps_per_shard,
+            hourly_store.written_steps,
+            changed_values,
+            hourly_store.fill_value,
+        )
+        paths.store_roots["synthetic_hourly"] = str(changed_root)
         changed = LitDataModule(experiment_paths=paths, **module.kwargs)
         changed.setup()
-        torch.testing.assert_close(
-            changed.train_dataset[0]["seviri", "LST"].flatten(), column[0, :5, 0] + 100, equal_nan=True
-        )
-        assert stores[-1] == str(Path("changed-data/tiny.eozarr"))
-        assert len(stores) == 2
+        torch.testing.assert_close(changed.train_dataset[0]["seviri", "LST"].flatten(), expected + 100)
         assert len(list(paths.preload_cache_root.glob("preload_tiny_*.pt"))) == 2

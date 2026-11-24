@@ -18,11 +18,11 @@ CONF_DIR = Path(__file__).resolve().parents[1] / "conf"
 def test_entrypoints_use_the_shared_paths_file(entrypoint):
     with initialize_config_dir(config_dir=str(CONF_DIR), version_base="1.3"):
         default = compose(config_name=entrypoint)
-        cfg = compose(config_name=entrypoint, overrides=["+paths.store_roots.seviri=local-seviri"])
+        cfg = compose(config_name=entrypoint, overrides=["+paths.store_roots.seviri_product_hourly_lst=local-seviri"])
     assert ExperimentPaths.from_config(default.paths) == ExperimentPaths()
     paths = ExperimentPaths.from_config(cfg.paths)
-    assert paths.store_roots == {"seviri": "local-seviri"}
-    assert paths.eozarr_root == ExperimentPaths().eozarr_root
+    assert paths.store_roots == {"seviri_product_hourly_lst": "local-seviri"}
+    assert paths.product_root == ExperimentPaths().product_root
 
 
 @pytest.fixture
@@ -65,24 +65,18 @@ def test_explicit_cache_root_overrides_environment(monkeypatch, tmp_path):
     )
 
 
-@pytest.mark.parametrize("root_kind", ["default", "string", "path", "relative"])
-def test_store_root_override_keeps_directory_and_zip_selection(tmp_path, monkeypatch, root_kind):
+@pytest.mark.parametrize("root_kind", ["default", "null", "string", "path", "relative"])
+def test_store_root_overrides_the_product_root_for_one_store(tmp_path, monkeypatch, root_kind):
     monkeypatch.chdir(tmp_path)
-    paths = ExperimentPaths(eozarr_root=tmp_path / "shared")
-    root = paths.eozarr_root if root_kind == "default" else tmp_path / "modality"
-    if root_kind == "relative":
-        root = Path("modality")
-    kwargs = {} if root_kind == "default" else {"store_root": str(root) if root_kind == "string" else root}
-    directory = root / "tiny.eozarr"
-    archive = root / "tiny.eozarr.zip"
-    root.mkdir(parents=True)
-    assert paths.eozarr_store_path("tiny", **kwargs) == directory
-    archive.touch()
-    assert paths.eozarr_store_path("tiny", **kwargs) == archive
-    (directory / "data").mkdir(parents=True)
-    (directory / "data" / "zarr.json").write_text("{}")
-    assert paths.eozarr_store_path("tiny", **kwargs) == directory
-    assert paths.eozarr_root == tmp_path / "shared"
+    paths = ExperimentPaths(product_root=tmp_path / "shared")
+    own_roots = {"null": None, "string": str(tmp_path / "other"), "path": tmp_path / "other", "relative": "other"}
+    if root_kind != "default":
+        paths.store_roots["tiny"] = own_roots[root_kind]
+    uses_the_product_root = root_kind in ("default", "null")
+    expected_root = tmp_path / "shared" if uses_the_product_root else Path(own_roots[root_kind])
+    assert paths.product_store_path("tiny") == expected_root / "tiny.zarr"
+    assert paths.product_store_path("another") == tmp_path / "shared" / "another.zarr"
+    assert paths.product_root == tmp_path / "shared"
 
 
 def test_product_store_path_is_a_zarr_folder_under_the_product_root(tmp_path):

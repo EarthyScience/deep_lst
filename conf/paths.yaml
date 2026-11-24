@@ -1,10 +1,9 @@
 # @package paths
 # Site paths shared by training, inference and asset generation.
 # Use a separate preload cache when changing the common store root.
-eozarr_root: /Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/lowres_old
 product_root: /Net/Groups/BGI/work_5/scratch/WeatherGenerator/data/deep_lst
 preload_cache_root: null
 preload_cache_parent: /Net/Groups/BGI/tscratch
 
-# Only list modalities whose stores live under a different root.
+# Only list stores that live under a different root: <store name>: <folder>.
 store_roots: {}

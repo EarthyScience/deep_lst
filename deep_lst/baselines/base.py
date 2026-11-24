@@ -15,7 +15,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
-from eodata import get_data_reader
 
 from deep_lst.dataset.dataset import PRELOAD_END_DAY, PRELOAD_START_DAY, STORE_EPOCH_OFFSET
 from deep_lst.stores import T1H
@@ -25,6 +24,26 @@ from deep_lst.utils.spatial import pixel_grid
 
 _SPARSE_FILL_THRESHOLD = 0.01
 _ANCHOR_MODALITY = "seviri"
+
+# variable -> (units, long name) for the attributes of a baseline file; names as in ERA5
+VARIABLE_ATTRS = {
+    "LST": ("K", "Land surface temperature"),
+    "skt": ("K", "Skin temperature"),
+    "t2m": ("K", "2m Temperature"),
+    "d2m": ("K", "2m dewpoint temperature"),
+    "stl1": ("K", "Soil temperature Layer 1"),
+    "stl2": ("K", "Soil temperature Layer 2"),
+    "swvl1": ("m**3 m**-3", "Volumetric soil water layer 1"),
+    "swvl2": ("m**3 m**-3", "Volumetric soil water layer 2"),
+    "sp": ("Pa", "Surface pressure"),
+    "u10": ("m s**-1", "10 metre U wind component"),
+    "v10": ("m s**-1", "10 metre V wind component"),
+    "ssrd": ("J m**-2", "Surface short-wave (solar) radiation downwards"),
+    "strd": ("J m**-2", "Surface long-wave (thermal) radiation downwards"),
+    "tp": ("m", "Total precipitation"),
+    "tcwv": ("kg m**-2", "Total column vertically-integrated water vapour"),
+    "tcc": ("Dimensionless (0 - 1)", "Total cloud cover"),
+}
 
 
 class BaselineExtractor(ABC):
@@ -86,20 +105,10 @@ class BaselineExtractor(ABC):
         pixel_lonlat = shared["cell_lonlat"][_ANCHOR_MODALITY][anchor_inverse]
         return shared["anchor_ids"], timestamps, var, pixel_lonlat
 
-    def _metadata_attrs(self, modality: str, store_name: str, var_name: str) -> dict:
-        """Baseline attrs sourced from the store's own per-variable metadata scheme."""
-        store_root = self.paths.store_roots.get(modality, self.config["test_dataset"][modality].get("store_root"))
-        reader = get_data_reader(
-            modality, store=str(self.paths.eozarr_store_path(store_name, store_root)), average_hourly=False
-        )
-        variable_meta = reader.data_arr.attrs.get("metadata", {}).get(var_name, {})
-        return dict(
-            variable=var_name,
-            units=variable_meta.get("units", ""),
-            long_name=variable_meta.get("long_name", var_name),
-            description=variable_meta.get("description", ""),
-            test_year=str(self.test_year),
-        )
+    def _metadata_attrs(self, var_name: str) -> dict:
+        """Attributes of a baseline file; units and long name from VARIABLE_ATTRS where known."""
+        units, long_name = VARIABLE_ATTRS.get(var_name, ("", var_name))
+        return dict(variable=var_name, units=units, long_name=long_name, test_year=str(self.test_year))
 
     def _resolve_spatial_layout(self) -> None:
         self.n_pixels = len(self.spatial_idx)
@@ -168,13 +177,12 @@ class ModalityBaselineExtractor(BaselineExtractor):
         self.spatial_idx, self.timestamps, self.var, self.pixel_lonlat = self._preload_series(
             shared, self.modality, self.var_name
         )
-        self.store_name = config["test_dataset"][self.modality]["store"]
 
     def _compute(self):
         test_mask = self.timestamps.year == self.test_year
         baseline = self.var[:, test_mask].T.astype(np.float32)  # (n_time, n_pixels)
         test_timestamps = self.timestamps[test_mask]
-        attrs = self._metadata_attrs(self.modality, self.store_name, self.var_name)
+        attrs = self._metadata_attrs(self.var_name)
         self.result = self._make_dataset(baseline, test_timestamps, attrs)
 
     def output_path(self) -> Path:

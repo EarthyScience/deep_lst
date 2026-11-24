@@ -1,12 +1,17 @@
-"""Golden tests for the Hydra configuration layout (config_version 2).
+"""Golden tests for the Hydra configuration layout (config_version 2 and 3).
 
 tests/fixtures/config_v1_<case>.yml hold what five legacy command lines composed at develop
 5274122 (`train.py ... --cfg job --resolve`), before the groups objective / optim / sources
 and the sections window / features / splits existed. They are the reference for "the
 refactor changed where a value lives, not the value" and are never regenerated.
 
+Version 3 replaced the one .eozarr store per modality by the product stores, so the store
+definition of a modality (SOURCE_KEYS) is the one part of a dataset dict that differs from the
+fixtures; it is compared with conf/sources/product.yaml instead.
+
 For every case the new command line has to give
-  - the same three per-split dataset dicts (split_views), in the same modality order
+  - the same three per-split dataset dicts (split_views) apart from the store definition, in
+    the same modality order
   - the same value for every key that moved (RELOCATED, RELOCATED_TERMS)
   - the same architecture under `model`
   - the same value for every key that did not move
@@ -127,6 +132,9 @@ MIGRATED_SECTIONS = [
 
 CASES = list(NEW_OVERRIDES)
 
+# keys of a modality block that say where its data comes from, in either layout
+SOURCE_KEYS = ("store", "stores", "load", "transform", "store_root")
+
 
 def _fixture(case):
     return yaml.safe_load((FIXTURE_DIR / f"config_v1_{case}.yml").read_text())
@@ -149,15 +157,30 @@ def _modalities(view):
     return [key for key, value in view.items() if isinstance(value, dict)]
 
 
+def _without_sources(view):
+    """A dataset dict without the store definition of its modalities."""
+    stripped = {}
+    for key, value in view.items():
+        if isinstance(value, dict):
+            stripped[key] = {name: entry for name, entry in value.items() if name not in SOURCE_KEYS}
+        else:
+            stripped[key] = value
+    return stripped
+
+
 @pytest.mark.parametrize("case", CASES)
 def test_split_views_reproduce_the_legacy_datasets(case):
     legacy = _fixture(case)
 
-    views = config_utils.split_views(_compose(NEW_OVERRIDES[case]))
+    new = _compose(NEW_OVERRIDES[case])
+    views = config_utils.split_views(new)
 
-    assert views["train"] == legacy["train_dataset"]
-    assert views["val"] == legacy["val_dataset"]
-    assert views["test"] == legacy["test_dataset"]
+    assert _without_sources(views["train"]) == _without_sources(legacy["train_dataset"])
+    assert _without_sources(views["val"]) == _without_sources(legacy["val_dataset"])
+    assert _without_sources(views["test"]) == _without_sources(legacy["test_dataset"])
+    for modality in _modalities(views["train"]):
+        assert views["train"][modality]["stores"] == new["sources"][modality]["stores"]
+        assert views["train"][modality]["load"] == new["sources"][modality]["load"]
     # dict equality ignores order; the modality order fixes the channel order of the tensors
     assert _modalities(views["train"]) == _modalities(legacy["train_dataset"])
     new_keys = config_utils.get_packing_keys(views["train"])
@@ -178,7 +201,7 @@ def test_relocated_keys_keep_their_values(case):
     assert legacy["model"]["step_loss"] == "RolloutLoss"
     assert new["objective"]["_target_"] == "deep_lst.losses.RolloutLoss"
     assert new["objective"]["pointwise"]["_target_"] == POINTWISE_TARGETS[legacy["model"]["loss_fn"]]
-    assert new["config_version"] == 2
+    assert new["config_version"] == config_utils.CONFIG_VERSION
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -206,21 +229,21 @@ def test_every_other_key_is_unchanged(case):
 def test_training_path_overrides_leave_scientific_config_unchanged():
     default = _compose(NEW_OVERRIDES["default"])
     overridden = _compose(
-        [*NEW_OVERRIDES["default"], "paths.eozarr_root=local-data", "paths.preload_cache_root=local-cache"]
+        [*NEW_OVERRIDES["default"], "paths.product_root=local-data", "paths.preload_cache_root=local-cache"]
     )
-    expected_paths = default.pop("paths") | {"eozarr_root": "local-data", "preload_cache_root": "local-cache"}
+    expected_paths = default.pop("paths") | {"product_root": "local-data", "preload_cache_root": "local-cache"}
     assert overridden.pop("paths") == expected_paths
     assert overridden == default
 
 
-def test_modality_store_root_lives_only_in_shared_paths():
+def test_store_root_lives_only_in_shared_paths():
     default = _compose(NEW_OVERRIDES["default"])
-    overridden = _compose([*NEW_OVERRIDES["default"], "+paths.store_roots.seviri=local-seviri"])
+    overridden = _compose([*NEW_OVERRIDES["default"], "+paths.store_roots.seviri_product_hourly_lst=local-seviri"])
     for view in config_utils.split_views(overridden).values():
         assert "store_root" not in view["seviri"]
         assert "store_root" not in view["era5"]
         assert "store_root" not in view["era5_land"]
-    assert overridden["paths"]["store_roots"].pop("seviri") == "local-seviri"
+    assert overridden["paths"]["store_roots"].pop("seviri_product_hourly_lst") == "local-seviri"
     assert overridden == default
 
 
@@ -232,10 +255,8 @@ def test_migrated_fixture_equals_the_new_composition(case):
 
     for section in MIGRATED_SECTIONS:
         assert migrated[section] == new[section], section
-    # a legacy config knows nothing of increment_vars, which only compute_statistics.py reads
-    for modality, source in new["sources"].items():
-        expected = {key: value for key, value in source.items() if key != "increment_vars"}
-        assert migrated["sources"][modality] == expected, modality
+    # the .eozarr sources of the legacy config are replaced by the product stores
+    assert migrated["sources"] == new["sources"]
     assert list(migrated["sources"]) == list(new["sources"])
 
 
@@ -290,23 +311,29 @@ SAVED_CONFIGS = sorted((REPO_ROOT / "experiments").glob("*/version_*/config.yml"
 @pytest.mark.skipif(not SAVED_CONFIGS, reason="no experiments/ in this working tree")
 def test_every_saved_config_migrates_to_its_own_datasets():
     """Old runs keep working: the migrated config gives back the dataset dicts the run was
-    trained with, in the same channel order, and its objective can be built.
-    A config saved in the current layout passes unchanged and its objective can be built."""
+    trained with apart from the store definition, in the same channel order, and its objective
+    can be built. A config saved in the current layout passes unchanged."""
     for path in SAVED_CONFIGS:
         saved = yaml.safe_load(path.read_text())
-        is_current = saved.get("config_version", 1) == config_utils.CONFIG_VERSION
+        saved_version = saved.get("config_version", 1)
 
         migrated = config_utils.migrate_config(saved)
 
         views = config_utils.split_views(migrated)
-        if is_current:
+        if saved_version == config_utils.CONFIG_VERSION:
             assert migrated == yaml.safe_load(path.read_text()), path
+        if saved_version >= 2:  # same layout apart from the sources: the datasets keep everything else
+            saved_views = config_utils.split_views(saved)
+            for split in ("train", "val", "test"):
+                assert _without_sources(views[split]) == _without_sources(saved_views[split]), path
+            saved_keys = config_utils.get_packing_keys(saved_views["train"])
+            assert config_utils.get_packing_keys(views["train"]) == saved_keys, path
             td_keys = config_utils.get_keys_from_config(views["train"])
             build_objective(migrated["objective"], **td_keys)
             continue
-        assert views["train"] == saved["train_dataset"], path
-        assert views["val"] == saved["val_dataset"], path
-        assert views["test"] == saved["test_dataset"], path
+        assert _without_sources(views["train"]) == _without_sources(saved["train_dataset"]), path
+        assert _without_sources(views["val"]) == _without_sources(saved["val_dataset"]), path
+        assert _without_sources(views["test"]) == _without_sources(saved["test_dataset"]), path
         new_keys = config_utils.get_packing_keys(views["train"])
         assert new_keys == config_utils.get_packing_keys(saved["train_dataset"]), path
         td_keys = config_utils.get_keys_from_config(views["train"])

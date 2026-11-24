@@ -34,8 +34,6 @@ import torch
 import xarray as xr
 from tensordict import TensorDict
 
-pytest.importorskip("eodata")
-
 from deep_lst.inference import Forecast
 
 # ── shared constants ──────────────────────────────────────────────────────────

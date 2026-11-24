@@ -4,7 +4,7 @@ import importlib
 import torch
 
 from deep_lst.lit_module import LitModelModule
-from deep_lst.utils.io import ExperimentPaths
+from deep_lst.utils.io import ExperimentPaths, default_sources
 
 MODEL_CLASSES = {
     "mlp": "MultiModalMLP",
@@ -12,15 +12,18 @@ MODEL_CLASSES = {
 }
 
 # Layout version of conf/train.yaml and of every config.yml written from it.
-CONFIG_VERSION = 2
+# 2: objective / optim / window / sources / features / splits. 3: sources name product stores.
+CONFIG_VERSION = 3
 
 SPLIT_NAMES = ("train", "val", "test")
 # per-modality keys of the `features` section (conf/data/<data>.yaml)
 ROLE_KEYS = ("inputs", "prognostics", "diagnostics", "context_vars")
 # config groups whose chosen option is a token of the run name, in name order
 RUN_NAME_GROUPS = ("model", "objective", "loss", "horizon", "data")
+# features computed when a sample is served, not read from a store (deep_lst/utils/features.py)
+COMPUTED_FEATURES = ("solar_zenith", "doy_cos", "doy_sin", "hod_cos", "hod_sin")
 
-# --- config.yml files written before config_version 2 (migrate_config) ---
+# --- config.yml files written before config_version 2 (lift_to_version_2) ---
 # model.loss_fn -> the pointwise node of conf/loss/<option>.yaml
 LEGACY_POINTWISE = {
     "smooth_l1": {"_target_": "torch.nn.functional.smooth_l1_loss", "_partial_": True, "beta": 1.0},
@@ -74,7 +77,7 @@ def split_views(config: dict) -> dict[str, dict]:
 
     Each view is what MultimodalDataset, get_keys_from_config and the baselines consume: the
     split's selection keys (spatial, stats_spatial, anchor, temporal, ...) and one block per
-    modality with store / load / transform from `sources`, lookback / horizon from `window`
+    modality with stores / load / transform from `sources`, lookback / horizon from `window`
     and the role lists from `features`. The modalities come in the order of `sources`, which
     fixes the channel order of the packed tensors.
     """
@@ -95,21 +98,72 @@ def split_views(config: dict) -> dict[str, dict]:
 
 
 def migrate_config(saved: dict) -> dict:
-    """Lift a config.yml written before config_version 2 to the current layout.
+    """Lift a saved config.yml of any earlier layout to the current one.
+
+    A config written before config_version 2 is first brought to version 2 (lift_to_version_2),
+    a version-2 config then to version 3 (lift_to_version_3). A current config passes unchanged.
+    """
+    config = saved
+    if config.get("config_version", 1) == 1:
+        config = lift_to_version_2(config)
+    if config["config_version"] == 2:
+        config = lift_to_version_3(config)
+    return config
+
+
+def lift_to_version_3(config: dict) -> dict:
+    """Point a version-2 config at the product stores.
+
+    Version 2 named one .eozarr store per modality, read through eodata. Every modality block of
+    `sources` is replaced by its block in conf/sources/product.yaml; `features`, and with it the
+    order of the model's input channels, stays as saved. The roots of the .eozarr stores are
+    dropped from `paths`.
+
+    Raises:
+        ValueError: A modality or a variable of the run is not available from the product stores.
+    """
+    product_sources = default_sources()
+    lifted = copy.deepcopy(config)
+    sources = {}
+    unavailable = []
+    for modality, saved_source in config["sources"].items():
+        if modality not in product_sources:
+            raise ValueError(f"lift_to_version_3: no product stores for the modality {modality!r}")
+        source = copy.deepcopy(product_sources[modality])
+        if "quality_mask" in saved_source:
+            source["quality_mask"] = copy.deepcopy(saved_source["quality_mask"])
+        sources[modality] = source
+
+        loaded = [variable for variables in source["load"].values() for variable in variables]
+        roles = config["features"].get(modality, {})
+        for role in ROLE_KEYS:
+            for variable in roles.get(role, []):
+                if variable not in loaded and variable not in COMPUTED_FEATURES:
+                    unavailable.append(f"{modality}.{variable}")
+    if unavailable:
+        raise ValueError(f"lift_to_version_3: the product stores do not provide {sorted(set(unavailable))}")
+
+    lifted["sources"] = sources
+    if "paths" in lifted:
+        lifted["paths"].pop("eozarr_root", None)
+        lifted["paths"]["store_roots"] = {}
+    lifted["config_version"] = 3
+    return lifted
+
+
+def lift_to_version_2(saved: dict) -> dict:
+    """Lift a config.yml written before config_version 2 to version 2.
 
     The loss terms, the optimiser keys and the per-split dataset dicts move to `objective`,
     `optim`, `window`, `sources`, `features` and `splits`; split_views() of the result gives
     back the three dataset dicts of the saved config. Keys the old code filled in when a
     config omitted them get the value that code used (teacher_forcing_loss and rollout_loss on,
-    init_fill none); keys nothing ever read are dropped. A current config passes unchanged.
+    init_fill none); keys nothing ever read are dropped.
     """
-    if saved.get("config_version", 1) == CONFIG_VERSION:
-        return saved
-
     legacy_model = saved["model"]
     step_loss = legacy_model.get("step_loss")
     if step_loss != "RolloutLoss":
-        raise ValueError(f"migrate_config: only RolloutLoss runs can be migrated, got model.step_loss={step_loss!r}")
+        raise ValueError(f"lift_to_version_2: only RolloutLoss runs can be migrated, got model.step_loss={step_loss!r}")
 
     objective = {
         "_target_": "deep_lst.losses.RolloutLoss",
@@ -170,7 +224,7 @@ def migrate_config(saved: dict) -> dict:
                 selection[key] = copy.deepcopy(value)
         splits[split_name] = selection
 
-    migrated = {"config_version": CONFIG_VERSION}
+    migrated = {"config_version": 2}
     for key, value in saved.items():
         if key not in LEGACY_TOP_LEVEL_KEYS and key != "model":
             migrated[key] = copy.deepcopy(value)
@@ -185,7 +239,7 @@ def migrate_config(saved: dict) -> dict:
     # one window and one set of modality blocks for all splits is all the new layout can say
     if split_views(migrated) != legacy_views:
         raise ValueError(
-            "migrate_config: the saved train/val/test dataset dicts differ in more than their "
+            "lift_to_version_2: the saved train/val/test dataset dicts differ in more than their "
             "selection keys (or in lookback/horizon between modalities) and cannot be migrated"
         )
     return migrated

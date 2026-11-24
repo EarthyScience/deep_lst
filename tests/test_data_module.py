@@ -2,8 +2,7 @@
 
 import pytest
 
-pytest.importorskip("eodata", reason="eodata not installed — skipping data module tests")
-from deep_lst.dataset.data_module import LitDataModule, MultimodalDataset  # noqa: E402
+from deep_lst.dataset.data_module import LitDataModule, MultimodalDataset
 
 
 def _split(spatial):

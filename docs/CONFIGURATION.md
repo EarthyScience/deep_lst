@@ -27,7 +27,7 @@ section of the config and nothing else:
 
 | Group | Section it writes | Default | Options |
 |---|---|---|---|
-| `sources` | `sources` | `eozarr` | `eozarr` |
+| `sources` | `sources` | `product` | `product` |
 | `model` | `model` | `mlp` | `mlp`, `transformer` |
 | `objective` | `objective` | `rollout` | `rollout`, `rollout_gated`, `rollout_always`, `diagnostic` |
 | `loss` | `objective.pointwise` | `smoothl1` | `smoothl1`, `mse`, `mae` |
@@ -60,40 +60,37 @@ be edited.
 
 `conf/paths.yaml` is the shared file for the data and preload-cache locations. Training,
 fine-tuning, inference, sensitivity, statistics and baseline generation read it from the
-current checkout. Set `eozarr_root` for the common store directory and add entries to
-`store_roots` for modalities that live elsewhere:
+current checkout. `product_root` is the common directory of the stores; every store is read
+from `<product_root>/<store name>.zarr`. Add an entry to `store_roots` for a store that lives
+elsewhere:
 
 ```yaml
 store_roots:
-  seviri: /data/deep_lst
+  seviri_product_hourly_lst: /data/other
 ```
 
-Here SEVIRI uses the separate directory and the other modalities use `eozarr_root`.
-A null entry explicitly selects the common root. An older saved run can still provide
-`sources.<modality>.store_root` if the current paths file has no entry for that modality.
-
-`product_root` is the directory of the product stores, the `<name>.zarr` stores that the
-readers in `deep_lst/stores/` read. Training does not read them yet; the tests that compare
-these readers with the `.eozarr` stores are skipped where the directory does not hold the stores.
+Here the LST store is read from the separate directory and all other stores from
+`product_root`. A null entry explicitly selects the common root. The store names of every
+modality are in `conf/sources/product.yaml` (section 3.1).
 
 If `preload_cache_root` is unset, the cache uses `DEEP_LST_CACHE_ROOT` when nonempty,
 otherwise `<preload_cache_parent>/<user>/tmp`. The login name is used when `USER` is unset
 or empty. Relative paths are resolved from the working directory.
 
 ```
-uv run python deep_lst/train.py paths.eozarr_root=/data/eozarr paths.preload_cache_root=/scratch/deep_lst-cache
-uv run python scripts/assets/compute_statistics.py modality=seviri +paths.store_roots.seviri=/data/deep_lst
+uv run python deep_lst/train.py paths.product_root=/data/stores paths.preload_cache_root=/scratch/deep_lst-cache
+uv run python scripts/assets/compute_statistics.py modality=seviri +paths.store_roots.seviri_product_hourly_lst=/data/other
 ```
 
-Use `+` to add a modality to `store_roots` and leave it off to override an existing entry.
-If you change the common `eozarr_root`, set a separate `preload_cache_root` to avoid reusing
-a cache generated from the old stores. A modality-specific root is included in the cache key.
+Use `+` to add a store to `store_roots` and leave it off to override an existing entry.
+If you change the common `product_root`, set a separate `preload_cache_root` to avoid reusing
+a cache generated from the old stores. A store-specific root is included in the cache key.
 
 ### 2.1 Selections and splits
 
 | Key | Default | Meaning |
 |---|---|---|
-| `config_version` | `2` | layout of the config; written into every `config.yml`. Not to be overridden. |
+| `config_version` | `3` | layout of the config; written into every `config.yml`. Not to be overridden. A `config.yml` of an earlier version is lifted to the current one when it is loaded (`docs/ARCHITECTURE.md`, section 1). |
 | `_spatial` | `mtg_new` | training pixel selection: the index file `indices_<_spatial>.npz` under `assets/spatial/` |
 | `_spatial_val` | `eval_mtg_new_val` | pixel selection that training validates and tests on. The default is a spatial holdout of 500 sites disjoint from the default `_spatial`. Set it to the value of `_spatial` to validate on the training pixels. |
 | `_temporal_train` | `train_full_2023b10` | hours of the training split: the index file `time_indices_<name>.npz` under `assets/temporal/`. The default is every hour of 2016 to 2022. |
@@ -172,47 +169,49 @@ norm 1.0, and one process per visible GPU.
 
 ### 3.1 `sources`
 
-The data stores, one block per modality. `conf/sources/eozarr.yaml` is the single definition
-that training, inference, the baselines and the statistics script share.
+The data stores, one block per modality. `conf/sources/product.yaml` is the single definition
+that training, inference, the baselines and the statistics script share. A modality reads from
+one or several product stores; all stores of a modality are on the same grid.
 
 | Key under `sources.<modality>` | Meaning |
 |---|---|
-| `store` | name of the `.eozarr` store |
-| `load` | variables read from the store, by data type (below). This is what reaches memory, not what the model sees; the model's variables are chosen in the `data` group and have to be listed here. |
-| `transform` | optional; a value transform applied before the normalisation. `signed_log1p` is sign(x) * log(1 + \|x\|), for variables that span orders of magnitude. The statistics have to be computed under the same transform; training checks this before it reads data. |
-| `increment_vars` | variables for which the statistics script also computes the statistics of the 1-hour increment. Read by `scripts/assets/compute_statistics.py` only. Listing a variable here does not make it a prognostic of the model. |
+| `stores` | the stores of the modality and, for each, the variables read from it: `<store name>: [variables]`. A store name is the file name without `.zarr`; it selects the reader (`deep_lst/stores/`). |
+| `load` | the role of every variable in memory, by leaf (below). Every variable listed here has to be listed under exactly one store. This is what reaches memory, not what the model sees; the model's variables are chosen in the `data` group and have to be listed here. |
+| `transform` | optional; a value transform applied to the leaf `data` before the normalisation. `signed_log1p` is sign(x) * log(1 + \|x\|), for variables that span orders of magnitude. The statistics have to be computed under the same transform; training checks this before it reads data. |
+| `increment_vars` | variables of the leaf `data` for which the statistics script also computes the statistics of the 1-hour increment. Read by `scripts/assets/compute_statistics.py` only. Listing a variable here does not make it a prognostic of the model. |
 | `quality_mask` | optional and not set: `{field, se_max, target}` sets `target` to missing where the metadata variable `field` exceeds `se_max` |
 
-The root comes from `conf/paths.yaml`. Each store is read from `<store>.eozarr` or its ZIP sibling
-under the selected root.
+The folder of the stores comes from `conf/paths.yaml` (section 2).
 
-Data types under `load`:
+Leaves under `load`:
 
-| Data type | Holds |
+| Leaf | Holds |
 |---|---|
-| `data` | variables on the store's own time step (hourly; daily for `glofas_v4`) |
-| `data_daily` | daily variables of an hourly store |
+| `data` | variables on the hourly axis; the values of a daily store (`glofas_v4`) are repeated over the 24 hours of a day |
+| `data_daily` | daily variables of an hourly modality, repeated over their day |
 | `data_static` | continuous fields without time axis |
-| `data_static_categorical` | class codes without time axis |
+| `data_static_categorical` | class codes without time axis; a cell without a value has the code -1 |
 | `metadata` | quality fields of the observations, kept as stored |
 
-What `eozarr` defines:
+The leaves `data`, `data_daily` and `data_static` are normalised with the statistics of the
+modality; class codes and metadata are not.
 
-| Modality | Store | Loaded | `increment_vars` |
+What `product` defines:
+
+| Modality | Stores | Loaded | `increment_vars` |
 |---|---|---|---|
-| `era5` | `era5_2014_2025` | `data`: sp, u10, v10, ssrd, strd, tp, tcwv, tcc; `data_static_categorical`: tvh, tvl, lsm, slt | none |
-| `era5_land` | `era5_land_2016_2025` | `data`: stl1, stl2, swvl1, swvl2, t2m, d2m, skt | swvl1, swvl2, stl1, stl2 |
-| `glofas_v4` | `glofas_v4_2014_2025` | `data`: rowe, sd, swir, dis24; `transform: signed_log1p` | none |
-| `seviri` | `seviri_2016_2024` | `data`: LST, MLE, MH; `data_daily`: FVC; `data_static`: DEM; `data_static_categorical`: LWMASK, LANDCOV; `metadata`: quality_flag, standard_error | LST, MLE, MH |
+| `era5` | `era5_product`, `era5_static_product` | `data`: sp, u10, v10, ssrd, strd, tp, tcwv, tcc; `data_static_categorical`: tvh, tvl, lsm, slt | none |
+| `era5_land` | `era5_land_product` | `data`: stl1, stl2, swvl1, swvl2, t2m, d2m, skt | swvl1, swvl2, stl1, stl2 |
+| `glofas_v4` | `glofas_v4_product` | `data`: rowe, sd, swir, dis24; `transform: signed_log1p` | none |
+| `seviri` | `seviri_product_hourly_lst`, `seviri_product_daily_mdfvc`, `seviri_product_static_dem`, `seviri_product_static_lwmask`, `seviri_product_static_landcov` | `data`: LST; `data_daily`: FVC; `data_static`: DEM; `data_static_categorical`: LWMASK, LANDCOV; `metadata`: quality_flag, standard_error | LST |
 
-`glofas_v4` is a daily store; its values are repeated over the 24 hours of a day. ERA5-Land
-`skt` is loaded for the ERA5-Land reference forecast of the verification and is a model input
-only in the data options that name it.
+ERA5-Land `skt` is loaded for the ERA5-Land reference forecast of the verification and is a
+model input only in the data options that name it. `lsm` of `era5_static_product` is 1 only
+where a cell is entirely land.
 
-Changing `store`, `load` or `transform` changes the preload cache key, so the cache is rebuilt
+Changing `stores`, `load` or `transform` changes the preload cache key, so the cache is rebuilt
 (`docs/RUNBOOK.md`, section 4.6). Changing the `data` option does not.
-A modality-specific root from `paths.store_roots` is included in that key using its resolved path.
-Without a modality-specific root, the existing cache key is preserved.
+A store-specific root from `paths.store_roots` is included in that key using its resolved path.
 
 ### 3.2 `data`
 
@@ -459,8 +458,10 @@ perturbed, the forecast is repeated and compared with the unperturbed one. It co
 
 ## 7. `conf/statistics.yaml`
 
-Computes the normalisation statistics of one modality over one selection. The store, the
-transform and the `increment_vars` come from the `sources` group (section 3.1).
+Computes the normalisation statistics of one modality over one selection. The stores, the
+variables (`load`), the transform and the `increment_vars` come from the `sources` group
+(section 3.1). Statistics are written for the variables of the leaves `data`, `data_daily` and
+`data_static`; a variable added to `load` later needs the statistics to be computed again.
 
 | Key | Default | Meaning |
 |---|---|---|

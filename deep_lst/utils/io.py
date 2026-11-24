@@ -7,12 +7,18 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
+CONF_DIR = Path(__file__).resolve().parents[2] / "conf"
+
 
 @cache
 def _default_paths() -> dict:
-    return OmegaConf.to_container(
-        OmegaConf.load(Path(__file__).resolve().parents[2] / "conf" / "paths.yaml"), resolve=True
-    )
+    return OmegaConf.to_container(OmegaConf.load(CONF_DIR / "paths.yaml"), resolve=True)
+
+
+@cache
+def default_sources() -> dict:
+    """The sources config of the product stores (conf/sources/product.yaml), {modality: block}."""
+    return OmegaConf.to_container(OmegaConf.load(CONF_DIR / "sources" / "product.yaml"), resolve=True)
 
 
 def _preload_cache_root(settings: dict) -> Path:
@@ -29,7 +35,6 @@ class ExperimentPaths:
     experiment_root: Path = field(default_factory=lambda: Path("./experiments"))
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
-    eozarr_root: Path = field(default_factory=lambda: Path(_default_paths()["eozarr_root"]))
     preload_cache_root: Path = field(default_factory=lambda: _preload_cache_root(_default_paths()))
     product_root: Path = field(default_factory=lambda: Path(_default_paths()["product_root"]))
     store_roots: dict[str, str | None] = field(
@@ -39,6 +44,7 @@ class ExperimentPaths:
     @classmethod
     def from_config(cls, config) -> "ExperimentPaths":
         settings = {**_default_paths(), **{key: value for key, value in (config or {}).items() if value is not None}}
+        settings.pop("eozarr_root", None)  # root of the .eozarr stores, in configs saved before the product stores
         cache_root = _preload_cache_root(settings)
         settings.pop("preload_cache_parent")
         store_roots = dict(settings.pop("store_roots"))
@@ -72,27 +78,17 @@ class ExperimentPaths:
     def statistics_path(self, modality, name) -> Path:
         return self.assets_root / modality / "statistics" / f"statistics_{name}.npz"
 
-    def eozarr_store_path(self, store_name: str, store_root: str | Path | None = None) -> Path:
-        """Resolve a full eodata .eozarr store from its config-provided name.
-
-        Prefers the directory store when it is readable and falls back to the .zip sibling:
-        under the selected root the era5, era5_land, glofas and swe stores exist only as zips, while
-        seviri is a directory store."""
-        root = self.eozarr_root if store_root is None else Path(store_root)
-        directory = root / f"{store_name}.eozarr"
-        archive = root / f"{store_name}.eozarr.zip"
-        directory_is_readable = (directory / "data" / "zarr.json").exists()
-        if not directory_is_readable and archive.exists():
-            return archive
-        return directory
-
     def product_store_path(self, store_name: str) -> Path:
-        """Folder of a product store, the stores that deep_lst.stores reads, from its name."""
-        return self.product_root / f"{store_name}.zarr"
+        """Folder of a product store from its name.
+
+        The store is looked up under product_root, or under its own entry in store_roots."""
+        store_root = self.store_roots.get(store_name)
+        root = self.product_root if store_root is None else Path(store_root)
+        return root / f"{store_name}.zarr"
 
     def stats_zarr_path(self, modality: str, spatial: str) -> Path:
-        """Zscore statistics zarr for *modality* (eodata ModalityNormalizer format),
-        computed on the *spatial* pixel selection (indices_<spatial>.npz)."""
+        """Statistics file of *modality* (layout: deep_lst/utils/statistics.py), computed on the
+        *spatial* pixel selection (indices_<spatial>.npz)."""
         return self.assets_root / "statistics" / f"{modality}_stats_{spatial}.zarr"
 
     def preload_cache_path(self, fingerprint: str, spatial: str | None = None) -> Path:

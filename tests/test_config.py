@@ -120,9 +120,9 @@ def test_statistics_compose_the_sources_of_training():
     training = _config([])
 
     assert statistics["sources"] == training["sources"]
-    assert statistics["sources"]["glofas_v4"]["store"] == "glofas_v4_2014_2025"
+    assert statistics["sources"]["glofas_v4"]["stores"] == {"glofas_v4_product": ["rowe", "sd", "swir", "dis24"]}
     assert statistics["sources"]["glofas_v4"]["transform"] == "signed_log1p"
-    assert statistics["sources"]["seviri"]["increment_vars"] == ["LST", "MLE", "MH"]
+    assert statistics["sources"]["seviri"]["increment_vars"] == ["LST"]
     assert statistics["spatial"] == training["splits"]["train"]["stats_spatial"]
 
 
@@ -159,7 +159,7 @@ def test_load_run_config_migrates_a_legacy_run_and_overlays_the_eval(legacy_run)
 
     config = load_run_config(cfg, legacy_run)
 
-    assert config["config_version"] == 2
+    assert config["config_version"] == 3
     assert config["window"] == {"lookback": 168, "horizon": 240}
     assert config["objective"]["kind"] == "rollout"
     assert config["objective"]["init_fill"] == "none"
@@ -172,6 +172,9 @@ def test_load_run_config_migrates_a_legacy_run_and_overlays_the_eval(legacy_run)
     assert test_view["seviri"]["horizon"] == 240
     assert test_view["seviri"]["lookback"] == 168
     assert test_view["seviri"]["prognostics"] == ["LST"]
+    # the legacy run named one .eozarr store per modality; it now reads the product stores
+    assert "store" not in test_view["seviri"]
+    assert test_view["seviri"]["stores"]["seviri_product_hourly_lst"] == ["LST", "quality_flag", "standard_error"]
 
 
 def test_load_run_config_refuses_a_horizon_below_the_trained_one(legacy_run):

@@ -1,53 +1,25 @@
-"""Spatial anchor-to-store-row mapping for the full (unextracted) eodata stores.
+"""Grids of the stores and of the forecast files.
 
-The training/eval selection lives on an *anchor* grid — the global ``MajorTomGrid`` for
-training, or the equiangular seviri grid for eval holdout regions. Each modality's full
-store is indexed on its own equiangular grid (store row == grid cell index). These helpers
-map every anchor cell to the nearest native store row via eodata's grid mapping, so both the
-training dataset and the evaluator can gather each modality's nearest cell without any
-extracted/sampled store.
+The anchors of a selection are mapped to store cells in deep_lst/stores/anchors.py; the preload
+(deep_lst/dataset/preload.py) does that for training and evaluation. The helpers here serve the
+scripts that work with a store grid directly, and the forecast writers.
 """
 
 import numpy as np
-from eodata.grids import build_era5_grid, build_era5_land_grid, build_glofas_v4_grid, build_seviri_grid
-from eodata.grids.majortom import MajorTomGrid
-from eodata.grids.mapping import SpatialGridMapping
-from eodata.grids.spatial import IndexedSubsetGrid
 
-MTG_RESOLUTION = 5
-
-_STORE_GRID_BUILDERS = {
-    "seviri": build_seviri_grid,
-    "era5": build_era5_grid,
-    "era5_land": build_era5_land_grid,
-    "glofas_v4": build_glofas_v4_grid,
-}
+from deep_lst.stores import get_data_reader
+from deep_lst.utils.io import ExperimentPaths, default_sources
 
 
-def store_grid(modality):
-    """Native equiangular grid a modality's full store is indexed on (cell index == store row)."""
-    try:
-        return _STORE_GRID_BUILDERS[modality]()
-    except KeyError as error:
-        raise ValueError(f"No native grid builder for modality {modality!r}") from error
+def store_grid(modality, paths=None):
+    """LatLonGrid of a modality: the grid of its first store in conf/sources/product.yaml.
 
-
-def anchor_grid(name):
-    """Grid the anchor cells live on: 'mtg' -> global MajorTomGrid; else a modality's native
-    grid (eval holdout regions are given as seviri equiangular pixels)."""
-    if name == "mtg":
-        return MajorTomGrid(MTG_RESOLUTION)
-    return store_grid(name)
-
-
-def map_to_store_rows(src_grid, anchor_ids, dst_grid):
-    """Nearest-neighbour each anchor cell (anchor_ids in src_grid) to a native dst_grid row."""
-    anchor_ids = np.asarray(anchor_ids, dtype=np.int64)
-    if src_grid.name == dst_grid.name:
-        return anchor_ids
-    src = IndexedSubsetGrid(src_grid, anchor_ids, name="anchor")
-    mapping = SpatialGridMapping.from_nearest_neighbors(src, dst_grid, precise=False, cached=False)
-    return np.asarray(mapping.indices, dtype=np.int64)
+    A row of this grid is the cell index used for the modality (row == cell).
+    """
+    paths = paths or ExperimentPaths()
+    store_name = next(iter(default_sources()[modality]["stores"]))
+    reader = get_data_reader(store_name, paths.product_store_path(store_name))
+    return reader.spatial_grid
 
 
 def pixel_grid(pixel_lons: np.ndarray, pixel_lats: np.ndarray):

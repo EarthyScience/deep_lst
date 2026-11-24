@@ -1,97 +1,97 @@
-"""Per-modality store roots for statistics and baseline metadata readers."""
-
-from pathlib import Path
-from types import SimpleNamespace
+"""The statistics script and the baselines with the configured stores and store roots."""
 
 import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
-pytest.importorskip("eodata")
-from deep_lst.baselines import base  # noqa: E402
-from deep_lst.baselines.era5land import Era5LandExtractor  # noqa: E402
-from deep_lst.dataset import dataset  # noqa: E402
-from deep_lst.utils.io import ExperimentPaths  # noqa: E402
-from scripts.assets import compute_statistics  # noqa: E402
+from deep_lst import stores
+from deep_lst.baselines.era5land import Era5LandExtractor
+from deep_lst.stores import T1H, CubeReader
+from deep_lst.utils.io import ExperimentPaths, load_computed_stats, load_inc_variances
+from deep_lst.utils.statistics import read_variable_statistics
+from scripts.assets import compute_statistics
 
 
-@pytest.mark.parametrize(
-    "store_roots, legacy", [({}, None), ({"seviri": "custom-store"}, "old-store"), ({}, "old-store")]
-)
-def test_statistics_dataset_uses_the_selected_store_root(tmp_path, monkeypatch, store_roots, legacy):
-    monkeypatch.chdir(tmp_path)
-    paths = ExperimentPaths(
-        assets_root=tmp_path / "assets", eozarr_root=tmp_path / "default-store", store_roots=store_roots
-    )
-    for path, values in (
-        (paths.spatial_indices_path("tiny"), {"src_indices": [0]}),
-        (paths.temporal_indices_path("tiny"), {"time_indices": [0, 24]}),
-    ):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(path, **values)
-    monkeypatch.setattr(dataset, "anchor_grid", lambda _: None)
-    monkeypatch.setattr(dataset, "store_grid", lambda _: None)
-    monkeypatch.setattr(dataset, "map_to_store_rows", lambda *args: np.array([4]))
-    monkeypatch.setattr(dataset, "get_data_reader_class", lambda _: lambda store, average_hourly: None)
-    stores = []
-    reader = SimpleNamespace()
+class TinyLSTReader(CubeReader):
+    """Reader of the synthetic hourly store of tests/conftest.py."""
 
-    def open_reader(modality, store, **kwargs):
-        stores.append(store)
-        return reader
-
-    monkeypatch.setattr(dataset.eodata, "get_data_reader", open_reader)
-    result = dataset.UnimodalDataset.from_config(
-        "seviri", "tiny", "tiny", "mtg", "tiny", store_root=legacy, paths=paths
-    )
-    store_root = store_roots.get("seviri", legacy)
-    expected_root = paths.eozarr_root if store_root is None else Path(store_root)
-    assert stores == [str(expected_root / "tiny.eozarr")]
-    assert result.reader is reader
-    np.testing.assert_array_equal(result.rows, [4])
-    assert result.stat_days == [dataset.PRELOAD_START_DAY, dataset.PRELOAD_START_DAY + 1]
+    MODALITY_ID = "synthetic_hourly"
+    TIME_GRID = T1H
 
 
-@pytest.mark.parametrize("store_root", [None, "custom-store"])
-def test_statistics_command_forwards_the_paths(monkeypatch, store_root):
+@pytest.mark.parametrize("own_root", [False, True])
+def test_statistics_command_reads_the_store_under_its_root(
+    tmp_path, monkeypatch, own_root, hourly_store, product_store_writer
+):
+    """compute_statistics.py end to end on a synthetic store: two cells, the first two days of
+    2016, with the store under product_root or under a root of its own."""
+    monkeypatch.chdir(tmp_path)  # the script writes below ./assets
+    monkeypatch.setitem(stores.READERS, "synthetic_hourly", TinyLSTReader)
+    paths = ExperimentPaths()
+    rows = [3, 19]
+    spatial = paths.spatial_indices_path("tiny")
+    spatial.parent.mkdir(parents=True)
+    np.savez(spatial, src_indices=rows)
+    temporal = paths.temporal_indices_path("tiny")
+    temporal.parent.mkdir(parents=True)
+    np.savez(temporal, time_indices=[2, 3, 26])  # hours of 2016-01-01 and 2016-01-02
+
+    offset = 0
+    store_roots = {}
+    if own_root:  # a second copy with other values; the script must read this one
+        offset = 100
+        other_values = hourly_store.values.copy()
+        other_values["LST"] += offset
+        other_root = tmp_path / "other-root"
+        product_store_writer(
+            other_root / "synthetic_hourly.zarr",
+            "synthetic_hourly",
+            T1H,
+            hourly_store.lat,
+            hourly_store.lon,
+            hourly_store.steps_per_shard,
+            hourly_store.written_steps,
+            other_values,
+            hourly_store.fill_value,
+        )
+        store_roots = {"synthetic_hourly": str(other_root)}
+
+    source = {"stores": {"synthetic_hourly": ["LST"]}, "load": {"data": ["LST"]}, "increment_vars": ["LST"]}
     cfg = OmegaConf.create(
         dict(
             modality="seviri",
-            sources={"seviri": {"store": "tiny"}},
+            sources={"seviri": source},
             spatial="tiny",
-            anchor="mtg",
+            anchor="seviri",
             temporal="tiny",
-            paths={"eozarr_root": "shared", "store_roots": {"seviri": store_root}},
+            num_workers=2,
+            paths={"product_root": str(tmp_path), "store_roots": store_roots},
         )
     )
+    compute_statistics.main.__wrapped__(cfg)
 
-    def stop_at_dataset(**kwargs):
-        assert kwargs["store"] == "tiny"
-        assert kwargs["paths"].store_roots["seviri"] == store_root
-        assert kwargs["paths"].eozarr_root == Path("shared")
-        raise RuntimeError("statistics dataset reached")
+    # the two cells over the 48 hours of the two days; hours 30 to 32 were never written
+    hours = np.arange(48)
+    lst = np.full((2, 48), np.nan)
+    written = (hours < 30) | (hours > 32)
+    positions = np.where(hours < 30, hours, hours - 3)[written]
+    for index, row in enumerate(rows):
+        lst[index, written] = 1000 + (positions % 50) * 10 + row % 10 + offset
+    stats_zarr = paths.stats_zarr_path("seviri", "tiny")
+    mean, std = read_variable_statistics(stats_zarr)["LST"]
+    assert mean == pytest.approx(np.nanmean(lst))
+    assert std == pytest.approx(np.nanstd(lst, ddof=1))
+    increments = np.diff(lst.reshape(2, 2, 24), axis=2)  # hourly changes within each day
+    increment_std = np.nanstd(increments, ddof=1)
+    assert load_inc_variances(stats_zarr) == {"LST": pytest.approx((increment_std / std) ** 2)}
+    assert set(load_computed_stats(stats_zarr)) == {"solar_zenith"}
 
-    monkeypatch.setattr(compute_statistics.UnimodalDataset, "from_config", staticmethod(stop_at_dataset))
-    with pytest.raises(RuntimeError, match="statistics dataset reached"):
-        compute_statistics.main.__wrapped__(cfg)
 
-
-@pytest.mark.parametrize("store_root", [None, "custom-store"])
-def test_baseline_metadata_uses_the_modality_store_root(tmp_path, monkeypatch, store_root):
-    monkeypatch.chdir(tmp_path)
+def test_baseline_attributes_come_from_the_variable_table():
     extractor = Era5LandExtractor("skt", 2024)
-    extractor.paths = ExperimentPaths(eozarr_root=tmp_path / "default-store")
-    extractor.paths.store_roots["era5_land"] = store_root
-    extractor.config = {"test_dataset": {"era5_land": {"store": "tiny"}}}
-    stores = []
-
-    def open_reader(modality, store, **kwargs):
-        assert modality == "era5_land"
-        stores.append(store)
-        return SimpleNamespace(data_arr=SimpleNamespace(attrs={"metadata": {"skt": {"units": "K"}}}))
-
-    monkeypatch.setattr(base, "get_data_reader", open_reader)
-    attrs = extractor._metadata_attrs("era5_land", "tiny", "skt")
-    expected_root = extractor.paths.eozarr_root if store_root is None else Path(store_root)
-    assert stores == [str(expected_root / "tiny.eozarr")]
-    assert attrs == dict(variable="skt", units="K", long_name="skt", description="", test_year="2024")
+    assert extractor._metadata_attrs("skt") == dict(
+        variable="skt", units="K", long_name="Skin temperature", test_year="2024"
+    )
+    assert extractor._metadata_attrs("unlisted") == dict(
+        variable="unlisted", units="", long_name="unlisted", test_year="2024"
+    )

@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install uv
-          uv export --frozen --prune eodata --no-emit-project --no-hashes -o ci-requirements.txt
+          uv export --frozen --no-emit-project --no-hashes -o ci-requirements.txt
           uv venv
           uv pip install -r ci-requirements.txt
           uv pip install --no-deps -e .

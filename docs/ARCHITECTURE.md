@@ -19,7 +19,7 @@ group writes one section of the config and nothing else:
 | `optim` | `adamw_cosine` | `adamw_cosine` | `optim` | `learning_rate`, `weight_decay`, `warmup_steps`, `eps` |
 | `horizon` | `h4` ... `h120` | `h24` | `window` | `window.horizon`, the forecast horizon in hours |
 | `data` | the files in `conf/data/` | `full` | `features` | per modality the `inputs`, `prognostics`, `diagnostics` and `context_vars` of the model; `full_glofas` also sets `modality_ids` |
-| `sources` | `eozarr` | `eozarr` | `sources` | per modality the `store`, what is `load`ed from it, the value `transform` and the `increment_vars`; shared with `conf/statistics.yaml` |
+| `sources` | `product` | `product` | `sources` | per modality the `stores` with the variables read from each, the role of every variable in memory (`load`), the value `transform` and the `increment_vars`; shared with `conf/statistics.yaml` |
 
 `python deep_lst/train.py --help` lists the options of every group; `docs/CONFIGURATION.md`
 describes every key and option of every config file.
@@ -95,14 +95,25 @@ hours belong to which split is defined by the temporal index files, not by dates
 
 ### Config versions and old runs
 
-`config_version: 2` in `conf/train.yaml` marks the layout above and is written into every
-`config.yml`. A `config.yml` without it was written by the layout before: loss terms and
-optimiser keys under `model`, three dataset dicts `train_dataset` / `val_dataset` /
-`test_dataset` with the stores, the window and the role lists repeated per split and per
-modality. Such a file is never rewritten. Inference, finetuning, the sensitivity runs and
-`scripts/assets/hydro_init_state.py` pass it through `deep_lst.utils.config.migrate_config`
-when they load it, which moves the keys as follows and checks that `split_views` of the result
-gives back the three saved dataset dicts:
+`config_version: 3` in `conf/train.yaml` marks the layout above and is written into every
+`config.yml`. A saved `config.yml` of an earlier version is never rewritten. Inference,
+finetuning, the sensitivity runs and `scripts/assets/hydro_init_state.py` pass it through
+`deep_lst.utils.config.migrate_config` when they load it, which lifts it step by step.
+
+**Version 2 to 3: the stores.** Up to version 2 a modality named one `.eozarr` store, read
+through eodata. `lift_to_version_3` replaces every modality block of `sources` by its block in
+`conf/sources/product.yaml` and drops the root of the `.eozarr` stores from `paths`.
+`features` stays as saved, so the order of the model's input channels, which the weights of a
+checkpoint are tied to, does not change. A run whose features name a variable that the product
+stores do not provide is refused. Two things differ for an old run that is evaluated now:
+pixels outside the land grid of a product store have no data there (a few coastal and lake
+pixels), and the SEVIRI variables MLE and MH, which no model used, are not loaded.
+
+**Version 1 to 2: the layout.** A `config.yml` without `config_version` was written by the
+layout before: loss terms and optimiser keys under `model`, three dataset dicts
+`train_dataset` / `val_dataset` / `test_dataset` with the stores, the window and the role lists
+repeated per split and per modality. `lift_to_version_2` moves the keys as follows and checks
+that `split_views` of the result gives back the three saved dataset dicts:
 
 | Before | Now |
 |---|---|
@@ -151,6 +162,3 @@ not from `develop`.
   `window.lookback` or `seed` were not put into `tag`.
 - The transformer at long lookback does not fit on one A40 at batch 512: 4 GPUs x 128.
 - Inference or baseline jobs fail on memory settings: add `unset SLURM_MEM_PER_GPU SLURM_MEM_PER_CPU`.
-- `ModuleNotFoundError` from eodata's `lazy_load` after work in `../eodata_slim`: eodata is an
-  editable install, so a branch checkout there changes what deep_lst imports. Use a separate
-  worktree and environment for eodata branch work.
