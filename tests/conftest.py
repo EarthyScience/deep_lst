@@ -1,19 +1,6 @@
-"""Synthetic stores in the layout of the product stores, for the tests of deep_lst.stores.
+"""Shared fixtures: synthetic stores in the layout of the product stores, and the store grids.
 
-A product store is a zarr v3 group with five arrays:
-
-    data      (time, lat, lon)  struct dtype, one field per variable; one shard holds
-                                steps_per_shard time steps of the whole grid
-    lat       (n_lat,)          float64, north to south
-    lon       (n_lon,)          float64, west to east
-    time_idx  (time,)           datetime64[ns], start of every step of the time axis
-    _indices  (n_written, 2)    int64, one row (0, time index) per written time step
-
-The time dimension spans the whole axis (1970 to 2040); only the shards that were written exist
-as files. A static store has one time step. Array metadata and codecs are those of the stores
-in data/deep_lst as read on 2026-11-23. The root attributes follow EOZarr_v2.1; v2.2 stores
-nest spatial_grid and time_grid in a "zarr_schema" attribute instead.
-
+The synthetic stores are written with deep_lst.stores.writer, which documents the layout.
 Sharded struct arrays need zarr >= 3.4.2: tests that use these fixtures are skipped below it.
 """
 
@@ -79,13 +66,13 @@ def synthetic_values(written_steps, n_lat, n_lon, dtype):
 
 
 def write_product_store(path, modality_id, time_axis, lat, lon, steps_per_shard, written_steps, values, fill_value):
-    """Write a store in the layout of the product stores.
+    """Write a synthetic store with deep_lst.stores.writer; the grid is split into 2 x 2 inner chunks.
 
     Args:
         path: Folder of the store (<name>.zarr).
         modality_id: Written to the root attributes.
         time_axis: TimeAxis of the store; None writes a static store with one time step.
-        lat: Latitudes, north to south. Length even, the grid is split into 2 x 2 inner chunks.
+        lat: Latitudes, north to south. Length even.
         lon: Longitudes, west to east. Length even.
         steps_per_shard: Time steps in one shard file.
         written_steps: Time indices that receive values.
@@ -95,87 +82,31 @@ def write_product_store(path, modality_id, time_axis, lat, lon, steps_per_shard,
     Returns:
         The SyntheticStore describing what was written.
     """
-    zarr = pytest.importorskip("zarr", minversion="3.4.2")
-    from zarr.codecs import BloscCodec, Crc32cCodec
+    pytest.importorskip("zarr", minversion="3.4.2")
+    from deep_lst.stores import writer
 
-    n_lat, n_lon = len(lat), len(lon)
-    written_steps = np.asarray(written_steps, dtype=np.int64)
-    if time_axis is None:
-        time_values = np.array(["1970-01-01T00"], dtype="datetime64[ns]")
-        time_grid_name = "TSTATIC"
-    else:
-        time_values = time_axis.index_to_startdate(np.arange(len(time_axis))).tz_localize(None).to_numpy()
-        time_grid_name = time_axis.name
-    n_steps = len(time_values)
-
-    separator = {"name": "default", "separator": "."}
-    attributes = {
-        "EOZarr_version": "EOZarr_v2.1",
-        "modality_id": modality_id,
-        "spatial_grid": "synthetic",
-        "time_grid": time_grid_name,
-    }
-    root = zarr.open_group(str(path), mode="w", zarr_format=3, attributes=attributes)
-
-    data = root.create_array(
-        "data",
-        shape=(n_steps, n_lat, n_lon),
-        dtype=values.dtype,
-        shards=(steps_per_shard, n_lat, n_lon),
-        chunks=(steps_per_shard, n_lat // 2, n_lon // 2),
-        fill_value=np.array(fill_value, dtype=values.dtype)[()],
-        compressors=[BloscCodec(cname="zstd", clevel=5, shuffle="shuffle"), Crc32cCodec()],
-        dimension_names=["time_idx", "lat", "lon"],
-        chunk_key_encoding=separator,
+    chunk_cells = (len(lat) // 2, len(lon) // 2)
+    writer.write_product_store(
+        path,
+        modality_id,
+        time_axis,
+        lat,
+        lon,
+        steps_per_shard,
+        chunk_cells,
+        written_steps,
+        values,
+        fill_value,
+        "synthetic",
     )
-    for position, step in enumerate(written_steps):
-        data[int(step)] = values[position]
-
-    coordinates = {"lat": np.asarray(lat, dtype=np.float64), "lon": np.asarray(lon, dtype=np.float64)}
-    for name, coordinate in coordinates.items():
-        array = root.create_array(
-            name,
-            shape=coordinate.shape,
-            dtype="float64",
-            chunks=coordinate.shape,
-            fill_value=np.nan,
-            dimension_names=[name],
-            chunk_key_encoding=separator,
-        )
-        array[:] = coordinate
-
-    time_idx = root.create_array(
-        "time_idx",
-        shape=(n_steps,),
-        dtype="datetime64[ns]",
-        chunks=(n_steps,),
-        dimension_names=["time_idx"],
-        chunk_key_encoding=separator,
-    )
-    time_idx[:] = time_values
-
-    index_rows = np.zeros((len(written_steps), 2), dtype=np.int64)
-    index_rows[:, 1] = written_steps
-    indices = root.create_array(
-        "_indices",
-        shape=index_rows.shape,
-        dtype="int64",
-        chunks=(100000, 2),
-        fill_value=-1,
-        compressors=None,
-        dimension_names=["sample", "axis"],
-        chunk_key_encoding=separator,
-    )
-    indices[:] = index_rows
-
     return SyntheticStore(
         path=Path(path),
         time_axis=time_axis,
-        lat=coordinates["lat"],
-        lon=coordinates["lon"],
+        lat=np.asarray(lat, dtype=np.float64),
+        lon=np.asarray(lon, dtype=np.float64),
         fill_value=tuple(fill_value),
         steps_per_shard=steps_per_shard,
-        written_steps=written_steps,
+        written_steps=np.asarray(written_steps, dtype=np.int64),
         values=values,
     )
 

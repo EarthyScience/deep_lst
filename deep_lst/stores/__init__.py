@@ -4,7 +4,7 @@ from deep_lst.stores.anchors import anchor_lonlat, map_to_store_rows
 from deep_lst.stores.ascat import AscatReader
 from deep_lst.stores.base import StoreReader
 from deep_lst.stores.cube import CubeReader
-from deep_lst.stores.era5 import Era5Reader
+from deep_lst.stores.era5 import Era5Reader, Era5StaticReader
 from deep_lst.stores.era5_land import Era5LandReader, Era5LandStaticReader
 from deep_lst.stores.glofas import GlofasReader
 from deep_lst.stores.grid import LatLonGrid
@@ -27,6 +27,7 @@ READERS = {
         Era5LandReader,
         Era5LandStaticReader,
         Era5Reader,
+        Era5StaticReader,
         GlofasReader,
         RoaReader,
         SeviriDEMReader,
@@ -56,6 +57,7 @@ __all__ = [
     "Era5LandReader",
     "Era5LandStaticReader",
     "Era5Reader",
+    "Era5StaticReader",
     "GlofasReader",
     "LatLonGrid",
     "READERS",

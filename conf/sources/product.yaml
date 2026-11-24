@@ -3,8 +3,10 @@
 era5:
   stores:
     era5_product: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
+    era5_static_product: [tvh, tvl, lsm, slt]
   load:
     data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
+    data_static_categorical: [tvh, tvl, lsm, slt]
   increment_vars: []
 era5_land:
   stores:

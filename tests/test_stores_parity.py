@@ -12,8 +12,9 @@ The exception are the fixture pixels that sit on a cell outside the land grid of
 (MASKED_PIXELS): there the new store holds nothing. The new store may hold values where the old
 one had none (the old SEVIRI store has no data on 2023-12-30 and 2023-12-31).
 
-Not compared, because the new stores do not hold them: SEVIRI MLE and MH, and the ERA5 static
-fields (tvh, tvl, lsm, slt), which only exist on the ERA5-Land grid.
+The ERA5 static fields are compared with era5_static_product, which was copied from the old
+ERA5 store and is not masked to a land grid. Not compared, because the new stores do not hold
+them: SEVIRI MLE and MH.
 """
 
 import json
@@ -25,6 +26,7 @@ import pytest
 from deep_lst.stores import (
     Era5LandReader,
     Era5Reader,
+    Era5StaticReader,
     GlofasReader,
     SeviriDEMReader,
     SeviriFVCReader,
@@ -49,6 +51,9 @@ MASKED_PIXELS = {
     "glofas_v4": ["lake_victoria", "durban_coast"],
 }
 
+# Stores that are not masked to a land grid: they hold values at the pixels above as well.
+UNMASKED_STORES = ["era5_static_product"]
+
 # The old pipeline marked a missing class with -1 instead of NaN.
 OLD_MISSING_CLASS = -1
 
@@ -66,6 +71,7 @@ CASES = [
     ("seviri", "data_static_categorical", SeviriLWMASKReader),
     ("seviri", "data_static_categorical", SeviriLANDCOVReader),
     ("era5", "data", Era5Reader),
+    ("era5", "data_static_categorical", Era5StaticReader),
     ("era5_land", "data", Era5LandReader),
     ("glofas_v4", "data", GlofasReader),
 ]
@@ -115,7 +121,8 @@ def test_reader_returns_the_values_of_the_old_pipeline(modality, data_type, read
     old_values = fixture[f"raw__{data_type}"].astype(np.float64)
     new_values = read_windows(reader, fixture["store_rows"], fixture["start_days"]).astype(np.float64)
 
-    masked = np.isin(PIXELS, MASKED_PIXELS[modality])
+    masked_pixels = [] if reader.modality_id in UNMASKED_STORES else MASKED_PIXELS[modality]
+    masked = np.isin(PIXELS, masked_pixels)
     shared_names = [name for name in old_names if name in reader.variables]
     assert shared_names, f"{reader_class.__name__} shares no variable with {modality}.{data_type}"
 
