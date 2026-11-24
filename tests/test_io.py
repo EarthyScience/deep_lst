@@ -25,6 +25,17 @@ def test_entrypoints_use_the_shared_paths_file(entrypoint):
     assert paths.eozarr_root == ExperimentPaths().eozarr_root
 
 
+@pytest.mark.parametrize("entrypoint", ["train", "finetune", "infer", "statistics", "sensitivity"])
+def test_local_paths_profile_uses_a_separate_cache(entrypoint):
+    with initialize_config_dir(config_dir=str(CONF_DIR), version_base="1.3"):
+        cfg = compose(config_name=entrypoint, overrides=["paths=local", "+paths.store_roots.seviri=local-seviri"])
+    paths = ExperimentPaths.from_config(cfg.paths)
+    assert paths.eozarr_root == Path("data")
+    assert paths.preload_cache_root == Path("cache/local")
+    assert paths.preload_cache_root != ExperimentPaths().preload_cache_root
+    assert paths.store_roots == {"seviri": "local-seviri"}
+
+
 @pytest.fixture
 def paths(tmp_path):
     return ExperimentPaths(

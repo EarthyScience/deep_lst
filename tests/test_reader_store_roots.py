@@ -12,7 +12,7 @@ from deep_lst.baselines import base  # noqa: E402
 from deep_lst.baselines.era5land import Era5LandExtractor  # noqa: E402
 from deep_lst.dataset import dataset  # noqa: E402
 from deep_lst.utils.io import ExperimentPaths  # noqa: E402
-from scripts.assets import compute_statistics  # noqa: E402
+from scripts.assets import compute_statistics, run_baselines  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -95,3 +95,11 @@ def test_baseline_metadata_uses_the_modality_store_root(tmp_path, monkeypatch, s
     expected_root = extractor.paths.eozarr_root if store_root is None else Path(store_root)
     assert stores == [str(expected_root / "tiny.eozarr")]
     assert attrs == dict(variable="skt", units="K", long_name="skt", description="", test_year="2024")
+
+
+def test_baselines_read_the_selected_paths_profile():
+    config = run_baselines.build_config("gobabeb", "local")
+    paths = ExperimentPaths.from_config(config["paths"])
+    assert paths.eozarr_root == Path("data")
+    assert paths.preload_cache_root == Path("cache/local")
+    assert config["test_dataset"]["spatial"] == "eval_gobabeb"

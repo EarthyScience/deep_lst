@@ -58,9 +58,16 @@ be edited.
 
 ### Data and cache paths
 
-`conf/paths.yaml` is the shared file for the data and preload-cache locations. Training,
-fine-tuning, inference, sensitivity, statistics and baseline generation read it from the
-current checkout. Set `eozarr_root` for the common store directory and add entries to
+Training, fine-tuning, inference, sensitivity, statistics and baseline generation select
+a paths profile. The default `paths=bgc` reads the shared site settings from
+`conf/paths.yaml`. Choose `paths=local` for stores under `./data` and a separate cache at
+`./cache/local`. The baseline script uses `--paths local`.
+
+```
+uv run python deep_lst/train.py paths=local
+```
+
+Set `eozarr_root` for the common store directory and add entries to
 `store_roots` for modalities that live elsewhere:
 
 ```yaml

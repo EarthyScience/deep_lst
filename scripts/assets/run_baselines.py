@@ -27,6 +27,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--region", type=str, required=True, help="Eval config name, e.g. passage, dahra, train_mtg.")
     p.add_argument("--test_year", type=int, required=True, help="Year the baselines forecast (train years precede it).")
+    p.add_argument("--paths", choices=("bgc", "local"), default="bgc", help="Site paths profile.")
     p.add_argument("--window_days", type=int, default=7, help="Circular DOY window for the smoothed climatology.")
     p.add_argument(
         "--reference_modality",
@@ -46,12 +47,12 @@ def parse_args():
     return p.parse_args()
 
 
-def build_config(region: str):
+def build_config(region: str, paths_profile: str = "bgc"):
     """Full data config for a region: train.yaml's test split (stores/load) with the eval
     region's spatial/anchor/temporal overlaid — the same inputs preload_shared saw at inference.
     The test dataset dict the extractors read is attached as config["test_dataset"]."""
     with initialize_config_dir(version_base=None, config_dir=str(CONF_DIR)):
-        cfg = compose(config_name="train")
+        cfg = compose(config_name="train", overrides=[f"paths={paths_profile}"])
     region_cfg = OmegaConf.load(CONF_DIR / "eval" / f"{region}.yaml")
     cfg.splits.test = OmegaConf.merge(cfg.splits.test, region_cfg.splits.test)
     config = OmegaConf.to_container(cfg, resolve=True)
@@ -61,7 +62,7 @@ def build_config(region: str):
 
 def main():
     args = parse_args()
-    config = build_config(args.region)
+    config = build_config(args.region, args.paths)
     store_key = args.out_key or config["test_dataset"]["spatial"]
 
     paths = ExperimentPaths.from_config(config.get("paths"))

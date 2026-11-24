@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - paths
+  - paths: bgc
   - eval: gobabeb
 
 # --- required ---
