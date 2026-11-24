@@ -15,10 +15,10 @@ from eodata.registry import get_data_reader_class
 from deep_lst.dataset.dataset import (
     DATA_TYPES,
     DATA_TYPES_ENABLE,
-    PATHS,
     _load_anchor_ids,
     _preload_columns,
 )
+from deep_lst.utils.io import ExperimentPaths
 from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
 
 # Full-store names, mirroring the data version pinned in conf/train.yaml.
@@ -27,7 +27,7 @@ ERA5_STORE = "era5_2014_2025"
 ERA5_LAND_STORE = "era5_land_2016_2025"
 
 
-def open_store_reader(modality, store, data_types):
+def open_store_reader(modality, store, data_types, *, paths=None):
     """Full-store reader with exactly the `data_types` enabled (data is always read).
 
     Enable-flags for data types this modality's reader doesn't accept (ERA5 has no
@@ -38,11 +38,12 @@ def open_store_reader(modality, store, data_types):
         reader_kwargs[flag] = data_type in data_types
     accepted = inspect.signature(get_data_reader_class(modality)).parameters
     reader_kwargs = {key: value for key, value in reader_kwargs.items() if key in accepted}
-    store_path = PATHS.eozarr_store_path(store, PATHS.store_roots.get(modality))
+    paths = paths or ExperimentPaths()
+    store_path = paths.eozarr_store_path(store, paths.store_roots.get(modality))
     return eodata.get_data_reader(modality, store=str(store_path), **reader_kwargs)
 
 
-def load_store_columns(modality, store, spatial, load, anchor="mtg", day_range=None, num_workers=8):
+def load_store_columns(modality, store, spatial, load, anchor="mtg", day_range=None, num_workers=8, *, paths=None):
     """Raw full-store columns for one spatial selection.
 
     Anchor ids from indices_{spatial}.npz are mapped to the modality's native store
@@ -56,10 +57,11 @@ def load_store_columns(modality, store, spatial, load, anchor="mtg", day_range=N
     columns[data_type][inverse] expands back to per-anchor order. Cell lon/lat:
     store_grid(modality).centers[unique_rows].
     """
-    anchor_ids = _load_anchor_ids(spatial)
+    paths = paths or ExperimentPaths()
+    anchor_ids = _load_anchor_ids(spatial, paths)
     rows = map_to_store_rows(anchor_grid(anchor), anchor_ids, store_grid(modality))
     unique_rows, inverse = np.unique(rows, return_inverse=True)
-    reader = open_store_reader(modality, store, load)
+    reader = open_store_reader(modality, store, load, paths=paths)
     select = {
         data_type: [list(getattr(reader, DATA_TYPES[data_type]).dtype.fields).index(var) for var in names]
         for data_type, names in load.items()
