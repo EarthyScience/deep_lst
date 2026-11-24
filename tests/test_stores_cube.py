@@ -113,6 +113,61 @@ def test_get_data_multi_mixes_written_and_unwritten_steps(hourly_store):
     assert np.isnan(quality_flag).tolist() == [False, False, True, True, True, False, False]
 
 
+def test_shard_blocks_split_a_time_range_at_the_shard_boundaries(hourly_store):
+    reader = HourlyReader(hourly_store.path)
+    boundary = 4201 * 96  # FIRST_HOUR is 24 hours into the shard 4200
+    blocks = reader.shard_blocks(FIRST_HOUR, FIRST_HOUR + 5 * 24)
+    assert blocks == [(FIRST_HOUR, boundary), (boundary, FIRST_HOUR + 5 * 24)]
+    assert reader.shard_blocks(boundary, boundary + 96) == [(boundary, boundary + 96)]
+    assert reader.shard_blocks(boundary + 5, boundary + 5) == []
+
+
+def test_get_data_series_equals_get_data_multi(hourly_store):
+    reader = HourlyReader(hourly_store.path)
+    # cells of all four inner chunks, one of them twice, one on the fill-value longitude
+    rows = np.array([0, 5, 3 * N_LON + 2, 5 * N_LON + 6, 5, 2 * N_LON + (N_LON - 1)])
+    time_start, time_stop = FIRST_HOUR - 2, FIRST_HOUR + 5 * 24 + 2  # both shards, the gap, both ends
+    series = reader.get_data_series(rows, time_start, time_stop)
+    assert series.shape == (6, 5 * 24 + 4, 3)
+    assert series.dtype == np.float32
+
+    steps = np.arange(time_start, time_stop)
+    for position, row in enumerate(rows):
+        pairs = [(int(row), int(step)) for step in steps]
+        expected = reader.get_data_multi(pairs)
+        assert np.array_equal(series[position], expected, equal_nan=True)
+
+    assert np.all(np.isnan(series[:, :2]))  # before the record
+    assert np.all(np.isnan(series[5]))  # fill-value longitude
+    assert not np.isnan(series[:5, 2:30]).any()  # written hours of the other cells
+
+
+def test_get_data_series_of_a_missing_shard_is_nan(hourly_store):
+    reader = HourlyReader(hourly_store.path)
+    next_year = FIRST_HOUR + 24 * 365
+    series = reader.get_data_series([3, 19], next_year, next_year + 200)
+    assert series.shape == (2, 200, 3)
+    assert np.all(np.isnan(series))
+
+
+def test_get_data_series_of_a_daily_store_crosses_three_shards(daily_store):
+    reader = DailyReader(daily_store.path)
+    rows = [1 * N_LON + 2, 4 * N_LON + 5]
+    series = reader.get_data_series(rows, FIRST_DAY, FIRST_DAY + 10)
+    assert series.shape == (2, 10, 2)
+    # dis24 of the cell with row 10: 1000 + 10 * day + 0
+    assert series[0, :, 0].tolist() == [1000.0 + 10 * day for day in range(10)]
+    expected = daily_store.values["swir"][:, 4, 5]
+    assert np.array_equal(series[1, :, 1], expected)
+
+
+def test_get_data_series_of_a_static_store(static_store):
+    reader = StaticReader(static_store.path)
+    series = reader.get_data_series([0, 9], 0, 1)
+    assert series.shape == (2, 1, 1)
+    assert series[:, 0, 0].tolist() == [1000.0, 1009.0]
+
+
 def test_reader_refuses_a_store_of_another_modality(daily_store):
     with pytest.raises(ValueError, match="synthetic_daily"):
         HourlyReader(daily_store.path)

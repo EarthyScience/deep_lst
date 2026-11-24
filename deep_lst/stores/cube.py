@@ -99,3 +99,33 @@ class CubeReader(StoreReader):
         lat_index, lon_index = self.spatial_grid.rows_to_lat_lon_index(indices[:, 0])
         stored = self.data_arr.vindex[indices[:, 1], lat_index, lon_index]
         return self.decode(stored)
+
+    def shard_blocks(self, time_start, time_stop):
+        """Split the time steps time_start .. time_stop - 1 at the shard boundaries.
+
+        Returns:
+            List of (block_start, block_stop); every block lies in one shard file.
+        """
+        steps_per_shard = self.data_arr.shards[0]
+        blocks = []
+        block_start = time_start
+        while block_start < time_stop:
+            next_shard_start = (block_start // steps_per_shard + 1) * steps_per_shard
+            block_stop = min(next_shard_start, time_stop)
+            blocks.append((block_start, block_stop))
+            block_start = block_stop
+        return blocks
+
+    def get_data_series(self, spatial_indices, time_start, time_stop):
+        """Reads one shard file after the other; within a shard, every inner chunk that holds
+        one of the cells is decoded once, however many of the cells it holds."""
+        spatial_indices = np.asarray(spatial_indices, dtype=np.int64)
+        lat_index, lon_index = self.spatial_grid.rows_to_lat_lon_index(spatial_indices)
+        n_steps = time_stop - time_start
+        series = np.empty((spatial_indices.size, n_steps, len(self.variables)), dtype=np.float32)
+        for block_start, block_stop in self.shard_blocks(time_start, time_stop):
+            steps = np.arange(block_start, block_stop)
+            stored = self.data_arr.vindex[steps[:, None], lat_index[None, :], lon_index[None, :]]
+            decoded = self.decode(stored)  # (steps, cells, variables)
+            series[:, block_start - time_start : block_stop - time_start] = decoded.swapaxes(0, 1)
+        return series

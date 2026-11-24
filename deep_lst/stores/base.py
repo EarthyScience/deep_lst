@@ -50,3 +50,17 @@ class StoreReader(ABC):
             float32 array (n, n_variables) in the order of the pairs, NaN where the store has
             no value.
         """
+
+    @abstractmethod
+    def get_data_series(self, spatial_indices, time_start, time_stop):
+        """Values of several cells over a range of time steps.
+
+        Args:
+            spatial_indices: Spatial index of every cell. (n_cells,)
+            time_start: First time index.
+            time_stop: Time index after the last one, as in range().
+
+        Returns:
+            float32 array (n_cells, time_stop - time_start, n_variables), NaN where the store
+            has no value.
+        """

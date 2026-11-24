@@ -13,26 +13,13 @@ from deep_lst.stores import LatLonGrid
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "readers_v1"
 
-# modality -> first latitude, first longitude, resolution, n_lat, n_lon of its store grid
-STORE_GRIDS = {
-    "seviri": (80.0, -80.0, 0.05, 3201, 3201),
-    "era5": (90.0, -180.0, 0.25, 721, 1440),
-    "era5_land": (90.0, -180.0, 0.1, 1801, 3600),
-    "glofas_v4": (89.975, -179.975, 0.05, 3000, 7200),
-}
+MODALITIES = ["seviri", "era5", "era5_land", "glofas_v4"]  # the grids of conftest.store_grids
 
 
 def small_grid():
     lat = np.array([10.0, 9.0, 8.0])
     lon = np.array([20.0, 21.0, 22.0, 23.0])
     return LatLonGrid(lat, lon, name="small")
-
-
-def store_grid(modality):
-    lat_first, lon_first, resolution, n_lat, n_lon = STORE_GRIDS[modality]
-    lat = lat_first - resolution * np.arange(n_lat)
-    lon = lon_first + resolution * np.arange(n_lon)
-    return LatLonGrid(lat, lon, name=modality)
 
 
 def test_shape_length_and_steps():
@@ -89,18 +76,18 @@ def test_uneven_axis_is_rejected():
         LatLonGrid(lat, lon, name="uneven")
 
 
-@pytest.mark.parametrize("modality", list(STORE_GRIDS))
-def test_centers_of_the_fixture_rows_are_the_eodata_cell_coordinates(modality):
+@pytest.mark.parametrize("modality", MODALITIES)
+def test_centers_of_the_fixture_rows_are_the_eodata_cell_coordinates(modality, store_grids):
     fixture = np.load(FIXTURE_DIR / f"{modality}.npz")
-    grid = store_grid(modality)
+    grid = store_grids[modality]
     centers = grid.centers[fixture["store_rows"]]
     assert np.allclose(centers, fixture["cell_lonlat"], rtol=0.0, atol=1e-9)
 
 
-@pytest.mark.parametrize("modality", list(STORE_GRIDS))
-def test_nearest_rows_of_the_fixture_anchors_are_the_eodata_rows(modality):
+@pytest.mark.parametrize("modality", MODALITIES)
+def test_nearest_rows_of_the_fixture_anchors_are_the_eodata_rows(modality, store_grids):
     fixture = np.load(FIXTURE_DIR / f"{modality}.npz")
-    grid = store_grid(modality)
+    grid = store_grids[modality]
     anchor_lonlat = fixture["anchor_lonlat"]
     rows = grid.nearest_rows(anchor_lonlat[:, 0], anchor_lonlat[:, 1])
     assert np.array_equal(rows, fixture["store_rows"])

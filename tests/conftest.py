@@ -23,10 +23,29 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from deep_lst.stores import T1D, T1H, TimeAxis
+from deep_lst.stores import T1D, T1H, LatLonGrid, TimeAxis
 
 FIRST_HOUR_2016 = 403224  # 2016-01-01T00, 24 hours into the shard 4200 of an hourly store
 FIRST_DAY_2016 = 16801  # 2016-01-01, one day into the shard 4200 of a daily store
+
+# modality -> first latitude, first longitude, resolution, n_lat, n_lon of the grid of its stores
+STORE_GRID_SPECS = {
+    "seviri": (80.0, -80.0, 0.05, 3201, 3201),
+    "era5": (90.0, -180.0, 0.25, 721, 1440),
+    "era5_land": (90.0, -180.0, 0.1, 1801, 3600),
+    "glofas_v4": (89.975, -179.975, 0.05, 3000, 7200),
+}
+
+
+@pytest.fixture(scope="session")
+def store_grids():
+    """{modality: LatLonGrid} of the real stores, built from their extent instead of read from them."""
+    grids = {}
+    for modality, (lat_first, lon_first, resolution, n_lat, n_lon) in STORE_GRID_SPECS.items():
+        lat = lat_first - resolution * np.arange(n_lat)
+        lon = lon_first + resolution * np.arange(n_lon)
+        grids[modality] = LatLonGrid(lat, lon, name=modality)
+    return grids
 
 
 @dataclass

@@ -87,18 +87,14 @@ def read_windows(reader, store_rows, start_days):
         a daily store are repeated over the 24 hours of their day.
     """
     if reader.is_static:
-        pairs = [(int(row), 0) for row in store_rows]
-        return reader.get_data_multi(pairs)
+        return reader.get_data_series(store_rows, 0, 1)[:, 0]
 
     steps_per_day = 24 if reader.time_grid.name == "T1H" else 1
     n_steps = N_DAYS * steps_per_day
     windows = []
     for start_day in start_days:
         first_step = int(start_day) * steps_per_day
-        steps = range(first_step, first_step + n_steps)
-        pairs = [(int(row), step) for row in store_rows for step in steps]
-        values = reader.get_data_multi(pairs)
-        values = values.reshape(len(store_rows), n_steps, len(reader.variables))
+        values = reader.get_data_series(store_rows, first_step, first_step + n_steps)
         if steps_per_day == 1:
             values = np.repeat(values, 24, axis=1)
         windows.append(values)
