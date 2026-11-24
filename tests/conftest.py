@@ -237,3 +237,27 @@ def static_store(tmp_path):
     return write_product_store(
         tmp_path / "synthetic_static.zarr", "synthetic_static", None, lat, lon, 1, written_steps, values, fill_value
     )
+
+
+@pytest.fixture
+def class_store(tmp_path):
+    """Static store like seviri_product_static_landcov: one int8 class field with the fill value 100.
+
+    The class of the cell with row r is r % 5; the last longitude holds the fill value.
+    """
+    lat, lon = synthetic_grid()
+    dtype = np.dtype([("LANDCOV", "i1")])
+    fill_value = (100,)
+    written_steps = np.array([0])
+    values = np.zeros((1, len(lat), len(lon)), dtype=dtype)
+    values["LANDCOV"][0] = np.arange(len(lat) * len(lon)).reshape(len(lat), len(lon)) % 5
+    values[:, :, -1] = np.array(fill_value, dtype=dtype)
+    return write_product_store(
+        tmp_path / "synthetic_class.zarr", "synthetic_class", None, lat, lon, 1, written_steps, values, fill_value
+    )
+
+
+@pytest.fixture
+def product_store_writer():
+    """write_product_store, for tests that need a store the fixtures above do not provide."""
+    return write_product_store

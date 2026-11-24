@@ -1,0 +1,36 @@
+# @package sources
+
+era5:
+  stores:
+    era5_product: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
+  load:
+    data: [sp, u10, v10, ssrd, strd, tp, tcwv, tcc]
+  increment_vars: []
+era5_land:
+  stores:
+    era5_land_product: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]
+  load:
+    data: [stl1, stl2, swvl1, swvl2, t2m, d2m, skt]
+  increment_vars: [swvl1, swvl2, stl1, stl2]
+
+glofas_v4:
+  stores:
+    glofas_v4_product: [rowe, sd, swir, dis24]
+  load:
+    data: [rowe, sd, swir, dis24]
+  transform: signed_log1p
+  increment_vars: []
+seviri:
+  stores:
+    seviri_product_hourly_lst: [LST, quality_flag, standard_error]
+    seviri_product_daily_mdfvc: [FVC]
+    seviri_product_static_dem: [DEM]
+    seviri_product_static_lwmask: [LWMASK]
+    seviri_product_static_landcov: [LANDCOV]
+  load:
+    data: [LST]
+    data_daily: [FVC]
+    data_static: [DEM]
+    data_static_categorical: [LWMASK, LANDCOV]
+    metadata: [quality_flag, standard_error]
+  increment_vars: [LST]

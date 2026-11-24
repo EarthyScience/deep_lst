@@ -19,6 +19,37 @@ from deep_lst.stores.seviri import (
 )
 from deep_lst.stores.time_axis import T1D, T1H, TimeAxis
 
+# store name (the modality_id of the store, and its file name without .zarr) -> reader class
+READERS = {
+    reader_class.MODALITY_ID: reader_class
+    for reader_class in (
+        AscatReader,
+        Era5LandReader,
+        Era5LandStaticReader,
+        Era5Reader,
+        GlofasReader,
+        RoaReader,
+        SeviriDEMReader,
+        SeviriFVCReader,
+        SeviriLANDCOVReader,
+        SeviriLSTReader,
+        SeviriLWMASKReader,
+    )
+}
+
+
+def get_data_reader(store_name, store):
+    """The reader of a product store.
+
+    Args:
+        store_name: Name of the store, e.g. "seviri_product_hourly_lst".
+        store: Folder of the store.
+    """
+    if store_name not in READERS:
+        raise ValueError(f"No reader for the store {store_name!r}, expected one of {sorted(READERS)}")
+    return READERS[store_name](store)
+
+
 __all__ = [
     "AscatReader",
     "CubeReader",
@@ -27,6 +58,7 @@ __all__ = [
     "Era5Reader",
     "GlofasReader",
     "LatLonGrid",
+    "READERS",
     "RoaReader",
     "SeviriDEMReader",
     "SeviriFVCReader",
@@ -38,6 +70,7 @@ __all__ = [
     "T1H",
     "TimeAxis",
     "anchor_lonlat",
+    "get_data_reader",
     "majortom_centers",
     "map_to_store_rows",
 ]
