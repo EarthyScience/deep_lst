@@ -1,5 +1,3 @@
-import getpass
-import os
 import re
 from dataclasses import dataclass, field
 from functools import cache
@@ -15,13 +13,6 @@ def _default_paths() -> dict:
     )
 
 
-def _preload_cache_root(settings: dict) -> Path:
-    root = settings["preload_cache_root"] or os.environ.get("DEEP_LST_CACHE_ROOT")
-    if root:
-        return Path(root)
-    return Path(settings["preload_cache_parent"]) / (os.environ.get("USER") or getpass.getuser()) / "tmp"
-
-
 @dataclass
 class ExperimentPaths:
     """Centralised path resolution for experiment artifacts."""
@@ -30,7 +21,7 @@ class ExperimentPaths:
     config_root: Path = field(default_factory=lambda: Path("./configs"))
     assets_root: Path = field(default_factory=lambda: Path("./assets"))
     eozarr_root: Path = field(default_factory=lambda: Path(_default_paths()["eozarr_root"]))
-    preload_cache_root: Path = field(default_factory=lambda: _preload_cache_root(_default_paths()))
+    preload_cache_root: Path = field(default_factory=lambda: Path(_default_paths()["preload_cache_root"]))
     store_roots: dict[str, str | None] = field(
         default_factory=lambda: dict(_default_paths()["store_roots"]), kw_only=True
     )
@@ -38,10 +29,8 @@ class ExperimentPaths:
     @classmethod
     def from_config(cls, config) -> "ExperimentPaths":
         settings = {**_default_paths(), **{key: value for key, value in (config or {}).items() if value is not None}}
-        cache_root = _preload_cache_root(settings)
-        settings.pop("preload_cache_parent")
+        settings.pop("preload_cache_parent", None)  # old saved configs
         store_roots = dict(settings.pop("store_roots"))
-        settings["preload_cache_root"] = cache_root
         return cls(store_roots=store_roots, **{key: Path(value) for key, value in settings.items()})
 
     def experiment_dir(self, experiment: str) -> Path:
