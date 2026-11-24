@@ -58,9 +58,16 @@ be edited.
 
 ### Data and cache paths
 
-`conf/paths.yaml` is the shared file for the data and preload-cache locations. Training,
-fine-tuning, inference, sensitivity, statistics and baseline generation read it from the
-current checkout. Set `eozarr_root` for the common store directory and add entries to
+Training, fine-tuning, inference, sensitivity, statistics and baseline generation select
+a paths profile. The default `paths=bgc` reads the shared site settings from
+`conf/paths.yaml`. Choose `paths=local` for stores under `./data` and a separate cache at
+`./cache/local`. The baseline script uses `--paths local`.
+
+```
+uv run python deep_lst/train.py paths=local
+```
+
+Set `eozarr_root` for the common store directory and add entries to
 `store_roots` for modalities that live elsewhere:
 
 ```yaml
@@ -72,9 +79,10 @@ Here SEVIRI uses the separate directory and the other modalities use `eozarr_roo
 A null entry explicitly selects the common root. An older saved run can still provide
 `sources.<modality>.store_root` if the current paths file has no entry for that modality.
 
-If `preload_cache_root` is unset, the cache uses `DEEP_LST_CACHE_ROOT` when nonempty,
-otherwise `<preload_cache_parent>/<user>/tmp`. The login name is used when `USER` is unset
-or empty. Relative paths are resolved from the working directory.
+Set `preload_cache_root` directly in `conf/paths.yaml` or override it on the command line.
+The default is `./cache`. The previous per-user scratch directory and
+`DEEP_LST_CACHE_ROOT` are no longer selected automatically. To keep using an existing
+cache, set `preload_cache_root` to its directory. Relative paths start at the working directory.
 
 ```
 uv run python deep_lst/train.py paths.eozarr_root=/data/eozarr paths.preload_cache_root=/scratch/deep_lst-cache

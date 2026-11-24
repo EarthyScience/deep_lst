@@ -109,8 +109,8 @@ assets/baselines/<kind>/<name>.nc         persistence / climatology / ERA5(-Land
 Check these locations in a new clone:
 
 1. Check `conf/paths.yaml` for the common store directory, any modality-specific directories
-   and the preload cache. The defaults keep the existing BGC store and scratch locations.
-   Set `preload_cache_root` explicitly or use `DEEP_LST_CACHE_ROOT` to choose another cache.
+   and the preload cache. The cache defaults to `./cache`. On the cluster, set
+   `preload_cache_root` to your scratch directory to keep using your existing cache.
    See `docs/CONFIGURATION.md` for precedence and examples.
 2. The SLURM launchers under `scripts/` hard-code the path of the maintainer's clone, most of
    them as `WORKDIR=` near the top; replace it with the path of your clone.

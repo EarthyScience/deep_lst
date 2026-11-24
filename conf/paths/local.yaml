@@ -1,0 +1,4 @@
+# Use a different cache from the BGC profile.
+eozarr_root: ./data
+preload_cache_root: ./cache/local
+store_roots: {}

@@ -25,6 +25,17 @@ def test_entrypoints_use_the_shared_paths_file(entrypoint):
     assert paths.eozarr_root == ExperimentPaths().eozarr_root
 
 
+@pytest.mark.parametrize("entrypoint", ["train", "finetune", "infer", "statistics", "sensitivity"])
+def test_local_paths_profile_uses_a_separate_cache(entrypoint):
+    with initialize_config_dir(config_dir=str(CONF_DIR), version_base="1.3"):
+        cfg = compose(config_name=entrypoint, overrides=["paths=local", "+paths.store_roots.seviri=local-seviri"])
+    paths = ExperimentPaths.from_config(cfg.paths)
+    assert paths.eozarr_root == Path("data")
+    assert paths.preload_cache_root == Path("cache/local")
+    assert paths.preload_cache_root != ExperimentPaths().preload_cache_root
+    assert paths.store_roots == {"seviri": "local-seviri"}
+
+
 @pytest.fixture
 def paths(tmp_path):
     return ExperimentPaths(
@@ -34,35 +45,20 @@ def paths(tmp_path):
     )
 
 
-def test_cache_root_uses_environment_without_user(monkeypatch, tmp_path):
-    monkeypatch.setenv("DEEP_LST_CACHE_ROOT", str(tmp_path / "cache"))
-    monkeypatch.delenv("USER", raising=False)
-    assert ExperimentPaths().preload_cache_root == tmp_path / "cache"
+def test_cache_root_uses_the_configured_directory(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEEP_LST_CACHE_ROOT", str(tmp_path / "old-env-cache"))
+    with initialize_config_dir(config_dir=str(CONF_DIR), version_base="1.3"):
+        cfg = compose(config_name="train", overrides=["paths.preload_cache_root=chosen-cache"])
+    assert ExperimentPaths().preload_cache_root == Path("cache")
+    paths = ExperimentPaths.from_config(cfg.paths)
+    assert paths.preload_cache_path("fingerprint").resolve() == tmp_path / "chosen-cache/preload_fingerprint.pt"
+    assert not (tmp_path / "old-env-cache").exists()
 
 
-@pytest.mark.parametrize("cache_root", [None, ""])
-def test_cache_root_defaults_to_current_user(monkeypatch, cache_root):
-    if cache_root is None:
-        monkeypatch.delenv("DEEP_LST_CACHE_ROOT", raising=False)
-    else:
-        monkeypatch.setenv("DEEP_LST_CACHE_ROOT", cache_root)
-    monkeypatch.setenv("USER", "test-user")
-    assert ExperimentPaths().preload_cache_root.as_posix() == "/Net/Groups/BGI/tscratch/test-user/tmp"
-
-
-def test_cache_root_uses_account_name_when_user_is_unset(monkeypatch):
-    monkeypatch.delenv("DEEP_LST_CACHE_ROOT", raising=False)
-    monkeypatch.delenv("USER", raising=False)
-    monkeypatch.setattr("getpass.getuser", lambda: "test-user")
-    assert ExperimentPaths().preload_cache_root.as_posix() == "/Net/Groups/BGI/tscratch/test-user/tmp"
-
-
-def test_explicit_cache_root_overrides_environment(monkeypatch, tmp_path):
-    monkeypatch.setenv("DEEP_LST_CACHE_ROOT", str(tmp_path / "environment-cache"))
-    assert (
-        ExperimentPaths(preload_cache_root=tmp_path / "explicit-cache").preload_cache_root
-        == tmp_path / "explicit-cache"
-    )
+def test_legacy_cache_parent_uses_the_yaml_default():
+    paths = ExperimentPaths.from_config({"preload_cache_root": None, "preload_cache_parent": "/old/scratch"})
+    assert paths.preload_cache_root == Path("cache")
 
 
 @pytest.mark.parametrize("root_kind", ["default", "string", "path", "relative"])

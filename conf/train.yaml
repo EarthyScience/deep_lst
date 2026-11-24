@@ -1,6 +1,6 @@
 defaults:
   - _self_          # base applies first; groups below have higher priority
-  - paths
+  - paths: bgc
   - sources: eozarr
   - model: mlp
   - objective: rollout
