@@ -20,6 +20,10 @@ Hourly and daily data types have the shape (W, P, H, C); position h of window w 
 start_days[w] * 24 + h since 1970-01-01T00, and daily values are repeated over their 24 hours.
 Static data types have the shape (P, C). The variable names of every data type are in meta.json.
 
+statistics.json holds the statistics that normalised these values (mean, std, min, max per
+variable), copied from the statistics files of the selection mtg_new, so that a normaliser can be
+tested against the normalised arrays without the statistics files.
+
 Run from the repository root, in the environment that has eodata:
 
     .venv/bin/python scripts/assets/export_reader_fixtures.py
@@ -31,6 +35,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
+import zarr
 from eodata.normalization import ModalityNormalizer
 from omegaconf import OmegaConf
 
@@ -46,6 +51,7 @@ SOURCES_FILE = REPO_ROOT / "conf" / "sources" / "eozarr.yaml"
 MODALITIES = ("era5", "era5_land", "seviri", "glofas_v4")
 STATS_SPATIAL = "mtg_new"  # selection whose statistics normalise the training preload
 N_DAYS = 4  # one shard of the new hourly stores is 96 hours
+STATISTICS_GROUPS = ("data", "data_daily", "data_static")  # the groups of stored variables
 
 # Anchors of the selection mtg_new. The first six have LST in the old store and data in every
 # new product store. The last four sit on a cell that is masked (not on the land grid) in at
@@ -156,6 +162,29 @@ def git_commit(repository):
     return result.stdout.strip()
 
 
+def export_statistics():
+    """Write statistics.json: per modality the transform and, per group, the variables and their statistics."""
+    sources = OmegaConf.load(SOURCES_FILE)
+    statistics = {}
+    for modality in MODALITIES:
+        root = zarr.open_group(str(PATHS.stats_zarr_path(modality, STATS_SPATIAL)), mode="r")
+        groups = {}
+        for group_name in STATISTICS_GROUPS:
+            if group_name not in root:
+                continue
+            group = root[group_name]
+            groups[group_name] = {
+                "variables": list(group.attrs["variables"]),
+                "mean": group["mean"][:].tolist(),
+                "std": group["std"][:].tolist(),
+                "min": group["min"][:].tolist(),
+                "max": group["max"][:].tolist(),
+            }
+        statistics[modality] = {"transform": sources[modality].get("transform"), "groups": groups}
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    (OUTPUT_DIR / "statistics.json").write_text(json.dumps(statistics, indent=2) + "\n")
+
+
 def main():
     sources = OmegaConf.load(SOURCES_FILE)
     anchor_ids = np.array(list(PIXELS.values()), dtype=np.int64)
@@ -181,6 +210,7 @@ def main():
         "modalities": modalities,
     }
     (OUTPUT_DIR / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    export_statistics()
 
 
 if __name__ == "__main__":
