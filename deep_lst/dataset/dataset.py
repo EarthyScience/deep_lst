@@ -38,8 +38,6 @@ DATA_TYPES = {
     "data_static_categorical": "data_static_categorical_arr",
 }
 
-PATHS = ExperimentPaths()
-
 # time_indices_*.npz are hours since the data start (2016-01-01); the new full stores are indexed
 # on the 1970 epoch, so a time index must be shifted by this offset to address the store.
 # FLAGGED for later: cleaner to regenerate the indices as absolute T1H (see migration notes).
@@ -79,7 +77,7 @@ def load_samples(
 def _load_anchor_ids(spatial_name, paths=None):
     """Anchor cell ids for a split: global MTG ids for training, seviri equiangular pixels
     for an eval holdout region."""
-    paths = paths or PATHS
+    paths = paths or ExperimentPaths()
     return np.sort(np.load(paths.spatial_indices_path(spatial_name))["src_indices"].astype(np.int64))
 
 
@@ -245,7 +243,7 @@ class UnimodalDataset(Dataset):
     @classmethod
     def from_config(cls, modality, store, spatial, anchor, temporal, workers=1, store_root=None, paths=None):
         """Stream the MTG pixel selection (spatial) over the statistics timestep subset (temporal)."""
-        paths = paths or PATHS
+        paths = paths or ExperimentPaths()
         anchor_ids = _load_anchor_ids(spatial, paths)
         rows = np.unique(map_to_store_rows(anchor_grid(anchor), anchor_ids, store_grid(modality)))
         stat_hours = np.load(paths.temporal_indices_path(temporal))["time_indices"].astype(np.int64)
@@ -387,7 +385,7 @@ class MultimodalDataset(Dataset):
         are read. Columns depend only on (anchors, store), not the temporal split, so this runs
         once — a full-axis cache per split would not fit in RAM.
         """
-        paths = paths or PATHS
+        paths = paths or ExperimentPaths()
         spatial_name = kwargs["spatial"]
         stats_tag = stats_spatial(kwargs)
         anchor_ids = _load_anchor_ids(spatial_name, paths)
@@ -479,7 +477,7 @@ class MultimodalDataset(Dataset):
     @classmethod
     def from_modalities(cls, modality_ids, shared, paths=None, **kwargs):
         """Build one split's dataset from the shared preloaded columns + this split's anchors."""
-        paths = paths or PATHS
+        paths = paths or ExperimentPaths()
         stats_tag = stats_spatial(kwargs)
         computed_stats = {m: load_computed_stats(paths.stats_zarr_path(m, stats_tag)) for m in modality_ids}
 

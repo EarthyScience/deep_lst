@@ -74,8 +74,7 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
     stats.mkdir(parents=True)
     (stats / "zarr.json").write_text("{}")
     if not explicit_paths:
-        monkeypatch.setattr(dataset, "PATHS", paths)
-    original_paths = dataset.PATHS
+        monkeypatch.setattr(dataset, "ExperimentPaths", lambda: paths)
     grid = SimpleNamespace(centers=np.array([[20.0, 10.0]]))
     monkeypatch.setattr(dataset, "anchor_grid", lambda _: grid)
     monkeypatch.setattr(dataset, "store_grid", lambda _: grid)
@@ -130,7 +129,6 @@ def test_configured_reader_and_cache_preserve_samples_on_cold_and_warm_load(tmp_
     assert normalizers == [f"zscore:{stats}"]
     assert computed == [stats] * 6
     assert len(list(paths.preload_cache_root.glob("preload_tiny_*.pt"))) == 1
-    assert dataset.PATHS is original_paths
     if explicit_paths:
         paths.store_roots["seviri"] = "changed-data"
         changed = LitDataModule(experiment_paths=paths, **module.kwargs)
