@@ -24,8 +24,9 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from deep_lst.stores import map_to_store_rows
 from deep_lst.utils.io import ExperimentPaths
-from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
+from deep_lst.utils.spatial import store_grid
 
 PATHS = ExperimentPaths()
 CLIMATOLOGY_DIR = Path("/Net/Groups/BGI/work_5/scratch/mwessel/data/derived/FVC_monthly_climatology")
@@ -57,7 +58,7 @@ def site_values(selection, by_pixel):
     """A per-seviri-pixel field sampled at every site of a selection, in the npz's own site order."""
     npz = np.load(PATHS.spatial_indices_path(selection))
     anchor_ids = npz["src_indices"].astype(np.int64)
-    rows = map_to_store_rows(anchor_grid("mtg"), anchor_ids, store_grid("seviri"))
+    rows = map_to_store_rows("mtg", anchor_ids, store_grid("seviri"))
     return by_pixel[rows]
 
 

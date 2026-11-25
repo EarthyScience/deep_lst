@@ -36,16 +36,15 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from eodata.grids import T1H
 
-from deep_lst.dataset.dataset import DATA_TYPES, _preload_columns
 from deep_lst.exploration.plots._design import OBS_COLOR, RC
 from deep_lst.exploration.plots.kg_sampling import EVAL_CENTERS
-from deep_lst.utils.full_store import SEVIRI_STORE, open_store_reader
+from deep_lst.stores import T1H, get_data_reader
+from deep_lst.utils.io import ExperimentPaths
 from deep_lst.utils.spatial import store_grid
 
 OUT_DIR = Path("/Net/Groups/BGI/people/mwessel/deep_lst/results/autoregression")
-SEVIRI_LOAD = {"data": ["LST"], "metadata": ["standard_error"]}
+LST_STORE = "seviri_product_hourly_lst"
 DAY_RANGE = (T1H.date_to_index("2016-01-01") // 24, T1H.date_to_index("2025-01-01") // 24)
 
 NIGHT_START, NIGHT_END = 22.0, 4.0  # local solar hours; the within-night window
@@ -77,16 +76,12 @@ def center_pixels():
 
 
 def load_center_columns(rows, num_workers=4):
-    """Raw hourly LST + SE for explicit store rows (full_store.load_store_columns
-    minus the anchor mapping). Returns (lst, se): (n_rows, n_hours), Kelvin, NaN-gapped."""
-    reader = open_store_reader("seviri", SEVIRI_STORE, SEVIRI_LOAD)
-    select = {
-        data_type: [list(getattr(reader, DATA_TYPES[data_type]).dtype.fields).index(var) for var in names]
-        for data_type, names in SEVIRI_LOAD.items()
-    }
-    columns = _preload_columns(reader, None, rows, select, num_workers=num_workers, day_range=DAY_RANGE)
-    lst = columns["data"].numpy()[:, :, 0]
-    se = columns["metadata"].numpy()[:, :, 0]
+    """Raw hourly LST + SE for explicit store rows. Returns (lst, se): (n_rows, n_hours),
+    Kelvin, NaN-gapped."""
+    reader = get_data_reader(LST_STORE, ExperimentPaths().product_store_path(LST_STORE))
+    series = reader.get_data_series(rows, DAY_RANGE[0] * 24, DAY_RANGE[1] * 24)  # (rows, hours, variables)
+    lst = series[:, :, reader.variables.index("LST")]
+    se = series[:, :, reader.variables.index("standard_error")]
     return lst, se
 
 
@@ -317,7 +312,7 @@ def main():
     pixels = center_pixels()
     names = list(pixels)
     store_rows = np.array([pixels[name][0] for name in names])
-    print(f"loading {len(names)} centre pixels from {SEVIRI_STORE} (days {DAY_RANGE[0]}..{DAY_RANGE[1]})...")
+    print(f"loading {len(names)} centre pixels from {LST_STORE} (days {DAY_RANGE[0]}..{DAY_RANGE[1]})...")
     lst, se = load_center_columns(store_rows)
     n_hours = lst.shape[1]
     store_time = pd.date_range("2016-01-01", periods=n_hours, freq="h")
@@ -350,4 +345,4 @@ if __name__ == "__main__":
     pixels = center_pixels()
     names = list(pixels)
     store_rows = np.array([pixels[name][0] for name in names])
-    print(f"loading {len(names)} centre pixels from {SEVIRI_STORE} (days {DAY_RANGE[0]}..{DAY_RANGE[1]})...")
+    print(f"loading {len(names)} centre pixels from {LST_STORE} (days {DAY_RANGE[0]}..{DAY_RANGE[1]})...")

@@ -34,6 +34,7 @@ from deep_lst.stores import (
     SeviriLSTReader,
     SeviriLWMASKReader,
 )
+from deep_lst.utils.full_store import load_store_columns
 from deep_lst.utils.io import ExperimentPaths
 
 pytest.importorskip("zarr", minversion="3.4.2")
@@ -144,3 +145,36 @@ def test_reader_returns_the_values_of_the_old_pipeline(modality, data_type, read
         largest_difference = np.abs(new[both] - old[both]).max()
         tolerance = RELATIVE_TOLERANCE * np.abs(old[both]).max()
         assert largest_difference <= tolerance, f"{name}: values differ by up to {largest_difference}"
+
+
+def test_load_store_columns_returns_the_values_of_the_old_pipeline(tmp_path, monkeypatch):
+    """The analysis entry point (deep_lst/utils/full_store.py): raw LST and DEM of the fixture
+    anchors, selected through an index file as the exploration scripts do."""
+    open_reader(SeviriLSTReader)  # skips where the stores are not available
+    fixture = np.load(FIXTURE_DIR / "seviri.npz")
+    monkeypatch.chdir(tmp_path)  # the index file is looked up under ./assets
+    index_path = ExperimentPaths().spatial_indices_path("fixture_pixels")
+    index_path.parent.mkdir(parents=True)
+    np.savez(index_path, src_indices=fixture["anchor_ids"])
+
+    window = 3
+    start_day = int(fixture["start_days"][window])
+    load = {"data": ["LST"], "data_static": ["DEM"]}
+    columns, unique_rows, inverse, anchor_ids = load_store_columns(
+        "seviri", "fixture_pixels", load, day_range=(start_day, start_day + N_DAYS), num_workers=2
+    )
+
+    order = np.argsort(fixture["anchor_ids"])  # the loader returns the anchors sorted
+    assert np.array_equal(anchor_ids, fixture["anchor_ids"][order])
+    assert np.array_equal(unique_rows[inverse], fixture["store_rows"][order])
+    masked = np.isin(np.array(PIXELS)[order], MASKED_PIXELS["seviri"])
+    new_lst = columns["data"].numpy()[inverse][:, :, 0].astype(np.float64)
+    old_lst = fixture["raw__data"][window][order][:, :, 0].astype(np.float64)
+    new_dem = columns["data_static"].numpy()[inverse][:, 0].astype(np.float64)
+    old_dem = fixture["raw__data_static"][order][:, 0].astype(np.float64)
+    for new, old in ((new_lst, old_lst), (new_dem, old_dem)):
+        old_valid = ~np.isnan(old)
+        assert not (old_valid[~masked] & np.isnan(new[~masked])).any()
+        both = old_valid & ~np.isnan(new)
+        assert both.any()
+        assert np.abs(new[both] - old[both]).max() <= RELATIVE_TOLERANCE * np.abs(old[both]).max()

@@ -17,7 +17,7 @@ matplotlib.use("Agg")  # headless cluster script
 from deep_lst.dataset.dataset import STORE_EPOCH_OFFSET
 from deep_lst.exploration.plots import plot_cloudiness_heatmap, plot_cloudiness_polar, plot_diurnal_cycle
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.full_store import SEVIRI_STORE, load_store_columns
+from deep_lst.utils.full_store import load_store_columns
 from deep_lst.utils.spatial import store_grid
 
 
@@ -116,7 +116,6 @@ def _load_site(site):
     """Site LST from the full seviri store: eval anchors ARE seviri pixels (rows pass through)."""
     columns, _, _, anchor_ids = load_store_columns(
         "seviri",
-        SEVIRI_STORE,
         f"eval_{site}",
         {"data": ["LST"]},
         anchor="seviri",

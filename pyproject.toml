@@ -51,6 +51,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # tests import the scripts under scripts/
 
 [tool.ruff]
 line-length = 120

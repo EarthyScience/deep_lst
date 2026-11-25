@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from eodata.grids import T1H
 
-from deep_lst.utils.full_store import SEVIRI_STORE, load_store_columns
+from deep_lst.stores import T1H
+from deep_lst.utils.full_store import load_store_columns
 
 CLIM_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/assets/baselines/climatology_hourly/mtg.nc"
 OUT_PATH = "/Net/Groups/BGI/people/mwessel/deep_lst/results/exploration/climatology.png"
@@ -30,7 +30,6 @@ day_lo = T1H.date_to_index(PERIOD_START) // 24
 day_hi = T1H.date_to_index(PERIOD_END) // 24 + 1  # exclusive
 columns, _, inverse, _ = load_store_columns(
     "seviri",
-    SEVIRI_STORE,
     "mtg",
     {"data": ["LST"], "metadata": ["quality_flag"]},
     anchor="mtg",

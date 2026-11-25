@@ -1,22 +1,20 @@
 #!/bin/bash -x
 
-#SBATCH --partition=gpu
+#SBATCH --partition=work
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32Gb
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=scripts/out/compute_statistics_%x.%j.out
 #SBATCH --job-name=compute_statistics
 
 # One modality per job; everything else (stores, MTG pixel selection, statistics temporal
 # split, prognostic increment variables) comes from conf/statistics.yaml.
 #
-# Resources measured on spatial=mtg (3000 pixels, 375 batches), 2026-08-26:
-#   seviri 20 min, era5_land 22 min, era5 67 min; peak RSS ~12 GB; ~2.7 cores in use
-#   (num_workers=0, serial reads). Requests below leave roughly 2x headroom on time and
-#   memory; a larger pixel selection would need them raised proportionally.
+# No GPU needed. Measured on spatial=mtg_new (3000 pixels, 120 statistics days), 2026-11-24,
+# 8 threads: seviri 2 min; the reads of the other modalities take 1 to 5 min. The requests
+# below leave ample headroom; a larger pixel selection would need more memory.
 #
 # Usage:
 #   sbatch --job-name=stats_seviri    scripts/assets/compute_statistics_distributed.sh seviri
@@ -25,8 +23,7 @@
 #
 # Optional arg $2: spatial selection name (assets/spatial/indices_<spatial>.npz);
 # empty -> conf/statistics.yaml default.
-# Optional arg $3: DataLoader worker count (default 0 — serial reads; raise once
-# fork + zarr 3.2 async stores are confirmed safe).
+# Optional arg $3: number of threads that read the statistics days (default 8).
 
 export PYTHONUNBUFFERED=1
 
@@ -35,7 +32,7 @@ cd $WORKDIR
 
 MODALITY=${1:?Usage: sbatch compute_statistics_distributed.sh <seviri|era5|era5_land> [spatial] [num_workers]}
 SPATIAL=${2:-}      # empty -> conf/statistics.yaml default
-NUM_WORKERS=${3:-0}
+NUM_WORKERS=${3:-8}
 
 SPATIAL_OVERRIDE=""
 if [ -n "${SPATIAL}" ]; then

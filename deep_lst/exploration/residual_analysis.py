@@ -27,9 +27,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
-from eodata.grids import T1H
 
-from deep_lst.utils.full_store import SEVIRI_STORE, load_store_columns
+from deep_lst.stores import T1H
+from deep_lst.utils.full_store import load_store_columns
 from deep_lst.utils.spatial import store_grid
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)  # all-NaN-slice noise from cloudy pixels
@@ -71,7 +71,7 @@ def region_table(region):
 
     # Eval anchors ARE seviri pixels, so the full-store rows are the anchor ids themselves.
     columns, _, _, anchor_ids = load_store_columns(
-        "seviri", SEVIRI_STORE, f"eval_{region}", SEVIRI_LOAD, anchor="seviri", day_range=YEAR_DAY_RANGE
+        "seviri", f"eval_{region}", SEVIRI_LOAD, anchor="seviri", day_range=YEAR_DAY_RANGE
     )
     lst_hourly = columns["data"].numpy()[:, :, 0]  # (n_pixel, n_hours)
     fvc_hourly = columns["data_daily"].numpy()[:, :, 0]  # daily values, repeated per hour

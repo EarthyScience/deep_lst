@@ -12,14 +12,12 @@ Everything runs on the BGI cluster under SLURM. You need:
 
 - **A cluster account** with access to the `gpu`, `work` and `big` partitions.
 - **Outbound network via the proxy.** Nothing on the cluster reaches the internet unless the
-  proxy module is loaded. Add this to your `~/.bashrc`; it is needed for `git`, `uv`, `mamba`
-  and `wandb`:
+  proxy module is loaded. Add this to your `~/.bashrc`; it is needed for `git`, `uv` and
+  `wandb`:
   ```
   ml proxy
   ```
-- **A conda/mamba installation** (e.g. Miniforge) in your scratch space. It provides the native
-  libraries (GDAL, PROJ, HDF) that the eodata data stack needs; `uv` itself comes from that
-  environment.
+- **[uv](https://docs.astral.sh/uv/)**, which installs Python and every dependency.
 - **Two storage areas.** Code and small outputs live in your people directory. Large
   intermediate files (the preload cache, tens of GB per training selection) go to your
   `tscratch` space, see section 4.6.
@@ -28,49 +26,29 @@ Everything runs on the BGI cluster under SLURM. You need:
 
 ## 2. Installation
 
-deep_lst and eodata are two repositories, cloned side by side, **each installed with its own
-environment**. deep_lst imports eodata as an editable dependency from the sibling directory:
-`pyproject.toml` pins `eodata = { path = "../eodata_slim", editable = true }`, so the sibling
-must be named `eodata_slim`.
+`uv sync` downloads the pinned Python 3.12 itself and creates `.venv` in the clone with
+everything deep_lst needs:
 
 ```
 cd /Net/Groups/BGI/people/<you>
 git clone git@github.com:MWesselkamp/deep_lst.git
-git clone git@github.com:EarthyScience/eodata.git eodata_slim
-```
-
-**2.1 eodata** (branch `v0.3_DeepLST`), following its own README:
-
-```
-cd eodata_slim
-git checkout v0.3_DeepLST
-mamba env create -n eodata -f environment.yaml
-mamba activate eodata
+cd deep_lst
 uv sync
 ```
 
-**2.2 deep_lst.** Keep the `eodata` conda environment active while syncing: the Python GDAL
-bindings are compiled against the `libgdal` it provides. `uv sync` downloads the pinned
-Python 3.12 itself and creates `.venv` in the clone with everything, including eodata from
-`../eodata_slim`.
-
-```
-cd ../deep_lst
-uv sync
-```
-
-**Which environment for what.** Anything under `eodata_slim/` (site selection, temporal
-selection, store conversion) runs in the eodata environment, i.e. `mamba activate eodata`
-and `uv run` from inside `eodata_slim`. Anything under `deep_lst/` runs in the deep_lst venv,
-i.e. `source .venv/bin/activate` (what the SLURM jobs do) or `uv run` from inside `deep_lst`.
+Everything under `deep_lst/` runs in that venv, i.e. `source .venv/bin/activate` (what the
+SLURM jobs do) or `uv run` from inside `deep_lst`.
 
 Verify:
 
 ```
-cd deep_lst
-uv run python -c "import deep_lst, eodata; from osgeo import gdal; print('ok')"
 uv run pytest            # tests that need the data stores are skipped without them
 ```
+
+deep_lst reads its data stores with its own readers (`deep_lst/stores/`) and does not depend
+on [eodata](https://github.com/EarthyScience/eodata). eodata is still what draws a new spatial
+or temporal selection (`docs/ONBOARDING.md`); it is a separate clone with an environment of
+its own and is only needed for that.
 
 Development tooling: `uv run pre-commit run --all-files` (ruff format + lint).
 
@@ -125,19 +103,27 @@ there and Hydra pins its run dir to it.
 
 ### 4.1 The data stores
 
-Training reads the full `.eozarr` stores written by eodata, hourly:
+Training reads product stores: one zarr store per product, each a cube
+`data[time, lat, lon]` on a regular latitude-longitude grid, with one field per variable. A
+modality of the model reads one or several of them:
 
-| Modality | Native grid | Role |
-|---|---|---|
-| `seviri` | 0.05 deg equiangular, Africa disc | LST (the prognostic), FVC, DEM, land/water mask, land cover |
-| `era5` | 0.25 deg | synoptic forcing, static soil/vegetation classes |
-| `era5_land` | 0.1 deg | near-surface state (soil temperature/moisture, t2m, d2m) |
-| `glofas_v4` | daily | optional, only with `data=full_glofas` |
+| Modality | Native grid | Stores | Role |
+|---|---|---|---|
+| `seviri` | 0.05 deg, Africa disc | hourly LST, daily FVC, static DEM, land/water mask, land cover | LST (the prognostic), FVC, DEM, land/water mask, land cover |
+| `era5` | 0.25 deg | hourly fields, static fields | synoptic forcing, static soil/vegetation classes |
+| `era5_land` | 0.1 deg | hourly fields | near-surface state (soil temperature/moisture, t2m, d2m) |
+| `glofas_v4` | 0.05 deg, daily | daily fields | optional, only with `data=full_glofas` |
 
-Store names are set in `conf/train.yaml` (`_seviri_store`, ...), located under
-`ExperimentPaths.eozarr_root`. Every store is indexed by its own grid cell id and an hourly
-time axis. The `_<modality>_load` blocks in `conf/train.yaml` list what is read from each
-store into RAM; the `data=` group decides which of those the model actually sees.
+Which stores a modality reads and which variables come from each is set in
+`conf/sources/product.yaml`; the folder of the stores is `product_root` in `conf/paths.yaml`
+(`docs/CONFIGURATION.md`, sections 2 and 3.1). The README files in that folder describe every
+store. The time index of a store counts hours (or days) since 1970-01-01; a cell is addressed
+by its row, `lat_index * n_lon + lon_index`. The `data=` group decides which of the loaded
+variables the model actually sees.
+
+Most stores hold data on land cells only. An anchor on a masked cell has no data from that
+store: without LST it contributes no sample, and a missing forcing enters the model as the
+mean of that variable.
 
 ### 4.2 Asset overview and dependencies
 
@@ -164,8 +150,8 @@ verification attaches where they exist, written by `scripts/assets/fvc_init_stat
 One `assets/spatial/indices_<name>.npz` per selection. deep_lst reads a single key,
 `src_indices`, holding **anchor-grid cell ids**:
 
-- **Training selections** are ids on the global 5 km MajorTom grid (`MajorTomGrid(5)` in
-  eodata); `anchor: mtg` in the config.
+- **Training selections** are ids on the global 5 km MajorTom grid, as eodata numbers its
+  cells (`deep_lst/stores/majortom.py`); `anchor: mtg` in the config.
 - **Evaluation sets** are either MajorTom selections as well (a holdout of sites) or dense
   SEVIRI pixel ids for a region (`anchor: seviri`). Their config lives in `conf/eval/<name>.yaml`
   and is selected with `eval=<name>` at inference; its `splits.test.spatial` key names the
@@ -173,7 +159,7 @@ One `assets/spatial/indices_<name>.npz` per selection. deep_lst reads a single k
   (a training selection such as `mtg_new` is evaluated by naming it there).
 
 At preload, every modality maps the anchor ids to its own store rows by nearest neighbour
-(`deep_lst/utils/spatial.py::map_to_store_rows`), so one file serves all modalities and no
+(`deep_lst/stores/anchors.py::map_to_store_rows`), so one file serves all modalities and no
 per-modality index files exist. The other keys in the file (`kg_classes`, `modis_lc_classes`,
 `dem_values`, ...) are per-pixel stratification classes used for evaluation-by-class and for
 balance analysis; class labels, seed, axes, `n_sites` and per-class counts are recorded in
@@ -196,14 +182,16 @@ python scripts/assets/compute_statistics.py modality=era5      spatial=<name>
 python scripts/assets/compute_statistics.py modality=era5_land spatial=<name>
 ```
 
-Submit each as a SLURM job on the `gpu` partition (1 GPU, 8 CPUs, 32 GB, 2 h is enough for
-3000 sites; 20-70 min per modality): `scripts/assets/compute_statistics_distributed.sh` is the
-launcher for one modality, and `bash scripts/assets/launch_statistics_mtg.sh <name>` submits
-all three. Training resolves `stats_spatial` from `_spatial`, so all three zarrs must exist
-before you train on a selection, and a fourth from `modality=glofas_v4` for `data=full_glofas`.
+A run needs no GPU and takes a few minutes for 3000 sites (2 min for `seviri`, about 5 min
+for `era5_land`, 8 CPUs, 16 GB). `scripts/assets/compute_statistics_distributed.sh` is the
+SLURM launcher for one modality, and `bash scripts/assets/launch_statistics_mtg.sh <name>`
+submits all three. Training resolves `stats_spatial` from `_spatial`, so all three zarrs must
+exist before you train on a selection, and a fourth from `modality=glofas_v4` for
+`data=full_glofas`.
 
-The store, the value transform and the variables that get increment statistics come from
-`conf/sources/eozarr.yaml`, the same file training composes. The transform is recorded in the
+The stores, the variables (`load`), the value transform and the variables that get increment
+statistics come from `conf/sources/product.yaml`, the same file training composes. Statistics
+are written for the variables of the leaves `data`, `data_daily` and `data_static`. The transform is recorded in the
 zarr; training stops before the preload if it differs from the transform of the run's source.
 Recomputing statistics changes the preload fingerprint (below), so the cache is rebuilt
 afterwards.
@@ -227,9 +215,9 @@ normalised, and saves that dict once as
 <preload_cache_root>/preload_<spatial>_<fingerprint>.pt
 ```
 
-The fingerprint hashes the anchor ids and, per modality, the store name, the `load` list, the
-`transform` where one is set and the modification time of the statistics zarr. Any change to
-those rebuilds the cache (30-60 min); changes to model, loss, lookback, horizon or `data=`
+The fingerprint hashes the anchor ids and, per modality, the stores with their variables, the
+`load` list, the `transform` where one is set and the modification time of the statistics zarr.
+Any change to those rebuilds the cache (about 20 min for 3000 sites); changes to model, loss, lookback, horizon or `data=`
 inputs reuse it, unless the `data=` option adds a modality, as `full_glofas` does. A 3000-site selection produces a
 20-30 GB file, which is why training jobs request 256 GB of RAM. There is no separate
 "precache" command: the first training or inference job on a selection builds the cache as a

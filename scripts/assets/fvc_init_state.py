@@ -37,18 +37,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
-from eodata.grids import T1H
-from eodata.selection.stratification import kg_major_from_classes
 
-from deep_lst.utils.full_store import SEVIRI_STORE, open_store_reader
+from deep_lst.stores import T1D, get_data_reader, map_to_store_rows
 from deep_lst.utils.init_state import lookback_count, lookback_mean, lookback_tendency
 from deep_lst.utils.io import ExperimentPaths
-from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
+from deep_lst.utils.spatial import store_grid
 
 PATHS = ExperimentPaths()
 CLIMATOLOGY_ROOT = Path("/Net/Groups/BGI/work_5/scratch/mwessel/data/derived")
 OUT_DIR = PATHS.assets_root / "static"
+FVC_STORE = "seviri_product_daily_mdfvc"
 KG_MAJOR_NAMES = {1: "A tropical", 2: "B arid", 3: "C temperate", 4: "D continental", 5: "E polar"}
+
+# Köppen-Geiger class code (0 = no data, 1-30) -> major class (1-5 = A-E, -1 = no data)
+KG_TO_MAJOR = np.zeros(31, dtype=np.int8)
+KG_TO_MAJOR[0] = -1
+KG_TO_MAJOR[1:4] = 1  # A: Af, Am, Aw
+KG_TO_MAJOR[4:8] = 2  # B: BWh, BWk, BSh, BSk
+KG_TO_MAJOR[8:17] = 3  # C: Csa to Cfc
+KG_TO_MAJOR[17:29] = 4  # D: Dsa to Dfd
+KG_TO_MAJOR[29:31] = 5  # E: ET, EF
 
 
 def forward_fill(values, max_gap):
@@ -87,7 +95,9 @@ def climatology_range(rows, clim_years):
 def site_kg_major(npz):
     """Köppen major class (1-5 = A-E) per site in forecast pixel order (sorted src_indices)."""
     order = np.argsort(npz["src_indices"], kind="stable")
-    return kg_major_from_classes(npz["kg_classes"][order].astype(np.int8)).astype(int)
+    kg_classes = npz["kg_classes"][order].astype(np.int8)
+    # the selection files mark no data with -1, the rasters with 0: both become class 0 here
+    return KG_TO_MAJOR[np.clip(kg_classes, 0, 30)].astype(int)
 
 
 def coverage_report(valid, kg_major, label):
@@ -119,22 +129,19 @@ def main():
 
     npz = np.load(PATHS.spatial_indices_path(args.selection))
     sites = np.sort(npz["src_indices"].astype(np.int64))  # forecast pixel order
-    rows = map_to_store_rows(anchor_grid("mtg"), sites, store_grid("seviri"))
+    rows = map_to_store_rows("mtg", sites, store_grid("seviri"))
     kg_major = site_kg_major(npz)
 
-    first_day = T1H.date_to_index(f"{args.year}-01-01") // 24 - args.lookback_days  # the window of 1 January
-    last_day = T1H.date_to_index(f"{args.year + 1}-01-01") // 24
+    first_day = T1D.date_to_index(f"{args.year}-01-01") - args.lookback_days  # the window of 1 January
+    last_day = T1D.date_to_index(f"{args.year + 1}-01-01")
     times = pd.date_range(f"{args.year}-01-01", periods=last_day - first_day, freq="D") - pd.Timedelta(
         days=args.lookback_days
     )
     in_year = np.asarray(times.year == args.year)
 
-    reader = open_store_reader("seviri", SEVIRI_STORE, ["data_daily"])
-    order = np.argsort(rows)  # zarr wants sorted rows; undo afterwards
-    block = reader.data_daily_arr.oindex[rows[order], first_day:last_day]["FVC"].squeeze(axis=(2, 3))
-    fvc = np.empty_like(block)
-    fvc[order] = block
-    fvc = fvc.astype(np.float32)
+    reader = get_data_reader(FVC_STORE, PATHS.product_store_path(FVC_STORE))
+    series = reader.get_data_series(rows, first_day, last_day)  # (sites, days, variables), NaN where missing
+    fvc = series[:, :, reader.variables.index("FVC")]
 
     site_min, site_max, climatology_dir = climatology_range(rows, args.clim_years)
     annual_range = site_max - site_min
@@ -203,7 +210,7 @@ def main():
         "climatology_years": f"{args.clim_years[0]}-{args.clim_years[1]}",
         "gap_fill": variant,
         "lookback_days": args.lookback_days,
-        "store": SEVIRI_STORE,
+        "store": FVC_STORE,
         "climatology": str(climatology_dir),
         "generator": "scripts/assets/fvc_init_state.py",
     }

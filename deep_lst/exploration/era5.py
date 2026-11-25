@@ -48,12 +48,12 @@ import pandas as pd
 import shapely
 import xarray as xr
 from cartopy.io import shapereader
-from eodata.grids import T1H
 from matplotlib.colors import ListedColormap
 from PIL import Image
 from scipy.stats import norm, rankdata, spearmanr
 
-from deep_lst.utils.full_store import ERA5_LAND_STORE, ERA5_STORE, SEVIRI_STORE, open_store_reader
+from deep_lst.stores import T1H, get_data_reader
+from deep_lst.utils.io import ExperimentPaths
 from deep_lst.utils.spatial import store_grid
 
 # %% ============================== CONFIG =============================================
@@ -80,10 +80,10 @@ FROIS_MIN_YEARS = 7  # the paper uses 10 (of 20 years); the SEVIRI store has at 
 FROIS_P_STRONG, FROIS_P_WEAK = 0.01, 0.1  # p-values of weight 1 and weight 0
 
 SOURCES = {
-    "lst": {"modality": "seviri", "store": SEVIRI_STORE, "field": "LST"},
-    "skt": {"modality": "era5_land", "store": ERA5_LAND_STORE, "field": "skt"},
-    "swvl1": {"modality": "era5_land", "store": ERA5_LAND_STORE, "field": "swvl1"},
-    "tcc": {"modality": "era5", "store": ERA5_STORE, "field": "tcc"},
+    "lst": {"modality": "seviri", "store": "seviri_product_hourly_lst", "field": "LST"},
+    "skt": {"modality": "era5_land", "store": "era5_land_product", "field": "skt"},
+    "swvl1": {"modality": "era5_land", "store": "era5_land_product", "field": "swvl1"},
+    "tcc": {"modality": "era5", "store": "era5_product", "field": "tcc"},
 }
 # mode hourly: same quantity, bias on three scales + hourly rolling correlation;
 # mode daily: different quantities, daily rolling correlation + the frois score.
@@ -126,8 +126,8 @@ def nearest_index(axis, values):
 
 def target_window(grid):
     """(row_start, row_stop), (col_start, col_stop) of the analysis window on the target grid."""
-    rows = nearest_index(grid.y, [LAT_NORTH, LAT_SOUTH])
-    cols = nearest_index(grid.x, [LON_WEST, LON_EAST])
+    rows = nearest_index(grid.lat, [LAT_NORTH, LAT_SOUTH])
+    cols = nearest_index(grid.lon, [LON_WEST, LON_EAST])
     return (rows[0], rows[1] + 1), (cols[0], cols[1] + 1)
 
 
@@ -149,21 +149,35 @@ def local_hours(lons):
 
 # %% ============================== LOADING ============================================
 def open_source(source):
-    """Store array, native grid and field name of one SOURCES entry."""
-    reader = open_store_reader(source["modality"], source["store"], ["data"])
-    return {"array": reader.data_arr, "grid": store_grid(source["modality"]), "field": source["field"]}
+    """Reader, native grid and field name of one SOURCES entry."""
+    reader = get_data_reader(source["store"], ExperimentPaths().product_store_path(source["store"]))
+    return {"reader": reader, "grid": reader.spatial_grid, "field": source["field"]}
 
 
 def read_hourly(opened, row_start, row_stop, day_start, day_stop):
-    """(rows, days, 24) float32 of one field for a contiguous store row range."""
-    block = opened["array"][row_start:row_stop, day_start:day_stop][opened["field"]]
+    """(rows, days, 24) float32 of one field for a contiguous store row range.
+
+    The range has to be a rectangle of the grid: part of one latitude row, or whole latitude
+    rows; both callers read such ranges."""
+    n_lon = opened["grid"].shape[1]
+    lat_start, lon_start = divmod(row_start, n_lon)
+    lat_last, lon_last = divmod(row_stop - 1, n_lon)
+    is_rectangle = lat_start == lat_last or (lon_start == 0 and lon_last == n_lon - 1)
+    if not is_rectangle:
+        raise ValueError(f"rows {row_start}..{row_stop} are not a rectangle of the grid")
+    lat_slice = slice(lat_start, lat_last + 1)
+    lon_slice = slice(lon_start, lon_last + 1)
+    box = opened["reader"].get_data_box(
+        lat_slice, lon_slice, day_start * 24, day_stop * 24, variables=[opened["field"]]
+    )  # (hours, lat, lon, 1)
     n_rows, n_days = row_stop - row_start, day_stop - day_start
-    return np.asarray(block, dtype=np.float32).reshape(n_rows, n_days, 24)
+    by_cell = box[..., 0].reshape(n_days * 24, n_rows).T  # (rows, hours)
+    return np.ascontiguousarray(by_cell).reshape(n_rows, n_days, 24)
 
 
 def read_rows(opened, source_rows, col_start, col_stop, days):
     """(n_source_rows, cols, days, 24): one contiguous read per source latitude row."""
-    n_lon = opened["grid"].get_shape()[1]
+    n_lon = opened["grid"].shape[1]
     blocks = []
     for source_row in source_rows:
         start = source_row * n_lon + col_start
@@ -196,9 +210,9 @@ def load_band(opened, lats, lons, days, min_clear):
     centre, NaN where fewer than min_clear neighbours are finite.
     """
     grid = opened["grid"]
-    ratio = grid.resolution / abs(lats[1] - lats[0])
-    centre_rows = nearest_index(grid.y, lats)
-    centre_cols = nearest_index(grid.x, lons)
+    ratio = grid.lon_step / abs(lats[1] - lats[0])
+    centre_rows = nearest_index(grid.lat, lats)
+    centre_cols = nearest_index(grid.lon, lons)
     if np.isclose(ratio, 1.0):
         return read_rows(opened, centre_rows, centre_cols[0], centre_cols[-1] + 1, days)
     if ratio > 1.0:
@@ -404,8 +418,8 @@ def compute(args):
     (row_start, row_stop), (col_start, col_stop) = target_window(grid)
     if args.rows is not None:
         row_start, row_stop = row_start + args.rows[0], row_start + args.rows[1]
-    lats = grid.y[row_start:row_stop]
-    lons = grid.x[col_start:col_stop]
+    lats = grid.lat[row_start:row_stop]
+    lons = grid.lon[col_start:col_stop]
     n_rows, n_cols = len(lats), len(lons)
     n_cells = n_rows * n_cols
     continent = africa_mask(lats, lons)
@@ -705,8 +719,8 @@ def compute_daily(args, pair):
     (row_start, row_stop), (col_start, col_stop) = target_window(grid)
     if args.rows is not None:
         row_start, row_stop = row_start + args.rows[0], row_start + args.rows[1]
-    lats = grid.y[row_start:row_stop]
-    lons = grid.x[col_start:col_stop]
+    lats = grid.lat[row_start:row_stop]
+    lons = grid.lon[col_start:col_stop]
     n_rows, n_cols = len(lats), len(lons)
     n_cells = n_rows * n_cols
     continent = africa_mask(lats, lons)
@@ -1314,7 +1328,7 @@ def read_global_band(band):
     being row-major on the grid."""
     row_start, row_stop = band
     opened = GLOBAL_WORKER["opened"]
-    n_cols = opened["grid"].get_shape()[1]
+    n_cols = opened["grid"].shape[1]
     block = read_hourly(opened, row_start * n_cols, row_stop * n_cols, *GLOBAL_WORKER["days"])
     return block.reshape(row_stop - row_start, n_cols, -1, 24)
 
@@ -1322,7 +1336,7 @@ def read_global_band(band):
 def global_hourly(source, days, workers):
     """(rows, cols, days, 24) of one source on its whole grid, read in latitude bands by
     forked workers (every band decompresses its own store chunks, so the bands parallelise)."""
-    n_rows = store_grid(source["modality"]).get_shape()[0]
+    n_rows = store_grid(source["modality"]).shape[0]
     bands = []
     for band_start in range(0, n_rows, GLOBAL_BAND_ROWS):
         bands.append((band_start, min(band_start + GLOBAL_BAND_ROWS, n_rows)))
@@ -1348,8 +1362,8 @@ def hourly_window(source, start, n_days, window, workers):
     else:
         grid = store_grid(SOURCES["skt"]["modality"])
         (row_start, row_stop), (col_start, col_stop) = target_window(grid)
-        lats = grid.y[row_start:row_stop]
-        lons = grid.x[col_start:col_stop]
+        lats = grid.lat[row_start:row_stop]
+        lons = grid.lon[col_start:col_stop]
         mask = africa_mask(lats, lons)
         block = load_band(open_source(source), lats, lons, days, MIN_CLEAR)  # (rows, cols, days, 24)
         stack = block.reshape(len(lats), len(lons), n_days * 24).transpose(2, 0, 1)

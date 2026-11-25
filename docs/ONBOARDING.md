@@ -46,7 +46,7 @@ Things to know:
   ```
   Redraw with another seed if it is not 0.
 
-**Step 2: statistics** (three GPU jobs, `docs/RUNBOOK.md` section 4.4, ~1 h wall):
+**Step 2: statistics** (three CPU jobs of a few minutes, `docs/RUNBOOK.md` section 4.4):
 
 ```
 bash scripts/assets/launch_statistics_mtg.sh <sel>

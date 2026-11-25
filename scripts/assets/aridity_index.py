@@ -1,15 +1,18 @@
 from pathlib import Path
 
+import cartopy.io.shapereader as shapereader
+import geopandas
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
+import shapely
 import xarray as xr
-from eodata.util.spatial import get_admin_geometry
 from matplotlib.colors import LogNorm
 from rasterio.features import geometry_mask
 from rasterio.windows import Window
 
-from deep_lst.utils.spatial import anchor_grid, map_to_store_rows, store_grid
+from deep_lst.stores import map_to_store_rows
+from deep_lst.utils.spatial import store_grid
 
 BASE = "/Net/Groups/BGI/data/DataStructureMDI/DATA/Incoming/Global_Aridity_Index_and_PET_ET0_v3.1"
 AI_PATH = f"{BASE}/Global-AI_ET0__annual_v3_1/ai_v31_yr.tif"
@@ -21,8 +24,16 @@ RESOLUTION = 0.05
 INDICES_PATH = "deep_lst/assets/spatial/indices_sites_fvc.npz"
 
 
-africa = get_admin_geometry(continent="Africa")
-west, south, east, north = africa.geom.bounds
+def africa_geometry():
+    """The countries of Africa (Natural Earth 110m admin-0 boundaries) as one geometry."""
+    shapefile = shapereader.natural_earth(resolution="110m", category="cultural", name="admin_0_countries")
+    countries = geopandas.read_file(shapefile)
+    african = countries[countries["CONTINENT"] == "Africa"]
+    return shapely.union_all(african.geometry.values)
+
+
+africa = africa_geometry()
+west, south, east, north = africa.bounds
 
 lon_centers = np.arange(np.floor(west / RESOLUTION), np.ceil(east / RESOLUTION) + 1) * RESOLUTION
 lat_centers = np.arange(np.ceil(north / RESOLUTION), np.floor(south / RESOLUTION) - 1, -1) * RESOLUTION
@@ -47,7 +58,7 @@ with np.errstate(invalid="ignore"):
 coarse_transform = rasterio.transform.from_origin(
     lon_centers[0] - RESOLUTION / 2, lat_centers[0] + RESOLUTION / 2, RESOLUTION, RESOLUTION
 )
-outside_africa = geometry_mask([africa.geom], out_shape=(n_rows, n_cols), transform=coarse_transform, invert=False)
+outside_africa = geometry_mask([africa], out_shape=(n_rows, n_cols), transform=coarse_transform, invert=False)
 aridity[outside_africa] = np.nan
 
 extent = (
@@ -78,11 +89,11 @@ RASTER_NORTH = 90.0
 RASTER_PIXEL = 1 / 120  # 30 arc-seconds, in degrees
 
 grid = store_grid("seviri")
-n_lat, n_lon = grid.get_shape()
-half_cell = grid.resolution / 2
+n_lat, n_lon = grid.shape
+half_cell = grid.lon_step / 2
 
-first_col = round((grid.x[0] - half_cell - RASTER_WEST) / RASTER_PIXEL)
-first_row = round((RASTER_NORTH - (grid.y[0] + half_cell)) / RASTER_PIXEL)
+first_col = round((grid.lon[0] - half_cell - RASTER_WEST) / RASTER_PIXEL)
+first_row = round((RASTER_NORTH - (grid.lat[0] + half_cell)) / RASTER_PIXEL)
 
 with rasterio.open(AI_PATH) as ai_src:
     covered_rows = (ai_src.height - first_row) // PIXELS_PER_CELL  # raster ends at 60 S
@@ -102,7 +113,7 @@ with np.errstate(invalid="ignore"):
 
 dataset = xr.Dataset(
     {"aridity_index": (("lat", "lon"), aridity)},
-    coords={"lat": grid.y, "lon": grid.x},
+    coords={"lat": grid.lat, "lon": grid.lon},
 )
 dataset.to_netcdf(OUT_DIR / "africa_ai_v31_yr_equiangular_005.nc")
 
@@ -140,7 +151,7 @@ UNEP_EDGES = [0.03, 0.2, 0.5, 0.65]
 UNEP_LABELS = ["hyper-arid", "arid", "semi-arid", "dry sub-humid", "humid"]
 
 anchor_ids = np.sort(np.load(INDICES_PATH)["src_indices"].astype(np.int64))
-seviri_rows = map_to_store_rows(anchor_grid("mtg"), anchor_ids, store_grid("seviri"))
+seviri_rows = map_to_store_rows("mtg", anchor_ids, grid)
 
 site_aridity = aridity_flat[seviri_rows]
 valid = np.isfinite(site_aridity)

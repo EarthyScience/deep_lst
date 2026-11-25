@@ -66,18 +66,22 @@ class CubeReader(StoreReader):
         """
         return zarr.open_array(str(self.store / "_indices"), mode="r")[:]
 
-    def decode(self, stored):
+    def decode(self, stored, variables=None):
         """Stored struct values -> physical values.
 
         Args:
             stored: Struct array of any shape, as read from data_arr.
+            variables: Variables to decode, in the order of the last axis of the result.
+                Default: all variables of the store.
 
         Returns:
             float32 array of shape stored.shape + (n_variables,). NaN where the store holds the
             fill value of a variable.
         """
-        decoded = np.empty(stored.shape + (len(self.variables),), dtype=np.float32)
-        for channel, variable in enumerate(self.variables):
+        if variables is None:
+            variables = self.variables
+        decoded = np.empty(stored.shape + (len(variables),), dtype=np.float32)
+        for channel, variable in enumerate(variables):
             raw = stored[variable]
             fill_value = self.data_arr.fill_value[variable]
             missing = raw == fill_value
@@ -129,3 +133,37 @@ class CubeReader(StoreReader):
             decoded = self.decode(stored)  # (steps, cells, variables)
             series[:, block_start - time_start : block_stop - time_start] = decoded.swapaxes(0, 1)
         return series
+
+    def spatial_chunks(self):
+        """The grid cut along the inner chunks of the store.
+
+        Returns:
+            List of (lat_slice, lon_slice), one per inner chunk, row by row. Reading one such
+            rectangle decodes exactly one inner chunk per shard.
+        """
+        n_lat, n_lon = self.spatial_grid.shape
+        chunk_lat, chunk_lon = self.data_arr.chunks[1:]
+        rectangles = []
+        for lat_start in range(0, n_lat, chunk_lat):
+            for lon_start in range(0, n_lon, chunk_lon):
+                lat_slice = slice(lat_start, min(lat_start + chunk_lat, n_lat))
+                lon_slice = slice(lon_start, min(lon_start + chunk_lon, n_lon))
+                rectangles.append((lat_slice, lon_slice))
+        return rectangles
+
+    def get_data_box(self, lat_slice, lon_slice, time_start, time_stop, variables=None):
+        """Values of a rectangle of cells over a range of time steps.
+
+        Args:
+            lat_slice: Slice along the lat dimension of the grid.
+            lon_slice: Slice along the lon dimension of the grid.
+            time_start: First time index.
+            time_stop: Time index after the last one, as in range().
+            variables: Variables to return. Default: all variables of the store.
+
+        Returns:
+            float32 array (time_stop - time_start, n_lat, n_lon, n_variables), NaN where the
+            store has no value.
+        """
+        stored = self.data_arr[time_start:time_stop, lat_slice, lon_slice]
+        return self.decode(stored, variables)

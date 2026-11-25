@@ -26,12 +26,12 @@ import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from eodata.grids import T1H
 from matplotlib.colors import TwoSlopeNorm
 from sklearn.decomposition import PCA
 
+from deep_lst.stores import T1H
 from deep_lst.utils import ExperimentPaths
-from deep_lst.utils.full_store import ERA5_LAND_STORE, ERA5_STORE, load_store_columns
+from deep_lst.utils.full_store import load_store_columns
 from deep_lst.utils.spatial import store_grid
 
 # ── configuration ─────────────────────────────────────────────────────────────
@@ -68,12 +68,10 @@ FEATURE_VARS = [
 ]
 MODALITY_LOAD = {
     "era5": {
-        "store": ERA5_STORE,
         "data": ["u10", "v10", "sp", "sf", "strd", "ssrd", "tp", "tcwv"],
         "data_static_categorical": ["tvh", "tvl"],
     },
     "era5_land": {
-        "store": ERA5_LAND_STORE,
         "data": ["stl1", "swvl1", "t2m", "d2m", "skt"],
     },
 }
@@ -104,10 +102,9 @@ def load_feature_matrix(spatial, anchor):
     """
     per_var = {}
     lonlat = None
-    for modality, spec in MODALITY_LOAD.items():
-        load = {leaf: names for leaf, names in spec.items() if leaf != "store"}
+    for modality, load in MODALITY_LOAD.items():
         columns, unique_rows, inverse, _ = load_store_columns(
-            modality, spec["store"], spatial, load, anchor=anchor, day_range=YEAR_DAY_RANGE, num_workers=16
+            modality, spatial, load, anchor=anchor, day_range=YEAR_DAY_RANGE, num_workers=16
         )
         data = columns["data"].numpy().astype(np.float64)  # (n_unique, n_hours, C)
         with warnings.catch_warnings():

@@ -168,6 +168,34 @@ def test_get_data_series_of_a_static_store(static_store):
     assert series[:, 0, 0].tolist() == [1000.0, 1009.0]
 
 
+def test_spatial_chunks_cover_the_grid_once(hourly_store):
+    reader = HourlyReader(hourly_store.path)
+    rectangles = reader.spatial_chunks()
+    assert len(rectangles) == 4  # the synthetic grid has 2 x 2 inner chunks of 3 x 4 cells
+    assert rectangles[0] == (slice(0, 3), slice(0, 4))
+    assert rectangles[3] == (slice(3, 6), slice(4, 8))
+    covered = np.zeros(reader.spatial_grid.shape, dtype=int)
+    for lat_slice, lon_slice in rectangles:
+        covered[lat_slice, lon_slice] += 1
+    assert np.all(covered == 1)
+
+
+def test_get_data_box_equals_get_data_series(hourly_store):
+    reader = HourlyReader(hourly_store.path)
+    lat_slice, lon_slice = slice(1, 5), slice(2, 8)  # across all four inner chunks, with the fill longitude
+    time_start, time_stop = FIRST_HOUR + 90, FIRST_HOUR + 100  # across the shard boundary
+    box = reader.get_data_box(lat_slice, lon_slice, time_start, time_stop)
+    assert box.shape == (10, 4, 6, 3)
+    assert box.dtype == np.float32
+
+    lat_index, lon_index = np.meshgrid(np.arange(1, 5), np.arange(2, 8), indexing="ij")
+    rows = reader.spatial_grid.lat_lon_index_to_rows(lat_index.ravel(), lon_index.ravel())
+    series = reader.get_data_series(rows, time_start, time_stop)  # (cells, steps, variables)
+    expected = series.reshape(4, 6, 10, 3).transpose(2, 0, 1, 3)
+    assert np.array_equal(box, expected, equal_nan=True)
+    assert np.all(np.isnan(box[:, :, -1]))  # the fill longitude
+
+
 def test_reader_refuses_a_store_of_another_modality(daily_store):
     with pytest.raises(ValueError, match="synthetic_daily"):
         HourlyReader(daily_store.path)

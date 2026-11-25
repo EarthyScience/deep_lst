@@ -24,28 +24,18 @@ rolls the hourly LST incrementes forward over a customized forecast horizon. The
 
 ## Install
 
-You need [uv](https://docs.astral.sh/uv/) and a conda or mamba installation. The latter
-provides the native GDAL and PROJ libraries of the data library
-[eodata](https://github.com/EarthyScience/eodata), which deep_lst installs in editable mode
-from a sibling directory that must be named `eodata_slim`:
+You need [uv](https://docs.astral.sh/uv/):
 
 ```sh
 git clone https://github.com/EarthyScience/deep_lst.git
-git clone -b v0.3_DeepLST https://github.com/EarthyScience/eodata.git eodata_slim
-
-cd eodata_slim
-mamba env create -n eodata -f environment.yaml
-mamba activate eodata    # keep it active: the GDAL bindings of deep_lst link against it
-uv sync
-
-cd ../deep_lst
-uv sync                  # Python 3.12 environment with deep_lst and eodata
+cd deep_lst
+uv sync                  # Python 3.12 environment with deep_lst
 uv run pytest            # tests that need the data stores are skipped
 ```
 
 ## Usage
 
-Training and evaluation read hourly `.eozarr` data stores and a set of index, statistics and
+Training and evaluation read a set of zarr data stores and a set of index, statistics and
 baseline assets. Neither is part of this repository; [`docs/RUNBOOK.md`](docs/RUNBOOK.md)
 describes them and where they come from. Training needs a CUDA GPU and about 256 GB of memory
 for a selection of 3000 sites. The pipeline has five stages, run from the repository root:

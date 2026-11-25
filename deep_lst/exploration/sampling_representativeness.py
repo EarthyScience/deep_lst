@@ -1,6 +1,9 @@
 """
 Exploratory analysis: KG climate class sampling representativeness.
 Continental area proxy = 5 km MajorTomGrid cells within Africa, sampled from KG GeoTIFF.
+
+Needs eodata (MajorTomGrid, sample_raster_on_grid, get_admin_geometry), which is not part of
+the deep_lst environment: run it in an environment that has both, or port these three first.
 """
 
 import json
